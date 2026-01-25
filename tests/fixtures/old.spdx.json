@@ -1,0 +1,34 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "Test Document",
+  "documentNamespace": "http://spdx.org/spdxdocs/test-doc",
+  "creationInfo": {
+    "creators": ["Tool: manual"],
+    "created": "2023-01-01T00:00:00Z"
+  },
+  "packages": [
+    {
+      "name": "pkg-a",
+      "SPDXID": "SPDXRef-pkg-a",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "MIT",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-pkg-a",
+      "relationshipType": "DESCRIBES"
+    }
+  ]
+}

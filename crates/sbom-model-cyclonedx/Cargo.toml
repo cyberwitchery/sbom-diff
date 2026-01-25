@@ -1,0 +1,13 @@
+[package]
+name = "sbom-model-cyclonedx"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+sbom-model = { path = "../sbom-model" }
+cyclonedx-bom = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+packageurl = { workspace = true }

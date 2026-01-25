@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/sbom-model",
+    "crates/sbom-model-cyclonedx",
+    "crates/sbom-model-spdx",
+    "crates/sbom-diff",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Author <author@example.com>"]
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+indexmap = { version = "2.0", features = ["serde"] }
+clap = { version = "4.4", features = ["derive"] }
+cyclonedx-bom = "0.6" # Check for latest compatible
+spdx-rs = "0.5"       # Check for latest compatible
+spdx = "0.10"         # Check for latest compatible
+packageurl = "0.3"
+sha2 = "0.10"
+hex = "0.4"
+semver = "1.0"
+schemars = "0.8"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

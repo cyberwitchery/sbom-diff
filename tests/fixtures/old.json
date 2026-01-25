@@ -1,0 +1,26 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "pkg-a",
+      "version": "1.0.0",
+      "purl": "pkg:npm/pkg-a@1.0.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pkg-b",
+      "version": "2.0.0",
+      "purl": "pkg:npm/pkg-b@2.0.0"
+    }
+  ]
+}

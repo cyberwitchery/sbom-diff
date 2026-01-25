@@ -1,0 +1,19 @@
+[package]
+name = "sbom-diff"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+sbom-model = { path = "../sbom-model" }
+sbom-model-cyclonedx = { path = "../sbom-model-cyclonedx" }
+sbom-model-spdx = { path = "../sbom-model-spdx" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+schemars = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1.0"
