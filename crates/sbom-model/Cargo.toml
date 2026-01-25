@@ -1,8 +1,10 @@
 [package]
 name = "sbom-model"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license.workspace = true
+description = "core format-agnostic sbom model and query api"
+readme = "readme.md"
 
 [dependencies]
 serde = { workspace = true }

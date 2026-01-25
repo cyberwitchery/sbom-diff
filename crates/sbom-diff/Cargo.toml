@@ -1,8 +1,10 @@
 [package]
 name = "sbom-diff"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license.workspace = true
+description = "diff engine and cli for sbom comparison"
+readme = "readme.md"
 
 [dependencies]
 sbom-model = { path = "../sbom-model" }

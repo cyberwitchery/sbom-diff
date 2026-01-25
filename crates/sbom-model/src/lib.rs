@@ -5,11 +5,12 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
+/// format-agnostic sbom representation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sbom {
     pub metadata: Metadata,
     pub components: IndexMap<ComponentId, Component>,
-    /// Adjacency list: parent -> children
+    /// adjacency list: parent -> children
     pub dependencies: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
 }
 
@@ -23,6 +24,7 @@ impl Default for Sbom {
     }
 }
 
+/// sbom metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Metadata {
     pub timestamp: Option<String>,
@@ -30,10 +32,12 @@ pub struct Metadata {
     pub authors: Vec<String>,
 }
 
+/// stable identifier for a component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ComponentId(String);
 
 impl ComponentId {
+    /// create a new id, preferring purl or hashing properties.
     pub fn new(purl: Option<&str>, properties: &[(&str, &str)]) -> Self {
         if let Some(purl) = purl {
             // Try to canonicalize purl
@@ -66,6 +70,7 @@ impl std::fmt::Display for ComponentId {
     }
 }
 
+/// a software component.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Component {
     pub id: ComponentId,
@@ -77,7 +82,7 @@ pub struct Component {
     pub purl: Option<String>,
     pub licenses: Vec<String>,
     pub hashes: BTreeMap<String, String>,
-    /// Original IDs from the source document (e.g. bom-ref, SPDXID)
+    /// original ids from source document.
     pub source_ids: Vec<String>,
 }
 
