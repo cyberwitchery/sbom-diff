@@ -7,9 +7,9 @@ description = "diff engine and cli for sbom comparison"
 readme = "readme.md"
 
 [dependencies]
-sbom-model = { path = "../sbom-model" }
-sbom-model-cyclonedx = { path = "../sbom-model-cyclonedx" }
-sbom-model-spdx = { path = "../sbom-model-spdx" }
+sbom-model = { path = "../sbom-model", version = "0.0.1" }
+sbom-model-cyclonedx = { path = "../sbom-model-cyclonedx", version = "0.0.1" }
+sbom-model-spdx = { path = "../sbom-model-spdx", version = "0.0.1" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

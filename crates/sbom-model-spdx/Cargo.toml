@@ -7,7 +7,7 @@ description = "spdx adapter for sbom-model"
 readme = "readme.md"
 
 [dependencies]
-sbom-model = { path = "../sbom-model" }
+sbom-model = { path = "../sbom-model", version = "0.0.1" }
 spdx-rs = { workspace = true }
 spdx = { workspace = true }
 serde = { workspace = true }
