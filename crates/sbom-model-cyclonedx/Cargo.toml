@@ -1,13 +1,13 @@
 [package]
 name = "sbom-model-cyclonedx"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license.workspace = true
 description = "cyclonedx adapter for sbom-model"
 readme = "readme.md"
 
 [dependencies]
-sbom-model = { path = "../sbom-model", version = "0.0.1" }
+sbom-model = { path = "../sbom-model", version = "0.0.2" }
 cyclonedx-bom = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
