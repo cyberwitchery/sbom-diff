@@ -1,3 +1,5 @@
+#![doc = include_str!("../readme.md")]
+
 use indexmap::IndexMap;
 use packageurl::PackageUrl;
 use serde::{Deserialize, Serialize};
@@ -5,12 +7,27 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
-/// format-agnostic sbom representation.
+/// Format-agnostic SBOM (Software Bill of Materials) representation.
+///
+/// This is the central type that holds all components and their relationships.
+/// It abstracts over format-specific details from CycloneDX, SPDX, and other formats.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::{Sbom, Component};
+///
+/// let mut sbom = Sbom::default();
+/// let component = Component::new("serde".into(), Some("1.0.0".into()));
+/// sbom.components.insert(component.id.clone(), component);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sbom {
+    /// Document-level metadata (creation time, tools, authors).
     pub metadata: Metadata,
+    /// All components indexed by their stable identifier.
     pub components: IndexMap<ComponentId, Component>,
-    /// adjacency list: parent -> children
+    /// Dependency graph as adjacency list: parent -> set of children.
     pub dependencies: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
 }
 
@@ -24,20 +41,48 @@ impl Default for Sbom {
     }
 }
 
-/// sbom metadata.
+/// SBOM document metadata.
+///
+/// Contains information about when and how the SBOM was created.
+/// This data is stripped during normalization since it varies between
+/// tool runs and shouldn't affect diff comparisons.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Metadata {
+    /// ISO 8601 timestamp of document creation.
     pub timestamp: Option<String>,
+    /// Tools used to generate the SBOM (e.g., "syft", "trivy").
     pub tools: Vec<String>,
+    /// Document authors or organizations.
     pub authors: Vec<String>,
 }
 
-/// stable identifier for a component.
+/// Stable identifier for a component.
+///
+/// Used as a key in the component map and dependency graph. Prefers package URLs
+/// (purls) when available since they provide globally unique identifiers. Falls
+/// back to a deterministic SHA-256 hash of component properties when no purl exists.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::ComponentId;
+///
+/// // With a purl (preferred)
+/// let id = ComponentId::new(Some("pkg:npm/lodash@4.17.21"), &[]);
+/// assert_eq!(id.as_str(), "pkg:npm/lodash@4.17.21");
+///
+/// // Without a purl (hash fallback)
+/// let id = ComponentId::new(None, &[("name", "foo"), ("version", "1.0")]);
+/// assert!(id.as_str().starts_with("h:"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ComponentId(String);
 
 impl ComponentId {
-    /// create a new id, preferring purl or hashing properties.
+    /// Creates a new identifier from a purl or property hash.
+    ///
+    /// If a purl is provided, it will be canonicalized. Otherwise, a deterministic
+    /// SHA-256 hash is computed from the provided key-value properties.
     pub fn new(purl: Option<&str>, properties: &[(&str, &str)]) -> Self {
         if let Some(purl) = purl {
             // Try to canonicalize purl
@@ -59,6 +104,7 @@ impl ComponentId {
         ComponentId(format!("h:{}", hash))
     }
 
+    /// Returns the identifier as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -70,23 +116,40 @@ impl std::fmt::Display for ComponentId {
     }
 }
 
-/// a software component.
+/// A software component (package, library, or application).
+///
+/// Represents a single entry in the SBOM with all its metadata.
+/// Components are identified by their [`ComponentId`] and can have
+/// relationships to other components via the dependency graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Component {
+    /// Stable identifier for this component.
     pub id: ComponentId,
+    /// Package name (e.g., "serde", "lodash").
     pub name: String,
+    /// Package version (e.g., "1.0.0", "4.17.21").
     pub version: Option<String>,
+    /// Package ecosystem (e.g., "cargo", "npm", "pypi").
     pub ecosystem: Option<String>,
+    /// Package supplier or publisher.
     pub supplier: Option<String>,
+    /// Human-readable description.
     pub description: Option<String>,
+    /// Package URL per the [purl spec](https://github.com/package-url/purl-spec).
     pub purl: Option<String>,
+    /// SPDX license identifiers (e.g., "MIT", "Apache-2.0").
     pub licenses: Vec<String>,
+    /// Checksums keyed by algorithm (e.g., "sha256" -> "abc123...").
     pub hashes: BTreeMap<String, String>,
-    /// original ids from source document.
+    /// Original identifiers from the source document (e.g., SPDX SPDXRef, CycloneDX bom-ref).
     pub source_ids: Vec<String>,
 }
 
 impl Component {
+    /// Creates a new component with the given name and optional version.
+    ///
+    /// The component ID is generated from a hash of the name and version.
+    /// Use this for simple cases; for full control, construct the struct directly.
     pub fn new(name: String, version: Option<String>) -> Self {
         let mut props = vec![("name", name.as_str())];
         if let Some(v) = &version {
@@ -109,8 +172,16 @@ impl Component {
     }
 }
 
-// Normalization logic
 impl Sbom {
+    /// Normalizes the SBOM for deterministic comparison.
+    ///
+    /// This method:
+    /// - Sorts components by ID
+    /// - Deduplicates and sorts licenses within each component
+    /// - Lowercases hash algorithms and values
+    /// - Clears volatile metadata (timestamps, tools, authors)
+    ///
+    /// Call this before comparing two SBOMs to ignore irrelevant differences.
     pub fn normalize(&mut self) {
         // Sort components by ID for deterministic output
         self.components.sort_keys();
@@ -133,6 +204,9 @@ impl Sbom {
         self.metadata.authors.clear(); // Authors might be relevant, but often change slightly. Let's keep strict for now.
     }
 
+    /// Returns root components (those not depended on by any other component).
+    ///
+    /// These are typically the top-level packages or applications in the SBOM.
     pub fn roots(&self) -> Vec<ComponentId> {
         let targets: BTreeSet<_> = self.dependencies.values().flatten().collect();
         self.components
@@ -142,6 +216,7 @@ impl Sbom {
             .collect()
     }
 
+    /// Returns direct dependencies of the given component.
     pub fn deps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.dependencies
             .get(id)
@@ -149,6 +224,7 @@ impl Sbom {
             .unwrap_or_default()
     }
 
+    /// Returns reverse dependencies (components that depend on the given component).
     pub fn rdeps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.dependencies
             .iter()
@@ -157,6 +233,9 @@ impl Sbom {
             .collect()
     }
 
+    /// Returns all transitive dependencies of the given component.
+    ///
+    /// Traverses the dependency graph depth-first and returns all reachable components.
     pub fn transitive_deps(&self, id: &ComponentId) -> BTreeSet<ComponentId> {
         let mut visited = BTreeSet::new();
         let mut stack = vec![id.clone()];
@@ -172,6 +251,7 @@ impl Sbom {
         visited
     }
 
+    /// Returns all unique ecosystems present in the SBOM.
     pub fn ecosystems(&self) -> BTreeSet<String> {
         self.components
             .values()
@@ -179,6 +259,7 @@ impl Sbom {
             .collect()
     }
 
+    /// Returns all unique licenses present across all components.
     pub fn licenses(&self) -> BTreeSet<String> {
         self.components
             .values()
@@ -186,6 +267,9 @@ impl Sbom {
             .collect()
     }
 
+    /// Returns components that have no checksums/hashes.
+    ///
+    /// Useful for identifying components that may need integrity verification.
     pub fn missing_hashes(&self) -> Vec<ComponentId> {
         self.components
             .iter()
@@ -194,6 +278,7 @@ impl Sbom {
             .collect()
     }
 
+    /// Finds a component by its package URL.
     pub fn by_purl(&self, purl: &str) -> Option<&Component> {
         self.components
             .values()
@@ -202,12 +287,13 @@ impl Sbom {
 }
 
 impl Component {
+    /// Normalizes the component for deterministic comparison.
+    ///
+    /// Sorts and deduplicates licenses, lowercases hash keys and values.
     pub fn normalize(&mut self) {
-        // Canonicalize licenses (simple sort and dedup for now)
         self.licenses.sort();
         self.licenses.dedup();
 
-        // Canonicalize hashes (lowercase)
         let normalized_hashes: BTreeMap<String, String> = self
             .hashes
             .iter()

@@ -1,46 +1,104 @@
+#![doc = include_str!("../readme.md")]
+
 use sbom_model::{Component, ComponentId, Sbom};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 pub mod renderer;
 
+/// The result of comparing two SBOMs.
+///
+/// Contains lists of added, removed, and changed components.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diff {
+    /// Components present in the new SBOM but not the old.
     pub added: Vec<Component>,
+    /// Components present in the old SBOM but not the new.
     pub removed: Vec<Component>,
+    /// Components present in both with field-level changes.
     pub changed: Vec<ComponentChange>,
+    /// Whether document metadata differs (usually ignored).
     pub metadata_changed: bool,
 }
 
+/// A component that exists in both SBOMs with detected changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentChange {
+    /// The component identifier (from the new SBOM).
     pub id: ComponentId,
+    /// The component as it appeared in the old SBOM.
     pub old: Component,
+    /// The component as it appears in the new SBOM.
     pub new: Component,
+    /// List of specific field changes detected.
     pub changes: Vec<FieldChange>,
 }
 
+/// A specific field that changed between two versions of a component.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FieldChange {
+    /// Version changed: (old, new).
     Version(String, String),
+    /// Licenses changed: (old, new).
     License(Vec<String>, Vec<String>),
+    /// Supplier changed: (old, new).
     Supplier(Option<String>, Option<String>),
+    /// Package URL changed: (old, new).
     Purl(Option<String>, Option<String>),
+    /// Hashes changed (details not tracked).
     Hashes,
 }
 
+/// Fields that can be compared and filtered.
+///
+/// Use with [`Differ::diff`] to limit comparison to specific fields.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Field {
+    /// Package version.
     Version,
+    /// License identifiers.
     License,
+    /// Supplier/publisher.
     Supplier,
+    /// Package URL.
     Purl,
+    /// Checksums.
     Hashes,
 }
 
+/// SBOM comparison engine.
+///
+/// Compares two SBOMs and produces a [`Diff`] describing the changes.
+/// Components are matched first by ID (purl), then by identity (name + ecosystem).
 pub struct Differ;
 
 impl Differ {
+    /// Compares two SBOMs and returns the differences.
+    ///
+    /// Both SBOMs are normalized before comparison to ignore irrelevant differences
+    /// like ordering or metadata timestamps.
+    ///
+    /// # Arguments
+    ///
+    /// * `old` - The baseline SBOM
+    /// * `new` - The SBOM to compare against the baseline
+    /// * `only` - Optional filter to limit comparison to specific fields
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sbom_diff::{Differ, Field};
+    /// use sbom_model::Sbom;
+    ///
+    /// let old = Sbom::default();
+    /// let new = Sbom::default();
+    ///
+    /// // Compare all fields
+    /// let diff = Differ::diff(&old, &new, None);
+    ///
+    /// // Compare only version and license changes
+    /// let diff = Differ::diff(&old, &new, Some(&[Field::Version, Field::License]));
+    /// ```
     pub fn diff(old: &Sbom, new: &Sbom, only: Option<&[Field]>) -> Diff {
         let mut old = old.clone();
         let mut new = new.clone();

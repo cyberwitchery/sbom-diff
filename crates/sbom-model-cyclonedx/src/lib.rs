@@ -1,21 +1,46 @@
+#![doc = include_str!("../readme.md")]
+
 use sbom_model::{Component, ComponentId, Sbom};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
+/// Errors that can occur when parsing CycloneDX documents.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// The JSON structure doesn't match the CycloneDX schema.
     #[error("CycloneDX parse error: {0}")]
     Parse(#[from] cyclonedx_bom::errors::JsonReadError),
+    /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Internal normalization failed.
     #[error("Normalization error: {0}")]
     Normalization(String),
 }
 
+/// Parser for CycloneDX JSON documents.
+///
+/// Converts CycloneDX 1.4+ JSON into the format-agnostic [`Sbom`] type.
 pub struct CycloneDxReader;
 
 impl CycloneDxReader {
+    /// Parses a CycloneDX JSON document from a reader.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sbom_model_cyclonedx::CycloneDxReader;
+    ///
+    /// let json = r#"{
+    ///     "bomFormat": "CycloneDX",
+    ///     "specVersion": "1.4",
+    ///     "version": 1,
+    ///     "components": []
+    /// }"#;
+    ///
+    /// let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+    /// ```
     pub fn read_json<R: Read>(reader: R) -> Result<Sbom, Error> {
         let bom = cyclonedx_bom::prelude::Bom::parse_from_json(reader)?;
 

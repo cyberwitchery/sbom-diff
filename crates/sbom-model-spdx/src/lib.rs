@@ -1,20 +1,39 @@
+#![doc = include_str!("../readme.md")]
+
 use sbom_model::{Component, ComponentId, Sbom};
 use spdx_rs::models::RelationshipType;
 use std::collections::BTreeMap;
 use std::io::Read;
 use thiserror::Error;
 
+/// Errors that can occur when parsing SPDX documents.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// The JSON structure doesn't match the SPDX schema.
     #[error("SPDX parse error: {0}")]
     Parse(#[from] serde_json::Error),
+    /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// Parser for SPDX JSON documents.
+///
+/// Converts SPDX 2.3 JSON into the format-agnostic [`Sbom`] type.
 pub struct SpdxReader;
 
 impl SpdxReader {
+    /// Parses an SPDX JSON document from a reader.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use sbom_model_spdx::SpdxReader;
+    /// use std::fs::File;
+    ///
+    /// let file = File::open("sbom.spdx.json").unwrap();
+    /// let sbom = SpdxReader::read_json(file).unwrap();
+    /// ```
     pub fn read_json<R: Read>(reader: R) -> Result<Sbom, Error> {
         let spdx_doc: spdx_rs::models::SPDX = serde_json::from_reader(reader)?;
 

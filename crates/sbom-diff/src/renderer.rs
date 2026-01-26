@@ -1,10 +1,21 @@
+//! Output renderers for displaying SBOM diffs.
+//!
+//! This module provides formatters for different output contexts:
+//!
+//! - [`TextRenderer`] - Plain text for terminal output
+//! - [`MarkdownRenderer`] - GitHub-flavored markdown for PR comments
+//! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
+
 use crate::{Diff, FieldChange};
 use std::io::Write;
 
+/// Trait for rendering a [`Diff`] to an output stream.
 pub trait Renderer {
+    /// Writes the formatted diff to the provided writer.
     fn render<W: Write>(&self, diff: &Diff, writer: &mut W) -> anyhow::Result<()>;
 }
 
+/// Plain text renderer for terminal output.
 pub struct TextRenderer;
 
 impl Renderer for TextRenderer {
@@ -65,6 +76,9 @@ impl Renderer for TextRenderer {
     }
 }
 
+/// GitHub-flavored markdown renderer for PR comments.
+///
+/// Produces collapsible sections using `<details>` tags.
 pub struct MarkdownRenderer;
 
 impl Renderer for MarkdownRenderer {
@@ -146,6 +160,9 @@ impl Renderer for MarkdownRenderer {
     }
 }
 
+/// JSON renderer for machine consumption.
+///
+/// Outputs the [`Diff`] struct as pretty-printed JSON.
 pub struct JsonRenderer;
 
 impl Renderer for JsonRenderer {
