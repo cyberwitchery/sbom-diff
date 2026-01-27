@@ -1,5 +1,7 @@
 # changelog
 
+## unreleased
+
 ## [0.0.5] - 2026-01-27
 
 - improved purl reconciliation: components are now matched by ecosystem + name when purls differ or are absent, reporting version/purl changes instead of spurious add/remove pairs
