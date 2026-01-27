@@ -301,6 +301,23 @@ impl Component {
     }
 }
 
+/// Extracts the ecosystem (package type) from a purl string.
+///
+/// Returns `None` if the purl is invalid or cannot be parsed.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::ecosystem_from_purl;
+///
+/// assert_eq!(ecosystem_from_purl("pkg:npm/lodash@4.17.21"), Some("npm".to_string()));
+/// assert_eq!(ecosystem_from_purl("pkg:cargo/serde@1.0.0"), Some("cargo".to_string()));
+/// assert_eq!(ecosystem_from_purl("invalid"), None);
+/// ```
+pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
+    PackageUrl::from_str(purl).ok().map(|p| p.ty().to_string())
+}
+
 /// Extracts individual license IDs from an SPDX expression.
 ///
 /// Parses the expression and returns all license IDs found.
@@ -445,5 +462,29 @@ mod tests {
         assert_eq!(transitive.len(), 2);
 
         assert_eq!(sbom.missing_hashes().len(), 3);
+    }
+
+    #[test]
+    fn test_ecosystem_from_purl() {
+        use super::ecosystem_from_purl;
+
+        assert_eq!(
+            ecosystem_from_purl("pkg:npm/lodash@4.17.21"),
+            Some("npm".to_string())
+        );
+        assert_eq!(
+            ecosystem_from_purl("pkg:cargo/serde@1.0.0"),
+            Some("cargo".to_string())
+        );
+        assert_eq!(
+            ecosystem_from_purl("pkg:pypi/requests@2.28.0"),
+            Some("pypi".to_string())
+        );
+        assert_eq!(
+            ecosystem_from_purl("pkg:maven/org.apache/commons@1.0"),
+            Some("maven".to_string())
+        );
+        assert_eq!(ecosystem_from_purl("invalid-purl"), None);
+        assert_eq!(ecosystem_from_purl(""), None);
     }
 }

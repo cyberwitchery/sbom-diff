@@ -77,13 +77,16 @@ impl SpdxReader {
             }
             let purl_str = purl.as_deref();
 
+            // Extract ecosystem from purl
+            let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
+
             let id = ComponentId::new(purl_str, &props);
 
             let mut comp = Component {
                 id: id.clone(),
                 name,
                 version,
-                ecosystem: None,
+                ecosystem,
                 supplier,
                 description: None, // pkg.description might not exist or be named differently. Safe fallback.
                 purl,
@@ -217,5 +220,52 @@ mod tests {
         assert_eq!(sbom.components.len(), 2);
         assert_eq!(sbom.metadata.authors, vec!["Person: bob"]);
         assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_ecosystem_extracted_from_purl() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "lodash",
+                    "SPDXID": "SPDXRef-lodash",
+                    "versionInfo": "4.17.21",
+                    "downloadLocation": "NONE",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:npm/lodash@4.17.21"
+                        }
+                    ]
+                },
+                {
+                    "name": "no-purl-pkg",
+                    "SPDXID": "SPDXRef-no-purl",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+
+        let lodash = sbom.components.values().find(|c| c.name == "lodash").unwrap();
+        assert_eq!(lodash.ecosystem, Some("npm".to_string()));
+
+        let no_purl = sbom
+            .components
+            .values()
+            .find(|c| c.name == "no-purl-pkg")
+            .unwrap();
+        assert_eq!(no_purl.ecosystem, None);
     }
 }

@@ -100,10 +100,11 @@ impl CycloneDxReader {
                     props.push(("supplier", s_str.as_str()));
                 }
 
-                // TODO: ecosystem isn't direct in CDX, usually inferred from purl type
-
                 let purl = cdx_comp.purl.as_ref().map(|p| p.to_string());
                 let purl_str = purl.as_deref();
+
+                // Extract ecosystem from purl
+                let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
                 let id = ComponentId::new(purl_str, &props);
 
@@ -111,7 +112,7 @@ impl CycloneDxReader {
                     id: id.clone(),
                     name,
                     version,
-                    ecosystem: None, // Inferred later from purl if needed
+                    ecosystem,
                     supplier,
                     description: cdx_comp.description.as_ref().map(|d| d.to_string()),
                     purl,
@@ -250,5 +251,47 @@ mod tests {
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 2);
         assert!(sbom.dependencies.contains_key(&sbom.components[0].id));
+    }
+
+    #[test]
+    fn test_ecosystem_extracted_from_purl() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "lodash",
+                    "version": "4.17.21",
+                    "purl": "pkg:npm/lodash@4.17.21"
+                },
+                {
+                    "type": "library",
+                    "name": "serde",
+                    "version": "1.0.0",
+                    "purl": "pkg:cargo/serde@1.0.0"
+                },
+                {
+                    "type": "library",
+                    "name": "no-purl-pkg",
+                    "version": "1.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+
+        let lodash = sbom.components.values().find(|c| c.name == "lodash").unwrap();
+        assert_eq!(lodash.ecosystem, Some("npm".to_string()));
+
+        let serde = sbom.components.values().find(|c| c.name == "serde").unwrap();
+        assert_eq!(serde.ecosystem, Some("cargo".to_string()));
+
+        let no_purl = sbom
+            .components
+            .values()
+            .find(|c| c.name == "no-purl-pkg")
+            .unwrap();
+        assert_eq!(no_purl.ecosystem, None);
     }
 }

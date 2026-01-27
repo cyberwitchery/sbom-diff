@@ -126,7 +126,10 @@ impl Differ {
         }
 
         // 2. Reconciliation: Match by "Identity" (Name + Ecosystem)
-        let mut old_identity_map = BTreeMap::new();
+        // When purls are absent or change, we match by (ecosystem, name).
+        // If either ecosystem is None, we treat it as a wildcard and match by name alone.
+        let mut old_identity_map: BTreeMap<(Option<String>, String), Vec<ComponentId>> =
+            BTreeMap::new();
         for (id, comp) in &old.components {
             if !processed_old.contains(id) {
                 let identity = (comp.ecosystem.clone(), comp.name.clone());
@@ -143,17 +146,38 @@ impl Differ {
             }
 
             let identity = (new_comp.ecosystem.clone(), new_comp.name.clone());
-            if let Some(old_ids) = old_identity_map.get_mut(&identity) {
-                if let Some(old_id) = old_ids.pop() {
-                    if let Some(old_comp) = old.components.get(&old_id) {
-                        processed_old.insert(old_id.clone());
-                        processed_new.insert(id.clone());
 
-                        if let Some(change) = Self::compute_change(old_comp, new_comp, only) {
-                            changed.push(change);
-                        }
-                        continue;
+            // Try to find a matching old component:
+            // 1. Exact match on (ecosystem, name)
+            // 2. If new has ecosystem but no exact match, try old with None ecosystem (same name)
+            // 3. If new has no ecosystem, try any old with same name
+            let matched_old_id = old_identity_map
+                .get_mut(&identity)
+                .and_then(|ids| ids.pop())
+                .or_else(|| {
+                    if new_comp.ecosystem.is_some() {
+                        // New has ecosystem, try matching old with None ecosystem
+                        old_identity_map
+                            .get_mut(&(None, new_comp.name.clone()))
+                            .and_then(|ids| ids.pop())
+                    } else {
+                        // New has no ecosystem, try matching any old with same name
+                        old_identity_map
+                            .iter_mut()
+                            .find(|((_, name), ids)| name == &new_comp.name && !ids.is_empty())
+                            .and_then(|(_, ids)| ids.pop())
                     }
+                });
+
+            if let Some(old_id) = matched_old_id {
+                if let Some(old_comp) = old.components.get(&old_id) {
+                    processed_old.insert(old_id.clone());
+                    processed_new.insert(id.clone());
+
+                    if let Some(change) = Self::compute_change(old_comp, new_comp, only) {
+                        changed.push(change);
+                    }
+                    continue;
                 }
             }
 
@@ -307,5 +331,160 @@ mod tests {
             diff.changed[0].changes[0],
             FieldChange::Version(_, _)
         ));
+    }
+
+    #[test]
+    fn test_purl_change_same_ecosystem_name_is_change_not_add_remove() {
+        // Component with purl in old, different purl in new (same ecosystem+name)
+        // Should be treated as a CHANGE with Purl field change, not add/remove
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Old: lodash with one purl
+        let mut c_old = Component::new("lodash".to_string(), Some("4.17.20".to_string()));
+        c_old.purl = Some("pkg:npm/lodash@4.17.20".to_string());
+        c_old.ecosystem = Some("npm".to_string());
+        c_old.id = ComponentId::new(c_old.purl.as_deref(), &[]);
+
+        // New: lodash with updated purl (version bump)
+        let mut c_new = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
+        c_new.purl = Some("pkg:npm/lodash@4.17.21".to_string());
+        c_new.ecosystem = Some("npm".to_string());
+        c_new.id = ComponentId::new(c_new.purl.as_deref(), &[]);
+
+        old.components.insert(c_old.id.clone(), c_old);
+        new.components.insert(c_new.id.clone(), c_new);
+
+        let diff = Differ::diff(&old, &new, None);
+
+        // Should NOT be add/remove
+        assert_eq!(diff.added.len(), 0, "Should not have added components");
+        assert_eq!(diff.removed.len(), 0, "Should not have removed components");
+
+        // Should be a change
+        assert_eq!(diff.changed.len(), 1, "Should have one changed component");
+
+        // Should include both Version and Purl changes
+        let changes = &diff.changed[0].changes;
+        assert!(changes.iter().any(|c| matches!(c, FieldChange::Version(_, _))));
+        assert!(changes.iter().any(|c| matches!(c, FieldChange::Purl(_, _))));
+    }
+
+    #[test]
+    fn test_purl_removed_is_change() {
+        // Component with purl in old, no purl in new (same name)
+        // This is realistic: old SBOM from tool that adds purls, new from tool that doesn't
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c_old = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
+        c_old.purl = Some("pkg:npm/lodash@4.17.21".to_string());
+        c_old.ecosystem = Some("npm".to_string()); // Extracted from purl
+        c_old.id = ComponentId::new(c_old.purl.as_deref(), &[]);
+
+        // New component without purl - ecosystem is None (realistic!)
+        let mut c_new = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
+        c_new.purl = None;
+        c_new.ecosystem = None; // No purl means no ecosystem extraction
+        // ID will be hash-based since no purl
+        c_new.id = ComponentId::new(None, &[("name", "lodash"), ("version", "4.17.21")]);
+
+        old.components.insert(c_old.id.clone(), c_old);
+        new.components.insert(c_new.id.clone(), c_new);
+
+        let diff = Differ::diff(&old, &new, None);
+
+        assert_eq!(diff.added.len(), 0, "Should not have added components");
+        assert_eq!(diff.removed.len(), 0, "Should not have removed components");
+        assert_eq!(diff.changed.len(), 1, "Should have one changed component");
+
+        // Should have Purl change
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Purl(_, _))));
+    }
+
+    #[test]
+    fn test_purl_added_is_change() {
+        // Component with no purl in old, purl in new
+        // This is realistic: old SBOM without purls, new from better tooling
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c_old = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
+        c_old.purl = None;
+        c_old.ecosystem = None; // No purl means no ecosystem (realistic!)
+        c_old.id = ComponentId::new(None, &[("name", "lodash"), ("version", "4.17.21")]);
+
+        let mut c_new = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
+        c_new.purl = Some("pkg:npm/lodash@4.17.21".to_string());
+        c_new.ecosystem = Some("npm".to_string()); // Extracted from purl
+        c_new.id = ComponentId::new(c_new.purl.as_deref(), &[]);
+
+        old.components.insert(c_old.id.clone(), c_old);
+        new.components.insert(c_new.id.clone(), c_new);
+
+        let diff = Differ::diff(&old, &new, None);
+
+        assert_eq!(diff.added.len(), 0, "Should not have added components");
+        assert_eq!(diff.removed.len(), 0, "Should not have removed components");
+        assert_eq!(diff.changed.len(), 1, "Should have one changed component");
+    }
+
+    #[test]
+    fn test_same_name_different_ecosystems_not_matched() {
+        // Two components with same name but different ecosystems should NOT match
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Old: "utils" from npm
+        let mut c_old = Component::new("utils".to_string(), Some("1.0.0".to_string()));
+        c_old.purl = Some("pkg:npm/utils@1.0.0".to_string());
+        c_old.ecosystem = Some("npm".to_string());
+        c_old.id = ComponentId::new(c_old.purl.as_deref(), &[]);
+
+        // New: "utils" from pypi (different ecosystem!)
+        let mut c_new = Component::new("utils".to_string(), Some("1.0.0".to_string()));
+        c_new.purl = Some("pkg:pypi/utils@1.0.0".to_string());
+        c_new.ecosystem = Some("pypi".to_string());
+        c_new.id = ComponentId::new(c_new.purl.as_deref(), &[]);
+
+        old.components.insert(c_old.id.clone(), c_old);
+        new.components.insert(c_new.id.clone(), c_new);
+
+        let diff = Differ::diff(&old, &new, None);
+
+        // Should be separate add/remove, NOT a change
+        assert_eq!(diff.added.len(), 1, "pypi/utils should be added");
+        assert_eq!(diff.removed.len(), 1, "npm/utils should be removed");
+        assert_eq!(diff.changed.len(), 0, "Should not match different ecosystems");
+    }
+
+    #[test]
+    fn test_same_name_both_no_ecosystem_matched() {
+        // Components with same name and both having None ecosystem should match
+        // (backwards compatibility for SBOMs without purls)
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c_old = Component::new("mystery-pkg".to_string(), Some("1.0.0".to_string()));
+        c_old.ecosystem = None;
+
+        let mut c_new = Component::new("mystery-pkg".to_string(), Some("2.0.0".to_string()));
+        c_new.ecosystem = None;
+
+        old.components.insert(c_old.id.clone(), c_old);
+        new.components.insert(c_new.id.clone(), c_new);
+
+        let diff = Differ::diff(&old, &new, None);
+
+        assert_eq!(diff.added.len(), 0);
+        assert_eq!(diff.removed.len(), 0);
+        assert_eq!(
+            diff.changed.len(),
+            1,
+            "Same name with None ecosystems should match"
+        );
     }
 }
