@@ -8,7 +8,8 @@ pub mod renderer;
 
 /// The result of comparing two SBOMs.
 ///
-/// Contains lists of added, removed, and changed components.
+/// Contains lists of added, removed, and changed components,
+/// as well as dependency edge changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diff {
     /// Components present in the new SBOM but not the old.
@@ -17,6 +18,8 @@ pub struct Diff {
     pub removed: Vec<Component>,
     /// Components present in both with field-level changes.
     pub changed: Vec<ComponentChange>,
+    /// Dependency edge changes between components.
+    pub edge_diffs: Vec<EdgeDiff>,
     /// Whether document metadata differs (usually ignored).
     pub metadata_changed: bool,
 }
@@ -32,6 +35,17 @@ pub struct ComponentChange {
     pub new: Component,
     /// List of specific field changes detected.
     pub changes: Vec<FieldChange>,
+}
+
+/// A dependency edge change for a single parent component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeDiff {
+    /// The parent component whose dependencies changed.
+    pub parent: ComponentId,
+    /// Dependencies added in the new SBOM.
+    pub added: BTreeSet<ComponentId>,
+    /// Dependencies removed from the old SBOM.
+    pub removed: BTreeSet<ComponentId>,
 }
 
 /// A specific field that changed between two versions of a component.
@@ -64,6 +78,8 @@ pub enum Field {
     Purl,
     /// Checksums.
     Hashes,
+    /// Dependency edges.
+    Deps,
 }
 
 /// SBOM comparison engine.
@@ -113,11 +129,15 @@ impl Differ {
         let mut processed_old = HashSet::new();
         let mut processed_new = HashSet::new();
 
+        // Track old_id -> new_id mappings for edge reconciliation
+        let mut id_mapping: BTreeMap<ComponentId, ComponentId> = BTreeMap::new();
+
         // 1. Match by ID
         for (id, new_comp) in &new.components {
             if let Some(old_comp) = old.components.get(id) {
                 processed_old.insert(id.clone());
                 processed_new.insert(id.clone());
+                id_mapping.insert(id.clone(), id.clone());
 
                 if let Some(change) = Self::compute_change(old_comp, new_comp, only) {
                     changed.push(change);
@@ -135,7 +155,7 @@ impl Differ {
                 let identity = (comp.ecosystem.clone(), comp.name.clone());
                 old_identity_map
                     .entry(identity)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(id.clone());
             }
         }
@@ -173,6 +193,7 @@ impl Differ {
                 if let Some(old_comp) = old.components.get(&old_id) {
                     processed_old.insert(old_id.clone());
                     processed_new.insert(id.clone());
+                    id_mapping.insert(old_id.clone(), id.clone());
 
                     if let Some(change) = Self::compute_change(old_comp, new_comp, only) {
                         changed.push(change);
@@ -191,12 +212,89 @@ impl Differ {
             }
         }
 
+        // 3. Compute edge diffs (dependency graph changes)
+        let should_include_deps = only.is_none_or(|fields| fields.contains(&Field::Deps));
+        let edge_diffs = if should_include_deps {
+            Self::compute_edge_diffs(&old, &new, &id_mapping)
+        } else {
+            Vec::new()
+        };
+
         Diff {
             added,
             removed,
             changed,
+            edge_diffs,
             metadata_changed: old.metadata != new.metadata,
         }
+    }
+
+    /// Computes dependency edge differences between two SBOMs.
+    ///
+    /// Uses the id_mapping to translate old component IDs to new IDs when
+    /// components were matched by identity rather than exact ID match.
+    fn compute_edge_diffs(
+        old: &Sbom,
+        new: &Sbom,
+        id_mapping: &BTreeMap<ComponentId, ComponentId>,
+    ) -> Vec<EdgeDiff> {
+        let mut edge_diffs = Vec::new();
+
+        // Helper to translate old ID to new ID (if mapped) or keep as-is
+        let translate_id = |old_id: &ComponentId| -> ComponentId {
+            id_mapping
+                .get(old_id)
+                .cloned()
+                .unwrap_or_else(|| old_id.clone())
+        };
+
+        // Collect all parent IDs from new SBOM's perspective
+        // We use new IDs as the canonical reference
+        let mut all_parents: BTreeSet<ComponentId> = new.dependencies.keys().cloned().collect();
+
+        // Also include old parents (translated to new IDs)
+        for old_parent in old.dependencies.keys() {
+            all_parents.insert(translate_id(old_parent));
+        }
+
+        for parent_id in all_parents {
+            // Get new dependencies for this parent
+            let new_children: BTreeSet<ComponentId> = new
+                .dependencies
+                .get(&parent_id)
+                .cloned()
+                .unwrap_or_default();
+
+            // Get old dependencies, translating both parent and child IDs
+            // First find the old parent ID (reverse lookup or same ID)
+            let old_parent_id = id_mapping
+                .iter()
+                .find(|(_, new_id)| *new_id == &parent_id)
+                .map(|(old_id, _)| old_id.clone())
+                .unwrap_or_else(|| parent_id.clone());
+
+            let old_children: BTreeSet<ComponentId> = old
+                .dependencies
+                .get(&old_parent_id)
+                .map(|children| children.iter().map(&translate_id).collect())
+                .unwrap_or_default();
+
+            // Compute added and removed edges
+            let added: BTreeSet<ComponentId> =
+                new_children.difference(&old_children).cloned().collect();
+            let removed: BTreeSet<ComponentId> =
+                old_children.difference(&new_children).cloned().collect();
+
+            if !added.is_empty() || !removed.is_empty() {
+                edge_diffs.push(EdgeDiff {
+                    parent: parent_id,
+                    added,
+                    removed,
+                });
+            }
+        }
+
+        edge_diffs
     }
 
     fn compute_change(
@@ -492,5 +590,137 @@ mod tests {
             1,
             "Same name with None ecosystems should match"
         );
+    }
+
+    #[test]
+    fn test_edge_diff_added_removed() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("parent".to_string(), Some("1.0".to_string()));
+        let c2 = Component::new("child-a".to_string(), Some("1.0".to_string()));
+        let c3 = Component::new("child-b".to_string(), Some("1.0".to_string()));
+
+        let parent_id = c1.id.clone();
+        let child_a_id = c2.id.clone();
+        let child_b_id = c3.id.clone();
+
+        // Add all components to both SBOMs
+        old.components.insert(c1.id.clone(), c1.clone());
+        old.components.insert(c2.id.clone(), c2.clone());
+        old.components.insert(c3.id.clone(), c3.clone());
+
+        new.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+        new.components.insert(c3.id.clone(), c3);
+
+        // Old: parent -> child-a
+        old.dependencies
+            .entry(parent_id.clone())
+            .or_default()
+            .insert(child_a_id.clone());
+
+        // New: parent -> child-b (removed child-a, added child-b)
+        new.dependencies
+            .entry(parent_id.clone())
+            .or_default()
+            .insert(child_b_id.clone());
+
+        let diff = Differ::diff(&old, &new, None);
+
+        assert_eq!(diff.edge_diffs.len(), 1);
+        assert_eq!(diff.edge_diffs[0].parent, parent_id);
+        assert!(diff.edge_diffs[0].added.contains(&child_b_id));
+        assert!(diff.edge_diffs[0].removed.contains(&child_a_id));
+    }
+
+    #[test]
+    fn test_edge_diff_with_identity_reconciliation() {
+        // Test that edge diffs work when components are matched by identity
+        // (different IDs but same name/ecosystem)
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Parent with purl in old
+        let mut parent_old = Component::new("parent".to_string(), Some("1.0".to_string()));
+        parent_old.purl = Some("pkg:npm/parent@1.0".to_string());
+        parent_old.ecosystem = Some("npm".to_string());
+        parent_old.id = ComponentId::new(parent_old.purl.as_deref(), &[]);
+
+        // Parent with different purl in new (same name/ecosystem)
+        let mut parent_new = Component::new("parent".to_string(), Some("1.1".to_string()));
+        parent_new.purl = Some("pkg:npm/parent@1.1".to_string());
+        parent_new.ecosystem = Some("npm".to_string());
+        parent_new.id = ComponentId::new(parent_new.purl.as_deref(), &[]);
+
+        // Child component (same in both)
+        let child = Component::new("child".to_string(), Some("1.0".to_string()));
+
+        old.components
+            .insert(parent_old.id.clone(), parent_old.clone());
+        old.components.insert(child.id.clone(), child.clone());
+
+        new.components
+            .insert(parent_new.id.clone(), parent_new.clone());
+        new.components.insert(child.id.clone(), child.clone());
+
+        // Old: parent -> child
+        old.dependencies
+            .entry(parent_old.id.clone())
+            .or_default()
+            .insert(child.id.clone());
+
+        // New: parent -> child (same edge, but parent has different ID)
+        new.dependencies
+            .entry(parent_new.id.clone())
+            .or_default()
+            .insert(child.id.clone());
+
+        let diff = Differ::diff(&old, &new, None);
+
+        // Components should be matched by identity, so no spurious edge changes
+        // (the edge parent->child exists in both, just under different parent IDs)
+        assert_eq!(
+            diff.edge_diffs.len(),
+            0,
+            "No edge changes expected when parent is reconciled by identity"
+        );
+    }
+
+    #[test]
+    fn test_edge_diff_filtering() {
+        // Test that --only filtering excludes edge diffs when deps not included
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("parent".to_string(), Some("1.0".to_string()));
+        let c2 = Component::new("child".to_string(), Some("1.0".to_string()));
+
+        let parent_id = c1.id.clone();
+        let child_id = c2.id.clone();
+
+        old.components.insert(c1.id.clone(), c1.clone());
+        old.components.insert(c2.id.clone(), c2.clone());
+
+        new.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        // New has an edge that old doesn't
+        new.dependencies
+            .entry(parent_id.clone())
+            .or_default()
+            .insert(child_id);
+
+        // Without filtering - should have edge diff
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.edge_diffs.len(), 1);
+
+        // With filtering to only Version - should NOT have edge diff
+        let diff_filtered = Differ::diff(&old, &new, Some(&[Field::Version]));
+        assert_eq!(diff_filtered.edge_diffs.len(), 0);
+
+        // With filtering to include Deps - should have edge diff
+        let diff_with_deps = Differ::diff(&old, &new, Some(&[Field::Deps]));
+        assert_eq!(diff_with_deps.edge_diffs.len(), 1);
     }
 }

@@ -19,12 +19,16 @@ sbom-diff old.json new.json -o markdown
 # filter for specific changes
 sbom-diff old.json new.json --only version,license
 
+# show only dependency edge changes
+sbom-diff old.json new.json --only deps
+
 # license gating (exit code 2 on violation)
 sbom-diff old.json new.json --deny-license gpl-3.0-only
 
 # block new dependencies or missing checksums (exit code 3)
 sbom-diff old.json new.json --fail-on added-components
 sbom-diff old.json new.json --fail-on missing-hashes
+sbom-diff old.json new.json --fail-on deps
 
 # summary only (counts without details)
 sbom-diff old.json new.json --summary

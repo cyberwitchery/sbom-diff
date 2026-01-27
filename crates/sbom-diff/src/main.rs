@@ -59,6 +59,8 @@ enum FailOn {
     MissingHashes,
     /// Fail if any components were added.
     AddedComponents,
+    /// Fail if any dependency edges changed.
+    Deps,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -68,6 +70,7 @@ pub enum Field {
     Supplier,
     Purl,
     Hashes,
+    Deps,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -99,6 +102,7 @@ fn main() -> anyhow::Result<()> {
             Field::Supplier => sbom_diff::Field::Supplier,
             Field::Purl => sbom_diff::Field::Purl,
             Field::Hashes => sbom_diff::Field::Hashes,
+            Field::Deps => sbom_diff::Field::Deps,
         })
         .collect();
 
@@ -196,6 +200,25 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                         );
                         violation = true;
                     }
+                }
+            }
+            FailOn::Deps => {
+                if !diff.edge_diffs.is_empty() {
+                    for edge in &diff.edge_diffs {
+                        for added in &edge.added {
+                            eprintln!(
+                                "error: added dependency edge {} -> {} (--fail-on deps)",
+                                edge.parent, added
+                            );
+                        }
+                        for removed in &edge.removed {
+                            eprintln!(
+                                "error: removed dependency edge {} -> {} (--fail-on deps)",
+                                edge.parent, removed
+                            );
+                        }
+                    }
+                    violation = true;
                 }
             }
         }
@@ -302,6 +325,7 @@ mod tests {
             added: vec![],
             removed: vec![],
             changed: vec![],
+            edge_diffs: vec![],
             metadata_changed: false,
         };
 
@@ -322,6 +346,7 @@ mod tests {
             added: vec![],
             removed: vec![],
             changed: vec![],
+            edge_diffs: vec![],
             metadata_changed: false,
         };
 
@@ -336,5 +361,31 @@ mod tests {
         // Added component with hashes - no violation
         diff.added[0].hashes.insert("sha256".into(), "abc".into());
         assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+    }
+
+    #[test]
+    fn test_check_fail_on_deps() {
+        use sbom_diff::{Diff, EdgeDiff};
+        use sbom_model::ComponentId;
+        use std::collections::BTreeSet;
+
+        let mut diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        // No edge changes - no violation
+        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
+
+        // With edge changes - violation
+        diff.edge_diffs.push(EdgeDiff {
+            parent: ComponentId::new(None, &[("name", "parent")]),
+            added: BTreeSet::from([ComponentId::new(None, &[("name", "child")])]),
+            removed: BTreeSet::new(),
+        });
+        assert!(check_fail_on(&diff, &[FailOn::Deps]));
     }
 }

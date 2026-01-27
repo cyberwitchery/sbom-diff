@@ -70,6 +70,21 @@ impl Renderer for TextRenderer {
                     }
                 }
             }
+            writeln!(writer)?;
+        }
+
+        if !diff.edge_diffs.is_empty() {
+            writeln!(writer, "[~] Edge Changes")?;
+            writeln!(writer, "----------------")?;
+            for edge in &diff.edge_diffs {
+                writeln!(writer, "{}", edge.parent)?;
+                for removed in &edge.removed {
+                    writeln!(writer, "  - {}", removed)?;
+                }
+                for added in &edge.added {
+                    writeln!(writer, "  + {}", added)?;
+                }
+            }
         }
 
         Ok(())
@@ -154,6 +169,33 @@ impl Renderer for MarkdownRenderer {
                 }
             }
             writeln!(writer, "</details>")?;
+            writeln!(writer)?;
+        }
+
+        if !diff.edge_diffs.is_empty() {
+            writeln!(
+                writer,
+                "<details><summary><b>Edge Changes ({})</b></summary>",
+                diff.edge_diffs.len()
+            )?;
+            writeln!(writer)?;
+            for edge in &diff.edge_diffs {
+                writeln!(writer, "#### `{}`", edge.parent)?;
+                if !edge.removed.is_empty() {
+                    writeln!(writer, "**Removed dependencies:**")?;
+                    for removed in &edge.removed {
+                        writeln!(writer, "- `{}`", removed)?;
+                    }
+                }
+                if !edge.added.is_empty() {
+                    writeln!(writer, "**Added dependencies:**")?;
+                    for added in &edge.added {
+                        writeln!(writer, "- `{}`", added)?;
+                    }
+                }
+                writeln!(writer)?;
+            }
+            writeln!(writer, "</details>")?;
         }
 
         Ok(())
@@ -192,6 +234,7 @@ mod tests {
                 new: c2,
                 changes: vec![FieldChange::Version("1.0".into(), "1.1".into())],
             }],
+            edge_diffs: vec![],
             metadata_changed: false,
         }
     }

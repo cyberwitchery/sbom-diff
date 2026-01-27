@@ -3,6 +3,9 @@
 ## [0.0.5] - 2026-01-27
 
 - improved purl reconciliation: components are now matched by ecosystem + name when purls differ or are absent, reporting version/purl changes instead of spurious add/remove pairs
+- added dependency edge diffing: diffs now include added/removed dependency edges between components
+- added `--only deps` to filter output to only dependency edge changes
+- added `--fail-on deps` to fail when any dependency edges change
 
 ## [0.0.4] - 2026-01-27
 
