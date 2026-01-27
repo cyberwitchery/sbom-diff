@@ -8,12 +8,13 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.4"
 edition = "2021"
 authors = ["cyber witchery labs"]
 license = "MIT"
 repository = "https://github.com/cyberwitchery/sbom-diff"
 homepage = "https://github.com/cyberwitchery/sbom-diff"
+documentation = "https://docs.rs/sbom-diff"
 categories = ["development-tools", "command-line-utilities"]
 keywords = ["sbom", "cyclonedx", "spdx", "diff"]
 

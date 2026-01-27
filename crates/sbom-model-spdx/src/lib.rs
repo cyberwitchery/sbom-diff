@@ -1,8 +1,8 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::{Component, ComponentId, Sbom};
+use sbom_model::{parse_license_expression, Component, ComponentId, Sbom};
 use spdx_rs::models::RelationshipType;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
@@ -87,7 +87,7 @@ impl SpdxReader {
                 supplier,
                 description: None, // pkg.description might not exist or be named differently. Safe fallback.
                 purl,
-                licenses: Vec::new(),
+                licenses: BTreeSet::new(),
                 hashes: BTreeMap::new(),
                 source_ids: vec![pkg.package_spdx_identifier.clone()],
             };
@@ -97,9 +97,9 @@ impl SpdxReader {
 
             // Licenses
             if let Some(l) = pkg.concluded_license {
-                // l is String or similar
-                if l.to_string() != "NOASSERTION" && l.to_string() != "NONE" {
-                    comp.licenses.push(l.to_string());
+                let l_str = l.to_string();
+                if l_str != "NOASSERTION" && l_str != "NONE" {
+                    comp.licenses.extend(parse_license_expression(&l_str));
                 }
             }
 

@@ -138,7 +138,7 @@ pub struct Component {
     /// Package URL per the [purl spec](https://github.com/package-url/purl-spec).
     pub purl: Option<String>,
     /// SPDX license identifiers (e.g., "MIT", "Apache-2.0").
-    pub licenses: Vec<String>,
+    pub licenses: BTreeSet<String>,
     /// Checksums keyed by algorithm (e.g., "sha256" -> "abc123...").
     pub hashes: BTreeMap<String, String>,
     /// Original identifiers from the source document (e.g., SPDX SPDXRef, CycloneDX bom-ref).
@@ -165,7 +165,7 @@ impl Component {
             supplier: None,
             description: None,
             purl: None,
-            licenses: Vec::new(),
+            licenses: BTreeSet::new(),
             hashes: BTreeMap::new(),
             source_ids: Vec::new(),
         }
@@ -289,17 +289,51 @@ impl Sbom {
 impl Component {
     /// Normalizes the component for deterministic comparison.
     ///
-    /// Sorts and deduplicates licenses, lowercases hash keys and values.
+    /// Lowercases hash keys and values. Licenses are stored as a BTreeSet
+    /// so they're already sorted and deduplicated.
     pub fn normalize(&mut self) {
-        self.licenses.sort();
-        self.licenses.dedup();
-
         let normalized_hashes: BTreeMap<String, String> = self
             .hashes
             .iter()
             .map(|(k, v)| (k.to_lowercase(), v.to_lowercase()))
             .collect();
         self.hashes = normalized_hashes;
+    }
+}
+
+/// Extracts individual license IDs from an SPDX expression.
+///
+/// Parses the expression and returns all license IDs found.
+/// If parsing fails, returns the original string as a single-element set.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::parse_license_expression;
+///
+/// let ids = parse_license_expression("MIT OR Apache-2.0");
+/// assert!(ids.contains("MIT"));
+/// assert!(ids.contains("Apache-2.0"));
+/// ```
+pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
+    match spdx::Expression::parse(license) {
+        Ok(expr) => {
+            let ids: BTreeSet<String> = expr
+                .requirements()
+                .filter_map(|r| r.req.license.id())
+                .map(|id| id.name.to_string())
+                .collect();
+            if ids.is_empty() {
+                // Expression parsed but no IDs found, keep original
+                BTreeSet::from([license.to_string()])
+            } else {
+                ids
+            }
+        }
+        Err(_) => {
+            // Not a valid SPDX expression, keep original
+            BTreeSet::from([license.to_string()])
+        }
     }
 }
 
@@ -326,15 +360,54 @@ mod tests {
     #[test]
     fn test_normalization() {
         let mut comp = Component::new("test".to_string(), Some("1.0".to_string()));
-        comp.licenses.push("MIT".to_string());
-        comp.licenses.push("MIT".to_string());
-        comp.licenses.push("Apache-2.0".to_string());
+        comp.licenses.insert("MIT".to_string());
+        comp.licenses.insert("Apache-2.0".to_string());
         comp.hashes.insert("SHA-256".to_string(), "ABC".to_string());
 
         comp.normalize();
 
-        assert_eq!(comp.licenses, vec!["Apache-2.0", "MIT"]);
+        // BTreeSet is already sorted and deduped
+        assert_eq!(
+            comp.licenses,
+            BTreeSet::from(["Apache-2.0".to_string(), "MIT".to_string()])
+        );
         assert_eq!(comp.hashes.get("sha-256").unwrap(), "abc");
+    }
+
+    #[test]
+    fn test_parse_license_expression() {
+        // OR expression extracts both IDs
+        let ids = parse_license_expression("MIT OR Apache-2.0");
+        assert!(ids.contains("MIT"));
+        assert!(ids.contains("Apache-2.0"));
+        assert_eq!(ids.len(), 2);
+
+        // Single license
+        let ids = parse_license_expression("MIT");
+        assert_eq!(ids, BTreeSet::from(["MIT".to_string()]));
+
+        // AND expression extracts both IDs
+        let ids = parse_license_expression("MIT AND Apache-2.0");
+        assert!(ids.contains("MIT"));
+        assert!(ids.contains("Apache-2.0"));
+
+        // Invalid expression kept as-is
+        let ids = parse_license_expression("Custom License");
+        assert_eq!(ids, BTreeSet::from(["Custom License".to_string()]));
+    }
+
+    #[test]
+    fn test_license_set_equality() {
+        // Two components with same licenses in different order are equal
+        let mut c1 = Component::new("test".into(), None);
+        c1.licenses.insert("MIT".into());
+        c1.licenses.insert("Apache-2.0".into());
+
+        let mut c2 = Component::new("test".into(), None);
+        c2.licenses.insert("Apache-2.0".into());
+        c2.licenses.insert("MIT".into());
+
+        assert_eq!(c1.licenses, c2.licenses);
     }
 
     #[test]

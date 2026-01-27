@@ -11,8 +11,8 @@ use sbom_model::{Sbom, Component, ComponentId};
 
 // create a component
 let mut component = Component::new("serde".into(), Some("1.0.0".into()));
-component.licenses.push("MIT".into());
-component.licenses.push("Apache-2.0".into());
+component.licenses.insert("MIT".into());
+component.licenses.insert("Apache-2.0".into());
 
 // create an sbom and add the component
 let mut sbom = Sbom::default();
@@ -70,7 +70,6 @@ fn example(sbom: &Sbom) {
 `sbom.normalize()` prepares an sbom for deterministic comparison:
 
 - sorts components by id
-- deduplicates and sorts licenses
 - lowercases hash algorithms and values
 - strips volatile metadata (timestamps, tool versions)
 

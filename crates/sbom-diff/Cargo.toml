@@ -1,15 +1,18 @@
 [package]
 name = "sbom-diff"
-version = "0.0.3"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/sbom-diff"
 description = "diff engine and cli for sbom comparison"
 readme = "readme.md"
 
 [dependencies]
-sbom-model = { path = "../sbom-model", version = "0.0.3" }
-sbom-model-cyclonedx = { path = "../sbom-model-cyclonedx", version = "0.0.3" }
-sbom-model-spdx = { path = "../sbom-model-spdx", version = "0.0.3" }
+sbom-model = { path = "../sbom-model", version = "0.0.4" }
+sbom-model-cyclonedx = { path = "../sbom-model-cyclonedx", version = "0.0.4" }
+sbom-model-spdx = { path = "../sbom-model-spdx", version = "0.0.4" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

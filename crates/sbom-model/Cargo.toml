@@ -1,8 +1,11 @@
 [package]
 name = "sbom-model"
-version = "0.0.3"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/sbom-model"
 description = "core format-agnostic sbom model and query api"
 readme = "readme.md"
 
@@ -13,3 +16,4 @@ thiserror = { workspace = true }
 packageurl = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+spdx = { workspace = true }

@@ -1,6 +1,6 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::{Component, ComponentId, Sbom};
+use sbom_model::{parse_license_expression, Component, ComponentId, Sbom};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
@@ -115,7 +115,7 @@ impl CycloneDxReader {
                     supplier,
                     description: cdx_comp.description.as_ref().map(|d| d.to_string()),
                     purl,
-                    licenses: Vec::new(),
+                    licenses: BTreeSet::new(),
                     hashes: BTreeMap::new(),
                     source_ids: Vec::new(),
                 };
@@ -137,10 +137,11 @@ impl CycloneDxReader {
                                         id,
                                     ) => id.to_string(),
                                 };
-                                comp.licenses.push(s);
+                                comp.licenses.insert(s);
                             }
                             cyclonedx_bom::models::license::LicenseChoice::Expression(e) => {
-                                comp.licenses.push(e.to_string());
+                                comp.licenses
+                                    .extend(parse_license_expression(&e.to_string()));
                             }
                         }
                     }

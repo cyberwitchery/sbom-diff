@@ -2,7 +2,7 @@
 
 use sbom_model::{Component, ComponentId, Sbom};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub mod renderer;
 
@@ -40,7 +40,7 @@ pub enum FieldChange {
     /// Version changed: (old, new).
     Version(String, String),
     /// Licenses changed: (old, new).
-    License(Vec<String>, Vec<String>),
+    License(BTreeSet<String>, BTreeSet<String>),
     /// Supplier changed: (old, new).
     Supplier(Option<String>, Option<String>),
     /// Package URL changed: (old, new).
@@ -291,11 +291,11 @@ mod tests {
         let mut new = Sbom::default();
 
         let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.licenses.push("MIT".into());
+        c1.licenses.insert("MIT".into());
 
         let mut c2 = c1.clone();
         c2.version = Some("1.1".to_string());
-        c2.licenses = vec!["Apache-2.0".into()];
+        c2.licenses = BTreeSet::from(["Apache-2.0".into()]);
 
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);

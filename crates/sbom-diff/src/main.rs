@@ -38,6 +38,27 @@ struct Args {
     /// only report changes in these fields
     #[arg(long, value_enum, value_delimiter = ',')]
     only: Vec<Field>,
+
+    /// fail on specific conditions (repeatable)
+    #[arg(long, value_enum)]
+    fail_on: Vec<FailOn>,
+
+    /// print only summary counts (no component details)
+    #[arg(long)]
+    summary: bool,
+
+    /// suppress all output except errors
+    #[arg(short, long)]
+    quiet: bool,
+}
+
+/// Conditions that trigger a non-zero exit code.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum FailOn {
+    /// Fail if any added component lacks checksums.
+    MissingHashes,
+    /// Fail if any components were added.
+    AddedComponents,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -92,18 +113,29 @@ fn main() -> anyhow::Result<()> {
     );
 
     let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
+    let fail_on_violation = check_fail_on(&diff, &args.fail_on);
 
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
+    if !args.quiet {
+        let stdout = io::stdout();
+        let mut handle = stdout.lock();
 
-    match args.output {
-        Output::Text => TextRenderer.render(&diff, &mut handle)?,
-        Output::Markdown => MarkdownRenderer.render(&diff, &mut handle)?,
-        Output::Json => JsonRenderer.render(&diff, &mut handle)?,
+        if args.summary {
+            render_summary(&diff, &mut handle)?;
+        } else {
+            match args.output {
+                Output::Text => TextRenderer.render(&diff, &mut handle)?,
+                Output::Markdown => MarkdownRenderer.render(&diff, &mut handle)?,
+                Output::Json => JsonRenderer.render(&diff, &mut handle)?,
+            }
+        }
     }
 
     if license_violation {
         std::process::exit(2);
+    }
+
+    if fail_on_violation {
+        std::process::exit(3);
     }
 
     Ok(())
@@ -129,6 +161,46 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
             }
         }
     }
+    violation
+}
+
+fn render_summary(diff: &sbom_diff::Diff, out: &mut impl io::Write) -> io::Result<()> {
+    writeln!(out, "Added:   {}", diff.added.len())?;
+    writeln!(out, "Removed: {}", diff.removed.len())?;
+    writeln!(out, "Changed: {}", diff.changed.len())?;
+    Ok(())
+}
+
+fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
+    let mut violation = false;
+
+    for condition in fail_on {
+        match condition {
+            FailOn::AddedComponents => {
+                if !diff.added.is_empty() {
+                    for comp in &diff.added {
+                        eprintln!(
+                            "error: added component {} (--fail-on added-components)",
+                            comp.id
+                        );
+                    }
+                    violation = true;
+                }
+            }
+            FailOn::MissingHashes => {
+                for comp in &diff.added {
+                    if comp.hashes.is_empty() {
+                        eprintln!(
+                            "error: added component {} has no hashes (--fail-on missing-hashes)",
+                            comp.id
+                        );
+                        violation = true;
+                    }
+                }
+            }
+        }
+    }
+
     violation
 }
 
@@ -169,13 +241,38 @@ mod tests {
     fn test_check_licenses() {
         let mut sbom = Sbom::default();
         let mut c = Component::new("a".into(), Some("1".into()));
-        c.licenses.push("gpl-3.0".into());
+        c.licenses.insert("GPL-3.0-only".into());
         sbom.components.insert(c.id.clone(), c);
 
-        assert!(check_licenses(&sbom, &["gpl-3.0".into()], &[]));
-        assert!(!check_licenses(&sbom, &["mit".into()], &[]));
-        assert!(check_licenses(&sbom, &[], &["mit".into()]));
-        assert!(!check_licenses(&sbom, &[], &["gpl-3.0".into()]));
+        // Exact match
+        assert!(check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
+        // No match
+        assert!(!check_licenses(&sbom, &["MIT".into()], &[]));
+        // Not in allow list
+        assert!(check_licenses(&sbom, &[], &["MIT".into()]));
+        // In allow list
+        assert!(!check_licenses(&sbom, &[], &["GPL-3.0-only".into()]));
+    }
+
+    #[test]
+    fn test_check_licenses_multiple() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        // Two separate licenses in the set
+        c.licenses.insert("MIT".into());
+        c.licenses.insert("Apache-2.0".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        // Either license triggers deny
+        assert!(check_licenses(&sbom, &["MIT".into()], &[]));
+        assert!(check_licenses(&sbom, &["Apache-2.0".into()], &[]));
+        // Both must be in allow list
+        assert!(check_licenses(&sbom, &[], &["MIT".into()])); // Apache-2.0 not allowed
+        assert!(!check_licenses(
+            &sbom,
+            &[],
+            &["MIT".into(), "Apache-2.0".into()]
+        ));
     }
 
     #[test]
@@ -191,14 +288,53 @@ mod tests {
     }
 
     #[test]
-
     fn test_load_sbom_auto_spdx() {
-        // use existing fixture
-
         let path = "../../tests/fixtures/old.spdx.json";
-
         let sbom = load_sbom(path, Format::Auto).unwrap();
-
         assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_check_fail_on_added_components() {
+        use sbom_diff::Diff;
+
+        let mut diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            metadata_changed: false,
+        };
+
+        // No added components - no violation
+        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
+
+        // With added component - violation
+        diff.added
+            .push(Component::new("new-pkg".into(), Some("1.0".into())));
+        assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
+    }
+
+    #[test]
+    fn test_check_fail_on_missing_hashes() {
+        use sbom_diff::Diff;
+
+        let mut diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            metadata_changed: false,
+        };
+
+        // No added components - no violation
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+
+        // Added component without hashes - violation
+        diff.added
+            .push(Component::new("new-pkg".into(), Some("1.0".into())));
+        assert!(check_fail_on(&diff, &[FailOn::MissingHashes]));
+
+        // Added component with hashes - no violation
+        diff.added[0].hashes.insert("sha256".into(), "abc".into());
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
     }
 }
