@@ -281,10 +281,18 @@ mod tests {
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
 
-        let lodash = sbom.components.values().find(|c| c.name == "lodash").unwrap();
+        let lodash = sbom
+            .components
+            .values()
+            .find(|c| c.name == "lodash")
+            .unwrap();
         assert_eq!(lodash.ecosystem, Some("npm".to_string()));
 
-        let serde = sbom.components.values().find(|c| c.name == "serde").unwrap();
+        let serde = sbom
+            .components
+            .values()
+            .find(|c| c.name == "serde")
+            .unwrap();
         assert_eq!(serde.ecosystem, Some("cargo".to_string()));
 
         let no_purl = sbom

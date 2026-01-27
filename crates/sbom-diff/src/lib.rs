@@ -366,7 +366,9 @@ mod tests {
 
         // Should include both Version and Purl changes
         let changes = &diff.changed[0].changes;
-        assert!(changes.iter().any(|c| matches!(c, FieldChange::Version(_, _))));
+        assert!(changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Version(_, _))));
         assert!(changes.iter().any(|c| matches!(c, FieldChange::Purl(_, _))));
     }
 
@@ -386,7 +388,7 @@ mod tests {
         let mut c_new = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
         c_new.purl = None;
         c_new.ecosystem = None; // No purl means no ecosystem extraction
-        // ID will be hash-based since no purl
+                                // ID will be hash-based since no purl
         c_new.id = ComponentId::new(None, &[("name", "lodash"), ("version", "4.17.21")]);
 
         old.components.insert(c_old.id.clone(), c_old);
@@ -458,7 +460,11 @@ mod tests {
         // Should be separate add/remove, NOT a change
         assert_eq!(diff.added.len(), 1, "pypi/utils should be added");
         assert_eq!(diff.removed.len(), 1, "npm/utils should be removed");
-        assert_eq!(diff.changed.len(), 0, "Should not match different ecosystems");
+        assert_eq!(
+            diff.changed.len(),
+            0,
+            "Should not match different ecosystems"
+        );
     }
 
     #[test]

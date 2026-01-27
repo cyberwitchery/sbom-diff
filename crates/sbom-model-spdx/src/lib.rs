@@ -258,7 +258,11 @@ mod tests {
         }"#;
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
 
-        let lodash = sbom.components.values().find(|c| c.name == "lodash").unwrap();
+        let lodash = sbom
+            .components
+            .values()
+            .find(|c| c.name == "lodash")
+            .unwrap();
         assert_eq!(lodash.ecosystem, Some("npm".to_string()));
 
         let no_purl = sbom
