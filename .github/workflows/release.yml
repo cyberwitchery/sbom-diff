@@ -44,24 +44,29 @@ jobs:
           tool: cargo-cyclonedx,sbom-diff
 
       - name: generate sbom
-        run: cargo cyclonedx --format json --output-file sbom.cdx.json --workspace --all-features
+        run: |
+          for manifest in crates/*/Cargo.toml; do
+            cargo cyclonedx --manifest-path "$manifest" --format json --override-filename "sbom-${{ github.ref_name }}.cdx" --all-features
+          done
 
       - name: upload sbom
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ github.ref_name }}
-          path: sbom.cdx.json
+          path: "crates/**/sbom-${{ github.ref_name }}.cdx.json"
 
       - name: diff against previous release
         run: |
+          current_sbom="crates/sbom-diff/sbom-${{ github.ref_name }}.cdx.json"
           prev_tag=$(git tag --sort=-v:refname | sed -n '2p')
           if [ -z "$prev_tag" ]; then
             echo "no previous release tag found, skipping diff"
             exit 0
           fi
           git worktree add /tmp/last-release "$prev_tag"
-          (cd /tmp/last-release && cargo cyclonedx --format json --output-file /tmp/sbom-prev.cdx.json --workspace --all-features)
-          sbom-diff /tmp/sbom-prev.cdx.json sbom.cdx.json
+          (cd /tmp/last-release && cargo cyclonedx --manifest-path crates/sbom-diff/Cargo.toml --format json --override-filename sbom-prev.cdx --all-features)
+          mv /tmp/last-release/crates/sbom-diff/sbom-prev.cdx.json /tmp/sbom-prev.cdx.json
+          sbom-diff /tmp/sbom-prev.cdx.json "$current_sbom"
 
       - name: publish sbom-model
         env:
