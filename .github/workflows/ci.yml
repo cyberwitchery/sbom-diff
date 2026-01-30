@@ -77,9 +77,34 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 80
 
+  sbom-diff:
+    name: sbom-diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx,sbom-diff
+      - name: generate current sbom
+        run: cargo cyclonedx --format json --output-file sbom-head.cdx.json --workspace --all-features
+      - name: diff against last release
+        run: |
+          tag=$(git tag --sort=-v:refname | head -1)
+          if [ -z "$tag" ]; then
+            echo "no release tag found, skipping diff"
+            exit 0
+          fi
+          git worktree add /tmp/last-release "$tag"
+          (cd /tmp/last-release && cargo cyclonedx --format json --output-file /tmp/sbom-release.cdx.json --workspace --all-features)
+          sbom-diff /tmp/sbom-release.cdx.json sbom-head.cdx.json --fail-on added-components
+
   success:
     name: success
-    needs: [fmt, clippy, test, doc, deny, coverage]
+    needs: [fmt, clippy, test, doc, deny, coverage, sbom-diff]
     runs-on: ubuntu-latest
     if: always()
     steps:

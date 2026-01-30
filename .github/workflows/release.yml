@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
@@ -36,10 +38,10 @@ jobs:
       - name: run tests
         run: cargo test
 
-      - name: install sbom tool
+      - name: install sbom tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-cyclonedx
+          tool: cargo-cyclonedx,sbom-diff
 
       - name: generate sbom
         run: cargo cyclonedx --format json --output-file sbom.cdx.json --workspace --all-features
@@ -49,6 +51,17 @@ jobs:
         with:
           name: sbom-${{ github.ref_name }}
           path: sbom.cdx.json
+
+      - name: diff against previous release
+        run: |
+          prev_tag=$(git tag --sort=-v:refname | sed -n '2p')
+          if [ -z "$prev_tag" ]; then
+            echo "no previous release tag found, skipping diff"
+            exit 0
+          fi
+          git worktree add /tmp/last-release "$prev_tag"
+          (cd /tmp/last-release && cargo cyclonedx --format json --output-file /tmp/sbom-prev.cdx.json --workspace --all-features)
+          sbom-diff /tmp/sbom-prev.cdx.json sbom.cdx.json
 
       - name: publish sbom-model
         env:
