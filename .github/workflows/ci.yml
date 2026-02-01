@@ -90,7 +90,11 @@ jobs:
         with:
           tool: cargo-cyclonedx,sbom-diff
       - name: generate current sbom
-        run: cargo cyclonedx --manifest-path crates/sbom-diff/Cargo.toml --format json --override-filename sbom-head.cdx --all-features
+        run: |
+          (cd /tmp && cargo cyclonedx --manifest-path "$GITHUB_WORKSPACE/crates/sbom-diff/Cargo.toml" \
+            --format json \
+            --override-filename sbom-head.cdx \
+            --all-features)
       - name: diff against last release
         run: |
           tag=$(git tag --sort=-v:refname | head -1)
@@ -99,9 +103,11 @@ jobs:
             exit 0
           fi
           git worktree add /tmp/last-release "$tag"
-          (cd /tmp/last-release && cargo cyclonedx --manifest-path crates/sbom-diff/Cargo.toml --format json --override-filename sbom-release.cdx --all-features)
-          mv /tmp/last-release/crates/sbom-diff/sbom-release.cdx.json /tmp/sbom-release.cdx.json
-          sbom-diff /tmp/sbom-release.cdx.json crates/sbom-diff/sbom-head.cdx.json --fail-on added-components
+          (cd /tmp && cargo cyclonedx --manifest-path /tmp/last-release/crates/sbom-diff/Cargo.toml \
+            --format json \
+            --override-filename sbom-release.cdx \
+            --all-features)
+          sbom-diff /tmp/sbom-release.cdx.json /tmp/sbom-head.cdx.json --fail-on added-components
 
   success:
     name: success
