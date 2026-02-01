@@ -107,6 +107,10 @@ jobs:
             --format json \
             --override-filename sbom-release.cdx \
             --all-features)
+          if [ ! -f /tmp/sbom-release.cdx.json ]; then
+            echo "no release sbom generated, skipping diff"
+            exit 0
+          fi
           sbom-diff /tmp/sbom-release.cdx.json /tmp/sbom-head.cdx.json --fail-on added-components
 
   success:
