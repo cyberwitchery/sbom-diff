@@ -92,6 +92,10 @@ cargo install sbom-diff
 - json only (no xml support)
 - read-only (no sbom generation or modification)
 
+## docs
+
+- [format mapping notes](docs/format-notes.md): cyclonedx/spdx field mapping into the core model
+
 ## crate structure
 
 this project is a cargo workspace with four crates:
