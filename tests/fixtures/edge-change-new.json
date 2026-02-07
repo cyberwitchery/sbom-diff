@@ -1,0 +1,31 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "parent",
+      "version": "1.0.0",
+      "bom-ref": "parent-ref"
+    },
+    {
+      "type": "library",
+      "name": "child-a",
+      "version": "1.0.0",
+      "bom-ref": "child-a-ref"
+    },
+    {
+      "type": "library",
+      "name": "child-b",
+      "version": "1.0.0",
+      "bom-ref": "child-b-ref"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "parent-ref",
+      "dependsOn": ["child-b-ref"]
+    }
+  ]
+}
