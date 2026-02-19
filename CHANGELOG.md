@@ -2,6 +2,9 @@
 
 ## unreleased
 
+## [0.0.6] - 2026-02-19
+
+- fix CycloneDX tool metadata parsing, which was silently dropped since `cyclonedx-bom` 0.6 changed `Tools` from a newtype to an enum; both the legacy 1.4 list format and the 1.5+ object format are now handled
 - add release SBOM generation and upload (CycloneDX)
 
 ## [0.0.5] - 2026-01-27
@@ -33,7 +36,8 @@
 
 initial release
 
-[unreleased]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.5...HEAD
+[unreleased]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.2...v0.0.3

@@ -51,18 +51,37 @@ impl CycloneDxReader {
             if let Some(timestamp) = meta.timestamp {
                 sbom.metadata.timestamp = Some(timestamp.to_string());
             }
-            // TODO: Fix Tools API access (changed in 0.6)
-            /*
             if let Some(tools) = meta.tools {
-                 for tool in tools.0 {
-                    let mut s = String::new();
-                     if let Some(v) = &tool.vendor { s.push_str(&v.to_string()); s.push(' '); }
-                     if let Some(n) = &tool.name { s.push_str(&n.to_string()); }
-                     if let Some(v) = &tool.version { s.push(' '); s.push_str(&v.to_string()); }
-                     sbom.metadata.tools.push(s.trim().to_string());
-                 }
+                match tools {
+                    cyclonedx_bom::models::tool::Tools::List(list) => {
+                        for tool in list {
+                            let mut s = String::new();
+                            if let Some(v) = &tool.vendor {
+                                s.push_str(&v.to_string());
+                                s.push(' ');
+                            }
+                            if let Some(n) = &tool.name {
+                                s.push_str(&n.to_string());
+                            }
+                            if let Some(v) = &tool.version {
+                                s.push(' ');
+                                s.push_str(&v.to_string());
+                            }
+                            sbom.metadata.tools.push(s.trim().to_string());
+                        }
+                    }
+                    cyclonedx_bom::models::tool::Tools::Object { components, .. } => {
+                        for component in components.0 {
+                            let mut s = component.name.to_string();
+                            if let Some(v) = &component.version {
+                                s.push(' ');
+                                s.push_str(&v.to_string());
+                            }
+                            sbom.metadata.tools.push(s);
+                        }
+                    }
+                }
             }
-            */
             if let Some(authors) = meta.authors {
                 for author in authors {
                     let mut s = String::new();
@@ -195,6 +214,48 @@ impl CycloneDxReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_tools_list_parsed() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "tools": [
+                    {"vendor": "CycloneDX", "name": "cargo-cyclonedx", "version": "0.5.0"},
+                    {"name": "syft"}
+                ]
+            },
+            "components": []
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(
+            sbom.metadata.tools,
+            vec!["CycloneDX cargo-cyclonedx 0.5.0", "syft"]
+        );
+    }
+
+    #[test]
+    fn test_tools_object_parsed() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "metadata": {
+                "tools": {
+                    "components": [
+                        {"type": "application", "name": "cargo-cyclonedx", "version": "0.5.0"},
+                        {"type": "application", "name": "syft"}
+                    ],
+                    "services": []
+                }
+            },
+            "components": []
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.metadata.tools, vec!["cargo-cyclonedx 0.5.0", "syft"]);
+    }
 
     #[test]
     fn test_read_minimal_json() {
