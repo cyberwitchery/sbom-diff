@@ -83,11 +83,12 @@ jobs:
             exit 0
           fi
           git worktree add /tmp/last-release "$prev_tag"
-          (cd /tmp && cargo cyclonedx --manifest-path /tmp/last-release/crates/sbom-diff/Cargo.toml \
+          cargo cyclonedx --manifest-path /tmp/last-release/crates/sbom-diff/Cargo.toml \
             --format json \
             --override-filename sbom-prev.cdx \
-            --all-features)
-          sbom-diff /tmp/sbom-prev.cdx.json "$current_sbom"
+            --all-features
+          prev_sbom=$(find /tmp/last-release -name "sbom-prev.cdx.json" | head -1)
+          sbom-diff "$prev_sbom" "$current_sbom"
 
       - name: publish sbom-model
         env:
