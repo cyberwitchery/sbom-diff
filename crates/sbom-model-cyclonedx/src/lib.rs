@@ -57,15 +57,15 @@ impl CycloneDxReader {
                         for tool in list {
                             let mut s = String::new();
                             if let Some(v) = &tool.vendor {
-                                s.push_str(&v.to_string());
+                                s.push_str(v.as_ref());
                                 s.push(' ');
                             }
                             if let Some(n) = &tool.name {
-                                s.push_str(&n.to_string());
+                                s.push_str(n.as_ref());
                             }
                             if let Some(v) = &tool.version {
                                 s.push(' ');
-                                s.push_str(&v.to_string());
+                                s.push_str(v.as_ref());
                             }
                             sbom.metadata.tools.push(s.trim().to_string());
                         }
@@ -75,7 +75,7 @@ impl CycloneDxReader {
                             let mut s = component.name.to_string();
                             if let Some(v) = &component.version {
                                 s.push(' ');
-                                s.push_str(&v.to_string());
+                                s.push_str(v.as_ref());
                             }
                             sbom.metadata.tools.push(s);
                         }
