@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
     env:
       RUSTFLAGS: "-C debuginfo=0"
       CARGO_TARGET_DIR: target/ci
@@ -53,15 +53,30 @@ jobs:
               --all-features)
           done
 
+      - name: collect sbom files
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sbom-diff-sbom
+          find /tmp -maxdepth 1 -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+            -exec mv {} /tmp/sbom-diff-sbom/ \;
+          find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+            -exec mv {} /tmp/sbom-diff-sbom/ \;
+
       - name: upload sbom
         uses: actions/upload-artifact@v4
         with:
           name: sbom-${{ github.ref_name }}
-          path: "/tmp/sbom-${{ github.ref_name }}-*.cdx.json"
+          path: "/tmp/sbom-diff-sbom/sbom-${{ github.ref_name }}-*.cdx.json"
+          if-no-files-found: error
+
+      - name: attach sbom to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: /tmp/sbom-diff-sbom/sbom-${{ github.ref_name }}-*.cdx.json
 
       - name: diff against previous release
         run: |
-          current_sbom="/tmp/sbom-${{ github.ref_name }}-sbom-diff.cdx.json"
+          current_sbom="/tmp/sbom-diff-sbom/sbom-${{ github.ref_name }}-sbom-diff.cdx.json"
           prev_tag=$(git tag --sort=-v:refname | sed -n '2p')
           if [ -z "$prev_tag" ]; then
             echo "no previous release tag found, skipping diff"
