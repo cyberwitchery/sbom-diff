@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.4" version="1">
+  <components>
+    <component type="library" bom-ref="pkg-a">
+      <name>pkg-a</name>
+      <version>1.1.0</version>
+      <purl>pkg:npm/pkg-a@1.1.0</purl>
+    </component>
+    <component type="library" bom-ref="pkg-c">
+      <name>pkg-c</name>
+      <version>1.0.0</version>
+      <purl>pkg:npm/pkg-c@1.0.0</purl>
+    </component>
+    <component type="library" bom-ref="parent-new">
+      <name>parent</name>
+      <version>1.1.0</version>
+      <purl>pkg:npm/parent@1.1.0</purl>
+    </component>
+    <component type="library" bom-ref="child-a">
+      <name>child-a</name>
+      <version>1.0.0</version>
+      <purl>pkg:npm/child-a@1.0.0</purl>
+    </component>
+    <component type="library" bom-ref="child-b">
+      <name>child-b</name>
+      <version>1.0.0</version>
+      <purl>pkg:npm/child-b@1.0.0</purl>
+    </component>
+  </components>
+  <dependencies>
+    <dependency ref="parent-new">
+      <dependency ref="child-b"/>
+    </dependency>
+  </dependencies>
+</bom>

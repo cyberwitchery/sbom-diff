@@ -15,6 +15,8 @@ both adapters produce:
 ## cyclonedx -> model
 
 - parser: `sbom-model-cyclonedx` using `cyclonedx-bom`
+- input formats: json and xml (1.3, 1.4, 1.5)
+- xml version detection: tries 1.5, 1.4, 1.3 in order; first successful parse wins
 - purl extraction:
   - source: `component.purl`
   - target: `Component.purl`
@@ -70,5 +72,5 @@ both adapters produce:
 
 ## notes
 
-- both adapters are json-only in this repository.
+- the cyclonedx adapter supports both json and xml; the spdx adapter is json-only.
 - both adapters may leave some source-specific fields unmapped if no stable equivalent exists in the core model.

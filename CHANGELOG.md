@@ -2,6 +2,11 @@
 
 ## unreleased
 
+## [0.1.0] - 2026-04-08
+
+- add CycloneDX XML support (1.3, 1.4, 1.5); new `--format cyclonedx-xml` flag and auto-detection
+- add `CycloneDxReader::read_xml` to the `sbom-model-cyclonedx` crate
+
 ## [0.0.6] - 2026-02-19
 
 - fix CycloneDX tool metadata parsing, which was silently dropped since `cyclonedx-bom` 0.6 changed `Tools` from a newtype to an enum; both the legacy 1.4 list format and the 1.5+ object format are now handled
@@ -36,7 +41,8 @@
 
 initial release
 
-[unreleased]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.6...HEAD
+[unreleased]: https://github.com/cyberwitchery/sbom-diff/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.6...v0.1.0
 [0.0.6]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.3...v0.0.4

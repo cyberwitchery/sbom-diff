@@ -239,6 +239,54 @@ mod tests {
         }
     }
 
+    fn mock_diff_all_field_changes() -> Diff {
+        use sbom_model::ComponentId;
+        use std::collections::BTreeSet;
+
+        let c1 = Component::new("pkg-a".into(), Some("1.0".into()));
+        let mut c2 = c1.clone();
+        c2.version = Some("1.1".into());
+
+        Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![ComponentChange {
+                id: c2.id.clone(),
+                old: c1,
+                new: c2,
+                changes: vec![
+                    FieldChange::Version("1.0".into(), "1.1".into()),
+                    FieldChange::License(
+                        BTreeSet::from(["MIT".into()]),
+                        BTreeSet::from(["Apache-2.0".into()]),
+                    ),
+                    FieldChange::Supplier(Some("Old Corp".into()), Some("New Corp".into())),
+                    FieldChange::Purl(
+                        Some("pkg:npm/pkg-a@1.0".into()),
+                        Some("pkg:npm/pkg-a@1.1".into()),
+                    ),
+                    FieldChange::Hashes,
+                ],
+            }],
+            edge_diffs: vec![crate::EdgeDiff {
+                parent: ComponentId::new(None, &[("name", "parent")]),
+                added: BTreeSet::from([ComponentId::new(None, &[("name", "child-b")])]),
+                removed: BTreeSet::from([ComponentId::new(None, &[("name", "child-a")])]),
+            }],
+            metadata_changed: false,
+        }
+    }
+
+    fn mock_diff_empty() -> Diff {
+        Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        }
+    }
+
     #[test]
     fn test_text_renderer() {
         let diff = mock_diff();
@@ -252,6 +300,40 @@ mod tests {
     }
 
     #[test]
+    fn test_text_renderer_all_field_changes() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        TextRenderer.render(&diff, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Version: 1.0 -> 1.1"));
+        assert!(out.contains("License:"));
+        assert!(out.contains("MIT"));
+        assert!(out.contains("Apache-2.0"));
+        assert!(out.contains("Supplier:"));
+        assert!(out.contains("Old Corp"));
+        assert!(out.contains("New Corp"));
+        assert!(out.contains("Purl:"));
+        assert!(out.contains("Hashes: changed"));
+        assert!(out.contains("[~] Edge Changes"));
+    }
+
+    #[test]
+    fn test_text_renderer_empty_diff() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        TextRenderer.render(&diff, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Added:   0"));
+        assert!(out.contains("Removed: 0"));
+        assert!(out.contains("Changed: 0"));
+        assert!(!out.contains("[+] Added"));
+        assert!(!out.contains("[-] Removed"));
+        assert!(!out.contains("[~] Changed"));
+    }
+
+    #[test]
     fn test_markdown_renderer() {
         let diff = mock_diff();
         let mut buf = Vec::new();
@@ -262,10 +344,62 @@ mod tests {
     }
 
     #[test]
+    fn test_markdown_renderer_all_field_changes() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        MarkdownRenderer.render(&diff, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("**Version**"));
+        assert!(out.contains("**License**"));
+        assert!(out.contains("**Supplier**"));
+        assert!(out.contains("**Purl**"));
+        assert!(out.contains("**Hashes**: changed"));
+        assert!(out.contains("Edge Changes"));
+        assert!(out.contains("**Removed dependencies:**"));
+        assert!(out.contains("**Added dependencies:**"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_empty_diff() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        MarkdownRenderer.render(&diff, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("| Added | 0 |"));
+        assert!(!out.contains("<details>"));
+    }
+
+    #[test]
     fn test_json_renderer() {
         let diff = mock_diff();
         let mut buf = Vec::new();
         JsonRenderer.render(&diff, &mut buf).unwrap();
         let _: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+    }
+
+    #[test]
+    fn test_json_renderer_all_field_changes() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        JsonRenderer.render(&diff, &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["changed"].as_array().unwrap().len(), 1);
+        assert_eq!(val["changed"][0]["changes"].as_array().unwrap().len(), 5);
+        assert_eq!(val["edge_diffs"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_json_renderer_roundtrip() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        JsonRenderer.render(&diff, &mut buf).unwrap();
+
+        let deserialized: Diff = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(deserialized.changed.len(), diff.changed.len());
+        assert_eq!(deserialized.edge_diffs.len(), diff.edge_diffs.len());
+        assert_eq!(deserialized.changed[0].changes, diff.changed[0].changes);
     }
 }

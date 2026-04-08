@@ -2,7 +2,7 @@
 
 cyclonedx adapter for [`sbom-model`](https://docs.rs/sbom-model).
 
-parses [cyclonedx](https://cyclonedx.org/) json documents into the format-agnostic `Sbom` type.
+parses [cyclonedx](https://cyclonedx.org/) json and xml documents into the format-agnostic `Sbom` type.
 
 ## usage
 
@@ -33,11 +33,20 @@ assert_eq!(sbom.components[0].name, "serde");
 
 ## supported features
 
-- cyclonedx 1.4+ json format (xml not supported)
+- cyclonedx 1.3/1.4/1.5 json and xml formats
 - components with name, version, purl, licenses, hashes
 - supplier information
 - bom-ref based dependency graph
 - metadata (timestamps, authors)
+
+### xml
+
+```rust,no_run
+use sbom_model_cyclonedx::CycloneDxReader;
+
+let xml = std::fs::read("sbom.xml").unwrap();
+let sbom = CycloneDxReader::read_xml(&xml).unwrap();
+```
 
 ## error handling
 

@@ -408,6 +408,124 @@ mod tests {
     }
 
     #[test]
+    fn test_diff_license_change() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.licenses.insert("MIT".into());
+        let mut c2 = c1.clone();
+        c2.licenses = BTreeSet::from(["Apache-2.0".into()]);
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::License(_, _))));
+    }
+
+    #[test]
+    fn test_diff_supplier_change() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.supplier = Some("Acme Corp".into());
+        let mut c2 = c1.clone();
+        c2.supplier = Some("New Corp".into());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Supplier(_, _))));
+    }
+
+    #[test]
+    fn test_diff_hashes_change() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.hashes.insert("sha256".into(), "aaa".into());
+        let mut c2 = c1.clone();
+        c2.hashes.insert("sha256".into(), "bbb".into());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Hashes)));
+    }
+
+    #[test]
+    fn test_diff_multiple_field_changes() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.licenses.insert("MIT".into());
+        c1.supplier = Some("Old Corp".into());
+        c1.hashes.insert("sha256".into(), "aaa".into());
+
+        let mut c2 = c1.clone();
+        c2.version = Some("2.0".into());
+        c2.licenses = BTreeSet::from(["Apache-2.0".into()]);
+        c2.supplier = Some("New Corp".into());
+        c2.hashes.insert("sha256".into(), "bbb".into());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 4);
+    }
+
+    #[test]
+    fn test_diff_no_changes() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        old.components.insert(c.id.clone(), c.clone());
+        new.components.insert(c.id.clone(), c);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert!(diff.changed.is_empty());
+        assert!(diff.edge_diffs.is_empty());
+    }
+
+    #[test]
+    fn test_diff_metadata_changed() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Metadata is stripped during normalization, so metadata_changed should
+        // always be false after normalize
+        old.metadata.timestamp = Some("2024-01-01".into());
+        new.metadata.timestamp = Some("2024-01-02".into());
+
+        let diff = Differ::diff(&old, &new, None);
+        // After normalization, both timestamps are cleared
+        assert!(!diff.metadata_changed);
+    }
+
+    #[test]
     fn test_diff_filtering() {
         let mut old = Sbom::default();
         let mut new = Sbom::default();

@@ -223,6 +223,129 @@ mod tests {
     }
 
     #[test]
+    fn test_supplier_parsed() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE",
+                    "supplier": "Organization: Acme Corp"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(
+            sbom.components[0].supplier,
+            Some("Organization: Acme Corp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_unknown_relationship_type_ignored() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "pkg-b",
+                    "SPDXID": "SPDXRef-pkg-b",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-pkg-a",
+                    "relatedSpdxElement": "SPDXRef-pkg-b",
+                    "relationshipType": "BUILD_TOOL_OF"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_relationship_with_unknown_spdxid_ignored() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-pkg-a",
+                    "relatedSpdxElement": "SPDXRef-unknown",
+                    "relationshipType": "DEPENDS_ON"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        // Unknown target ref should be silently ignored
+        assert!(sbom.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_noassertion_license_filtered() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE",
+                    "licenseConcluded": "NOASSERTION"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.components[0].licenses.is_empty());
+    }
+
+    #[test]
     fn test_ecosystem_extracted_from_purl() {
         let json = r#"{
             "spdxVersion": "SPDX-2.3",

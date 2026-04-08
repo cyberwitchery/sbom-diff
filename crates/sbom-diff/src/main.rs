@@ -77,6 +77,7 @@ pub enum Field {
 enum Format {
     Auto,
     Cyclonedx,
+    CyclonedxXml,
     Spdx,
 }
 
@@ -240,11 +241,16 @@ fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
         Format::Cyclonedx => {
             CycloneDxReader::read_json(&content[..]).map_err(|e| anyhow!("cyclonedx error: {}", e))
         }
+        Format::CyclonedxXml => CycloneDxReader::read_xml(&content[..])
+            .map_err(|e| anyhow!("cyclonedx xml error: {}", e)),
         Format::Spdx => {
             SpdxReader::read_json(&content[..]).map_err(|e| anyhow!("spdx error: {}", e))
         }
         Format::Auto => {
             if let Ok(sbom) = CycloneDxReader::read_json(&content[..]) {
+                return Ok(sbom);
+            }
+            if let Ok(sbom) = CycloneDxReader::read_xml(&content[..]) {
                 return Ok(sbom);
             }
             if let Ok(sbom) = SpdxReader::read_json(&content[..]) {
@@ -315,6 +321,112 @@ mod tests {
         let path = "../../tests/fixtures/old.spdx.json";
         let sbom = load_sbom(path, Format::Auto).unwrap();
         assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_auto_cyclonedx_xml() {
+        let path = "../../tests/fixtures/golden-old.cdx.xml";
+        let sbom = load_sbom(path, Format::Auto).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_explicit_cyclonedx_xml() {
+        let path = "../../tests/fixtures/golden-old.cdx.xml";
+        let sbom = load_sbom(path, Format::CyclonedxXml).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_explicit_cyclonedx_json() {
+        let path = "../../tests/fixtures/old.json";
+        let sbom = load_sbom(path, Format::Cyclonedx).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_explicit_spdx() {
+        let path = "../../tests/fixtures/old.spdx.json";
+        let sbom = load_sbom(path, Format::Spdx).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_auto_detection_failure() {
+        // A file that isn't valid in any format should fail
+        let result = load_sbom("Cargo.toml", Format::Auto);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_render_summary() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![
+                Component::new("a".into(), Some("1".into())),
+                Component::new("b".into(), Some("1".into())),
+            ],
+            removed: vec![Component::new("c".into(), Some("1".into()))],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let mut buf = Vec::new();
+        render_summary(&diff, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Added:   2"));
+        assert!(out.contains("Removed: 1"));
+        assert!(out.contains("Changed: 0"));
+    }
+
+    #[test]
+    fn test_check_fail_on_deps_with_removed_edges() {
+        use sbom_diff::{Diff, EdgeDiff};
+        use sbom_model::ComponentId;
+        use std::collections::BTreeSet;
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![EdgeDiff {
+                parent: ComponentId::new(None, &[("name", "parent")]),
+                added: BTreeSet::new(),
+                removed: BTreeSet::from([ComponentId::new(None, &[("name", "child")])]),
+            }],
+            metadata_changed: false,
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::Deps]));
+    }
+
+    #[test]
+    fn test_check_fail_on_multiple_conditions() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![Component::new("new".into(), Some("1".into()))],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        // Both conditions checked
+        assert!(check_fail_on(
+            &diff,
+            &[FailOn::AddedComponents, FailOn::MissingHashes]
+        ));
+    }
+
+    #[test]
+    fn test_check_licenses_empty_lists() {
+        let sbom = Sbom::default();
+        // No components, no violations
+        assert!(!check_licenses(&sbom, &[], &[]));
     }
 
     #[test]

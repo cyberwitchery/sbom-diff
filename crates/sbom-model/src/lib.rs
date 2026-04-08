@@ -411,6 +411,10 @@ mod tests {
         // Invalid expression kept as-is
         let ids = parse_license_expression("Custom License");
         assert_eq!(ids, BTreeSet::from(["Custom License".to_string()]));
+
+        // LicenseRef expressions parse but yield no standard IDs
+        let ids = parse_license_expression("LicenseRef-proprietary");
+        assert_eq!(ids, BTreeSet::from(["LicenseRef-proprietary".to_string()]));
     }
 
     #[test]
@@ -462,6 +466,116 @@ mod tests {
         assert_eq!(transitive.len(), 2);
 
         assert_eq!(sbom.missing_hashes().len(), 3);
+    }
+
+    #[test]
+    fn test_ecosystems_query() {
+        let mut sbom = Sbom::default();
+
+        let mut c1 = Component::new("lodash".into(), Some("1.0".into()));
+        c1.ecosystem = Some("npm".into());
+        let mut c2 = Component::new("serde".into(), Some("1.0".into()));
+        c2.ecosystem = Some("cargo".into());
+        let mut c3 = Component::new("other-npm".into(), Some("1.0".into()));
+        c3.ecosystem = Some("npm".into());
+        let c4 = Component::new("no-ecosystem".into(), Some("1.0".into()));
+
+        sbom.components.insert(c1.id.clone(), c1);
+        sbom.components.insert(c2.id.clone(), c2);
+        sbom.components.insert(c3.id.clone(), c3);
+        sbom.components.insert(c4.id.clone(), c4);
+
+        let ecosystems = sbom.ecosystems();
+        assert_eq!(ecosystems.len(), 2);
+        assert!(ecosystems.contains("npm"));
+        assert!(ecosystems.contains("cargo"));
+    }
+
+    #[test]
+    fn test_licenses_query() {
+        let mut sbom = Sbom::default();
+
+        let mut c1 = Component::new("a".into(), Some("1.0".into()));
+        c1.licenses.insert("MIT".into());
+        c1.licenses.insert("Apache-2.0".into());
+        let mut c2 = Component::new("b".into(), Some("1.0".into()));
+        c2.licenses.insert("MIT".into());
+        c2.licenses.insert("GPL-3.0-only".into());
+        let c3 = Component::new("c".into(), Some("1.0".into()));
+
+        sbom.components.insert(c1.id.clone(), c1);
+        sbom.components.insert(c2.id.clone(), c2);
+        sbom.components.insert(c3.id.clone(), c3);
+
+        let licenses = sbom.licenses();
+        assert_eq!(licenses.len(), 3);
+        assert!(licenses.contains("MIT"));
+        assert!(licenses.contains("Apache-2.0"));
+        assert!(licenses.contains("GPL-3.0-only"));
+    }
+
+    #[test]
+    fn test_by_purl() {
+        let mut sbom = Sbom::default();
+
+        let mut c1 = Component::new("lodash".into(), Some("4.17.21".into()));
+        c1.purl = Some("pkg:npm/lodash@4.17.21".into());
+        c1.id = ComponentId::new(c1.purl.as_deref(), &[]);
+        let c2 = Component::new("no-purl".into(), Some("1.0".into()));
+
+        sbom.components.insert(c1.id.clone(), c1);
+        sbom.components.insert(c2.id.clone(), c2);
+
+        let found = sbom.by_purl("pkg:npm/lodash@4.17.21");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "lodash");
+
+        assert!(sbom.by_purl("pkg:npm/nonexistent@1.0").is_none());
+    }
+
+    #[test]
+    fn test_component_id_unparseable_purl() {
+        // A purl string that can't be parsed should still be used as-is
+        let id = ComponentId::new(Some("not-a-valid-purl-but-still-a-string"), &[]);
+        assert_eq!(id.as_str(), "not-a-valid-purl-but-still-a-string");
+    }
+
+    #[test]
+    fn test_component_id_display() {
+        let id = ComponentId::new(Some("pkg:npm/foo@1.0"), &[]);
+        assert_eq!(format!("{}", id), "pkg:npm/foo@1.0");
+    }
+
+    #[test]
+    fn test_sbom_normalize_clears_metadata() {
+        let mut sbom = Sbom::default();
+        sbom.metadata.timestamp = Some("2024-01-01T00:00:00Z".into());
+        sbom.metadata.tools.push("syft".into());
+        sbom.metadata.authors.push("alice".into());
+
+        let c = Component::new("a".into(), Some("1".into()));
+        sbom.components.insert(c.id.clone(), c);
+
+        sbom.normalize();
+
+        assert!(sbom.metadata.timestamp.is_none());
+        assert!(sbom.metadata.tools.is_empty());
+        assert!(sbom.metadata.authors.is_empty());
+    }
+
+    #[test]
+    fn test_missing_hashes_mixed() {
+        let mut sbom = Sbom::default();
+
+        let c1 = Component::new("no-hash".into(), Some("1.0".into()));
+        let mut c2 = Component::new("has-hash".into(), Some("1.0".into()));
+        c2.hashes.insert("sha256".into(), "abc".into());
+
+        sbom.components.insert(c1.id.clone(), c1);
+        sbom.components.insert(c2.id.clone(), c2);
+
+        let missing = sbom.missing_hashes();
+        assert_eq!(missing.len(), 1);
     }
 
     #[test]

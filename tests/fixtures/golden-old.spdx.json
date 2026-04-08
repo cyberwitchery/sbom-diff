@@ -1,0 +1,100 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "Golden Test Document",
+  "documentNamespace": "http://spdx.org/spdxdocs/golden-test",
+  "creationInfo": {
+    "creators": ["Tool: manual"],
+    "created": "2023-01-01T00:00:00Z"
+  },
+  "packages": [
+    {
+      "name": "pkg-a",
+      "SPDXID": "SPDXRef-pkg-a",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "pkg-b",
+      "SPDXID": "SPDXRef-pkg-b",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/pkg-b@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "parent",
+      "SPDXID": "SPDXRef-parent",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/parent@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "child-a",
+      "SPDXID": "SPDXRef-child-a",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/child-a@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "child-b",
+      "SPDXID": "SPDXRef-child-b",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/child-b@1.0.0"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-pkg-a",
+      "relationshipType": "DESCRIBES"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-pkg-b",
+      "relationshipType": "DESCRIBES"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-parent",
+      "relationshipType": "DESCRIBES"
+    },
+    {
+      "spdxElementId": "SPDXRef-parent",
+      "relatedSpdxElement": "SPDXRef-child-a",
+      "relationshipType": "DEPENDS_ON"
+    }
+  ]
+}

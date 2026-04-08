@@ -9,8 +9,11 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     /// The JSON structure doesn't match the CycloneDX schema.
-    #[error("CycloneDX parse error: {0}")]
+    #[error("CycloneDX JSON parse error: {0}")]
     Parse(#[from] cyclonedx_bom::errors::JsonReadError),
+    /// The XML structure doesn't match the CycloneDX schema.
+    #[error("CycloneDX XML parse error: {0}")]
+    XmlParse(#[from] cyclonedx_bom::errors::XmlReadError),
     /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -43,7 +46,37 @@ impl CycloneDxReader {
     /// ```
     pub fn read_json<R: Read>(reader: R) -> Result<Sbom, Error> {
         let bom = cyclonedx_bom::prelude::Bom::parse_from_json(reader)?;
+        Self::bom_to_sbom(bom)
+    }
 
+    /// Parses a CycloneDX XML document from a byte slice.
+    ///
+    /// Tries spec versions 1.5, 1.4, and 1.3 in order, returning the first
+    /// successful parse.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use sbom_model_cyclonedx::CycloneDxReader;
+    ///
+    /// let xml = std::fs::read("sbom.xml").unwrap();
+    /// let sbom = CycloneDxReader::read_xml(&xml).unwrap();
+    /// ```
+    pub fn read_xml(data: &[u8]) -> Result<Sbom, Error> {
+        use cyclonedx_bom::models::bom::SpecVersion;
+
+        let versions = [SpecVersion::V1_5, SpecVersion::V1_4, SpecVersion::V1_3];
+        let mut last_err = None;
+        for version in versions {
+            match cyclonedx_bom::prelude::Bom::parse_from_xml_with_version(data, version) {
+                Ok(bom) => return Self::bom_to_sbom(bom),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap().into())
+    }
+
+    fn bom_to_sbom(bom: cyclonedx_bom::prelude::Bom) -> Result<Sbom, Error> {
         let mut sbom = Sbom::default();
 
         // 1. Process Metadata
@@ -312,6 +345,117 @@ mod tests {
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 2);
         assert!(sbom.dependencies.contains_key(&sbom.components[0].id));
+    }
+
+    #[test]
+    fn test_read_xml_v1_4() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.4" version="1">
+  <components>
+    <component type="library">
+      <name>pkg-a</name>
+      <version>1.0.0</version>
+    </component>
+  </components>
+</bom>"#;
+        let sbom = CycloneDxReader::read_xml(xml.as_slice()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+    }
+
+    #[test]
+    fn test_read_xml_invalid() {
+        let xml = b"<not-a-bom/>";
+        let result = CycloneDxReader::read_xml(xml.as_slice());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_supplier_parsed() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "supplier": {"name": "Acme Corp"}
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
+    }
+
+    #[test]
+    fn test_license_name_parsed() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "licenses": [{"license": {"name": "Custom License"}}]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.components[0].licenses.contains("Custom License"));
+    }
+
+    #[test]
+    fn test_license_expression_parsed() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "licenses": [{"expression": "MIT OR Apache-2.0"}]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.components[0].licenses.contains("MIT"));
+        assert!(sbom.components[0].licenses.contains("Apache-2.0"));
+    }
+
+    #[test]
+    fn test_dependencies_with_unknown_ref_ignored() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-a"
+                }
+            ],
+            "dependencies": [
+                {
+                    "ref": "ref-a",
+                    "dependsOn": ["ref-unknown"]
+                },
+                {
+                    "ref": "ref-also-unknown",
+                    "dependsOn": ["ref-a"]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        // Unknown refs should be silently ignored
+        assert!(sbom.dependencies.is_empty());
     }
 
     #[test]
