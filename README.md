@@ -41,21 +41,21 @@ sbom-diff old.json new.json --quiet --fail-on added-components
 
 ### text output (default)
 ```text
-diff summary
+Diff Summary
 ============
-added:   1
-removed: 0
-changed: 1
+Added:   1
+Removed: 0
+Changed: 1
 
-[+] added
+[+] Added
 ---------
 pkg:npm/left-pad@1.3.0
 
-[~] changed
+[~] Changed
 -----------
 pkg:cargo/serde@1.0.191
-  version: 1.0.190 -> 1.0.191
-  license: ["mit"] -> ["mit", "apache-2.0"]
+  Version: 1.0.190 -> 1.0.191
+  License: {"mit"} -> {"apache-2.0", "mit"}
 ```
 
 ## installation

@@ -170,9 +170,10 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
 }
 
 fn render_summary(diff: &sbom_diff::Diff, out: &mut impl io::Write) -> io::Result<()> {
-    writeln!(out, "Added:   {}", diff.added.len())?;
-    writeln!(out, "Removed: {}", diff.removed.len())?;
-    writeln!(out, "Changed: {}", diff.changed.len())?;
+    writeln!(out, "Added:        {}", diff.added.len())?;
+    writeln!(out, "Removed:      {}", diff.removed.len())?;
+    writeln!(out, "Changed:      {}", diff.changed.len())?;
+    writeln!(out, "Edge changes: {}", diff.edge_diffs.len())?;
     Ok(())
 }
 
@@ -377,9 +378,42 @@ mod tests {
         render_summary(&diff, &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(out.contains("Added:   2"));
-        assert!(out.contains("Removed: 1"));
-        assert!(out.contains("Changed: 0"));
+        assert!(out.contains("Added:        2"));
+        assert!(out.contains("Removed:      1"));
+        assert!(out.contains("Changed:      0"));
+        assert!(out.contains("Edge changes: 0"));
+    }
+
+    #[test]
+    fn test_render_summary_with_edge_diffs() {
+        use sbom_diff::{Diff, EdgeDiff};
+        use sbom_model::ComponentId;
+        use std::collections::BTreeSet;
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![
+                EdgeDiff {
+                    parent: ComponentId::new(None, &[("name", "pkg-a")]),
+                    added: BTreeSet::from([ComponentId::new(None, &[("name", "pkg-b")])]),
+                    removed: BTreeSet::new(),
+                },
+                EdgeDiff {
+                    parent: ComponentId::new(None, &[("name", "pkg-c")]),
+                    added: BTreeSet::new(),
+                    removed: BTreeSet::from([ComponentId::new(None, &[("name", "pkg-d")])]),
+                },
+            ],
+            metadata_changed: false,
+        };
+
+        let mut buf = Vec::new();
+        render_summary(&diff, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Edge changes: 2"));
     }
 
     #[test]
