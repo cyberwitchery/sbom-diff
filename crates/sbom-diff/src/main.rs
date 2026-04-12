@@ -149,6 +149,15 @@ fn main() -> anyhow::Result<()> {
 fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     let mut violation = false;
     for comp in sbom.components.values() {
+        // A component with no license information cannot satisfy an allow-list.
+        if !allow.is_empty() && comp.licenses.is_empty() {
+            eprintln!(
+                "error: component {} has no license information (--allow-license requires it)",
+                comp.id
+            );
+            violation = true;
+            continue;
+        }
         for license in &comp.licenses {
             if !deny.is_empty() && deny.contains(license) {
                 eprintln!(
@@ -461,6 +470,24 @@ mod tests {
         let sbom = Sbom::default();
         // No components, no violations
         assert!(!check_licenses(&sbom, &[], &[]));
+    }
+
+    #[test]
+    fn test_check_licenses_unlicensed_component_with_allowlist() {
+        let mut sbom = Sbom::default();
+        // Component with no license information
+        let c = Component::new("unlicensed-pkg".into(), Some("1.0".into()));
+        // licenses is empty by default
+        sbom.components.insert(c.id.clone(), c);
+
+        // No allow-list: unlicensed component is not a violation
+        assert!(!check_licenses(&sbom, &[], &[]));
+
+        // With allow-list: unlicensed component cannot satisfy it → violation
+        assert!(check_licenses(&sbom, &[], &["MIT".into()]));
+
+        // With deny-list only: unlicensed component is not a violation (nothing to deny)
+        assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
     }
 
     #[test]
