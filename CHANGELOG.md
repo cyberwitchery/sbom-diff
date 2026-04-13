@@ -2,6 +2,8 @@
 
 ## unreleased
 
+- flag unlicensed components as violations when `--allow-license` is active
+
 ## [0.1.0] - 2026-04-08
 
 - add CycloneDX XML support (1.3, 1.4, 1.5); new `--format cyclonedx-xml` flag and auto-detection
