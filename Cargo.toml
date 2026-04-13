@@ -25,9 +25,9 @@ thiserror = "1.0"
 anyhow = "1.0"
 indexmap = { version = "2.0", features = ["serde"] }
 clap = { version = "4.4", features = ["derive"] }
-cyclonedx-bom = "0.6" # Check for latest compatible
-spdx-rs = "0.5"       # Check for latest compatible
-spdx = "0.10"         # Check for latest compatible
+cyclonedx-bom = "0.6"
+spdx-rs = "0.5"
+spdx = "0.10"
 packageurl = "0.3"
 sha2 = "0.10"
 hex = "0.4"
