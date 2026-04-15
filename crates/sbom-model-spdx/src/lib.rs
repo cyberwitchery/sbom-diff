@@ -17,6 +17,30 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+fn canonical_algorithm_name(alg: &spdx_rs::models::Algorithm) -> String {
+    use spdx_rs::models::Algorithm;
+    match alg {
+        Algorithm::MD2 => "MD2",
+        Algorithm::MD4 => "MD4",
+        Algorithm::MD5 => "MD5",
+        Algorithm::MD6 => "MD6",
+        Algorithm::SHA1 => "SHA-1",
+        Algorithm::SHA224 => "SHA-224",
+        Algorithm::SHA256 => "SHA-256",
+        Algorithm::SHA384 => "SHA-384",
+        Algorithm::SHA512 => "SHA-512",
+        Algorithm::SHA3256 => "SHA3-256",
+        Algorithm::SHA3384 => "SHA3-384",
+        Algorithm::SHA3512 => "SHA3-512",
+        Algorithm::BLAKE2B256 => "BLAKE2b-256",
+        Algorithm::BLAKE2B384 => "BLAKE2b-384",
+        Algorithm::BLAKE2B512 => "BLAKE2b-512",
+        Algorithm::BLAKE3 => "BLAKE3",
+        Algorithm::ADLER32 => "ADLER-32",
+    }
+    .to_string()
+}
+
 /// Parser for SPDX JSON documents.
 ///
 /// Converts SPDX 2.3 JSON into the format-agnostic [`Sbom`] type.
@@ -108,8 +132,10 @@ impl SpdxReader {
 
             // Hashes
             for checksum in pkg.package_checksum {
-                comp.hashes
-                    .insert(format!("{:?}", checksum.algorithm), checksum.value);
+                comp.hashes.insert(
+                    canonical_algorithm_name(&checksum.algorithm),
+                    checksum.value,
+                );
             }
 
             sbom.components.insert(id, comp);
@@ -220,6 +246,41 @@ mod tests {
         assert_eq!(sbom.components.len(), 2);
         assert_eq!(sbom.metadata.authors, vec!["Person: bob"]);
         assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_hash_algorithm_canonical_names() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE",
+                    "checksums": [
+                        {"algorithm": "SHA256", "checksumValue": "aaa"},
+                        {"algorithm": "SHA1", "checksumValue": "bbb"},
+                        {"algorithm": "MD5", "checksumValue": "ccc"},
+                        {"algorithm": "SHA3-256", "checksumValue": "ddd"}
+                    ]
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        let hashes = &sbom.components[0].hashes;
+        assert_eq!(hashes.get("SHA-256").unwrap(), "aaa");
+        assert_eq!(hashes.get("SHA-1").unwrap(), "bbb");
+        assert_eq!(hashes.get("MD5").unwrap(), "ccc");
+        assert_eq!(hashes.get("SHA3-256").unwrap(), "ddd");
     }
 
     #[test]

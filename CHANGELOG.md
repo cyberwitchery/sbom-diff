@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- fix SPDX hash algorithm names to use canonical format (e.g. `SHA-256` instead of `SHA256`), so cross-format comparisons with CycloneDX no longer silently miss matching hashes
 - flag unlicensed components as violations when `--allow-license` is active
 
 ## [0.1.0] - 2026-04-08
