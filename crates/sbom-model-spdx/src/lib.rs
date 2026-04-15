@@ -395,4 +395,204 @@ mod tests {
             .unwrap();
         assert_eq!(no_purl.ecosystem, None);
     }
+
+    #[test]
+    fn test_package_without_version() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "no-version-pkg",
+                    "SPDXID": "SPDXRef-no-version",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "versioned-pkg",
+                    "SPDXID": "SPDXRef-versioned",
+                    "versionInfo": "2.0.0",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+
+        let no_ver = sbom
+            .components
+            .values()
+            .find(|c| c.name == "no-version-pkg")
+            .unwrap();
+        assert_eq!(no_ver.version, None);
+
+        let has_ver = sbom
+            .components
+            .values()
+            .find(|c| c.name == "versioned-pkg")
+            .unwrap();
+        assert_eq!(has_ver.version, Some("2.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_contains_and_describes_relationships() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "container",
+                    "SPDXID": "SPDXRef-container",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "contained",
+                    "SPDXID": "SPDXRef-contained",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "described",
+                    "SPDXID": "SPDXRef-described",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "generated-from",
+                    "SPDXID": "SPDXRef-generated",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-container",
+                    "relatedSpdxElement": "SPDXRef-contained",
+                    "relationshipType": "CONTAINS"
+                },
+                {
+                    "spdxElementId": "SPDXRef-container",
+                    "relatedSpdxElement": "SPDXRef-described",
+                    "relationshipType": "DESCRIBES"
+                },
+                {
+                    "spdxElementId": "SPDXRef-container",
+                    "relatedSpdxElement": "SPDXRef-generated",
+                    "relationshipType": "GENERATED_FROM"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+
+        let container_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "container")
+            .unwrap()
+            .id
+            .clone();
+
+        let deps = &sbom.dependencies[&container_id];
+        assert_eq!(deps.len(), 2);
+
+        let dep_names: BTreeSet<_> = deps
+            .iter()
+            .map(|id| sbom.components[id].name.as_str())
+            .collect();
+        assert!(dep_names.contains("contained"));
+        assert!(dep_names.contains("described"));
+        assert!(!dep_names.contains("generated-from"));
+    }
+
+    #[test]
+    fn test_empty_dependency_graph() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "a",
+                    "SPDXID": "SPDXRef-a",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "b",
+                    "SPDXID": "SPDXRef-b",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+        assert!(sbom.dependencies.is_empty());
+        assert_eq!(sbom.roots().len(), 2);
+    }
+
+    #[test]
+    fn test_document_with_no_packages() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "empty-sbom",
+            "documentNamespace": "http://spdx.org/spdxdocs/empty",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.components.is_empty());
+        assert!(sbom.dependencies.is_empty());
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_tool_and_organization_creator_strings() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": [
+                    "Tool: syft-0.100.0",
+                    "Tool: trivy",
+                    "Organization: Acme Corp",
+                    "Person: alice"
+                ],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.metadata.tools, vec!["syft-0.100.0", "trivy"]);
+        assert_eq!(
+            sbom.metadata.authors,
+            vec!["Organization: Acme Corp", "Person: alice"]
+        );
+    }
 }
