@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- map SPDX package description fields (`packageDetailedDescription` / `packageSummaryDescription`) into `Component.description`, fixing a data loss gap vs CycloneDX
 - fix SPDX hash algorithm names to use canonical format (e.g. `SHA-256` instead of `SHA256`), so cross-format comparisons with CycloneDX no longer silently miss matching hashes
 - flag unlicensed components as violations when `--allow-license` is active
 

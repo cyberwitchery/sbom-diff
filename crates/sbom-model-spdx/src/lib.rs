@@ -112,15 +112,15 @@ impl SpdxReader {
                 version,
                 ecosystem,
                 supplier,
-                description: None, // pkg.description might not exist or be named differently. Safe fallback.
+                description: pkg
+                    .package_detailed_description
+                    .clone()
+                    .or_else(|| pkg.package_summary_description.clone()),
                 purl,
                 licenses: BTreeSet::new(),
                 hashes: BTreeMap::new(),
                 source_ids: vec![pkg.package_spdx_identifier.clone()],
             };
-
-            // Try to map description if field matches, else ignore for now to pass build
-            // (If we knew the field name we'd use it)
 
             // Licenses
             if let Some(l) = pkg.concluded_license {
@@ -310,6 +310,67 @@ mod tests {
             sbom.components[0].supplier,
             Some("Organization: Acme Corp".to_string())
         );
+    }
+
+    #[test]
+    fn test_description_parsed() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "detailed-pkg",
+                    "SPDXID": "SPDXRef-detailed",
+                    "downloadLocation": "NONE",
+                    "description": "A detailed description",
+                    "summary": "A summary"
+                },
+                {
+                    "name": "summary-only-pkg",
+                    "SPDXID": "SPDXRef-summary",
+                    "downloadLocation": "NONE",
+                    "summary": "Only a summary"
+                },
+                {
+                    "name": "no-desc-pkg",
+                    "SPDXID": "SPDXRef-nodesc",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+
+        let detailed = sbom
+            .components
+            .values()
+            .find(|c| c.name == "detailed-pkg")
+            .unwrap();
+        assert_eq!(
+            detailed.description,
+            Some("A detailed description".to_string())
+        );
+
+        let summary_only = sbom
+            .components
+            .values()
+            .find(|c| c.name == "summary-only-pkg")
+            .unwrap();
+        assert_eq!(summary_only.description, Some("Only a summary".to_string()));
+
+        let no_desc = sbom
+            .components
+            .values()
+            .find(|c| c.name == "no-desc-pkg")
+            .unwrap();
+        assert_eq!(no_desc.description, None);
     }
 
     #[test]
