@@ -69,6 +69,7 @@ pub enum Field {
     License,
     Supplier,
     Purl,
+    Description,
     Hashes,
     Deps,
 }
@@ -102,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             Field::License => sbom_diff::Field::License,
             Field::Supplier => sbom_diff::Field::Supplier,
             Field::Purl => sbom_diff::Field::Purl,
+            Field::Description => sbom_diff::Field::Description,
             Field::Hashes => sbom_diff::Field::Hashes,
             Field::Deps => sbom_diff::Field::Deps,
         })

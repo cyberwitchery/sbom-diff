@@ -59,6 +59,8 @@ pub enum FieldChange {
     Supplier(Option<String>, Option<String>),
     /// Package URL changed: (old, new).
     Purl(Option<String>, Option<String>),
+    /// Description changed: (old, new).
+    Description(Option<String>, Option<String>),
     /// Hashes changed (details not tracked).
     Hashes,
 }
@@ -76,6 +78,8 @@ pub enum Field {
     Supplier,
     /// Package URL.
     Purl,
+    /// Human-readable description.
+    Description,
     /// Checksums.
     Hashes,
     /// Dependency edges.
@@ -331,6 +335,13 @@ impl Differ {
             changes.push(FieldChange::Purl(old.purl.clone(), new.purl.clone()));
         }
 
+        if should_include(Field::Description) && old.description != new.description {
+            changes.push(FieldChange::Description(
+                old.description.clone(),
+                new.description.clone(),
+            ));
+        }
+
         if should_include(Field::Hashes) && old.hashes != new.hashes {
             changes.push(FieldChange::Hashes);
         }
@@ -468,6 +479,117 @@ mod tests {
             .changes
             .iter()
             .any(|c| matches!(c, FieldChange::Hashes)));
+    }
+
+    #[test]
+    fn test_diff_description_change() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.description = Some("Old description".into());
+        let mut c2 = c1.clone();
+        c2.description = Some("New description".into());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Description(_, _))));
+    }
+
+    #[test]
+    fn test_diff_description_added() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        let mut c2 = c1.clone();
+        c2.description = Some("A new description".into());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Description(None, Some(_)))));
+    }
+
+    #[test]
+    fn test_diff_description_removed() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.description = Some("Had a description".into());
+        let mut c2 = c1.clone();
+        c2.description = None;
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Description(Some(_), None))));
+    }
+
+    #[test]
+    fn test_diff_description_unchanged() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.description = Some("Same description".into());
+        let c2 = c1.clone();
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.changed.is_empty());
+    }
+
+    #[test]
+    fn test_diff_description_filtering() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.description = Some("Old".into());
+        let mut c2 = c1.clone();
+        c2.version = Some("2.0".into());
+        c2.description = Some("New".into());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        // Only description: should see description change but not version
+        let diff = Differ::diff(&old, &new, Some(&[Field::Description]));
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 1);
+        assert!(matches!(
+            diff.changed[0].changes[0],
+            FieldChange::Description(_, _)
+        ));
+
+        // Only version: should see version change but not description
+        let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 1);
+        assert!(matches!(
+            diff.changed[0].changes[0],
+            FieldChange::Version(_, _)
+        ));
     }
 
     #[test]
