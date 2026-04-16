@@ -147,6 +147,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
+    // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
+    // Normalize to lowercase for matching so that e.g. --deny-license GPL-3.0-only
+    // catches components whose SBOM uses gpl-3.0-only.
+    let deny_lower: Vec<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let allow_lower: Vec<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
+
     let mut violation = false;
     for comp in sbom.components.values() {
         // A component with no license information cannot satisfy an allow-list.
@@ -159,14 +165,15 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
             continue;
         }
         for license in &comp.licenses {
-            if !deny.is_empty() && deny.contains(license) {
+            let license_lower = license.to_ascii_lowercase();
+            if !deny_lower.is_empty() && deny_lower.contains(&license_lower) {
                 eprintln!(
                     "error: license {} is denied (component {})",
                     license, comp.id
                 );
                 violation = true;
             }
-            if !allow.is_empty() && !allow.contains(license) {
+            if !allow_lower.is_empty() && !allow_lower.contains(&license_lower) {
                 eprintln!(
                     "error: license {} is not allowed (component {})",
                     license, comp.id
@@ -488,6 +495,25 @@ mod tests {
 
         // With deny-list only: unlicensed component is not a violation (nothing to deny)
         assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
+    }
+
+    #[test]
+    fn test_check_licenses_case_insensitive() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        c.licenses.insert("GPL-3.0-only".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        // Deny: different casing still matches
+        assert!(check_licenses(&sbom, &["gpl-3.0-only".into()], &[]));
+        assert!(check_licenses(&sbom, &["Gpl-3.0-Only".into()], &[]));
+
+        // Allow: different casing is still accepted
+        assert!(!check_licenses(&sbom, &[], &["gpl-3.0-only".into()]));
+        assert!(!check_licenses(&sbom, &[], &["GPL-3.0-ONLY".into()]));
+
+        // Allow: wrong license is still rejected regardless of case
+        assert!(check_licenses(&sbom, &[], &["mit".into()]));
     }
 
     #[test]
