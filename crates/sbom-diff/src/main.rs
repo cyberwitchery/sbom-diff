@@ -69,6 +69,7 @@ pub enum Field {
     License,
     Supplier,
     Purl,
+    Description,
     Hashes,
     Deps,
 }
@@ -102,6 +103,7 @@ fn main() -> anyhow::Result<()> {
             Field::License => sbom_diff::Field::License,
             Field::Supplier => sbom_diff::Field::Supplier,
             Field::Purl => sbom_diff::Field::Purl,
+            Field::Description => sbom_diff::Field::Description,
             Field::Hashes => sbom_diff::Field::Hashes,
             Field::Deps => sbom_diff::Field::Deps,
         })
@@ -586,5 +588,35 @@ mod tests {
             removed: BTreeSet::new(),
         });
         assert!(check_fail_on(&diff, &[FailOn::Deps]));
+    }
+
+    #[test]
+    fn test_description_only_changes_do_not_trigger_gates() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0".into()));
+        let mut new = old.clone();
+        new.description = Some("updated description".into());
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Description(
+                    None,
+                    Some("updated description".into()),
+                )],
+            }],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        assert!(!check_fail_on(
+            &diff,
+            &[FailOn::AddedComponents, FailOn::MissingHashes, FailOn::Deps]
+        ));
     }
 }

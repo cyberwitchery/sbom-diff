@@ -64,6 +64,9 @@ impl Renderer for TextRenderer {
                         FieldChange::Purl(old, new) => {
                             writeln!(writer, "  Purl: {:?} -> {:?}", old, new)?;
                         }
+                        FieldChange::Description(old, new) => {
+                            writeln!(writer, "  Description: {:?} -> {:?}", old, new)?;
+                        }
                         FieldChange::Hashes => {
                             writeln!(writer, "  Hashes: changed")?;
                         }
@@ -161,6 +164,9 @@ impl Renderer for MarkdownRenderer {
                         }
                         FieldChange::Purl(old, new) => {
                             writeln!(writer, "- **Purl**: `{:?}` &rarr; `{:?}`", old, new)?;
+                        }
+                        FieldChange::Description(old, new) => {
+                            writeln!(writer, "- **Description**: `{:?}` &rarr; `{:?}`", old, new)?;
                         }
                         FieldChange::Hashes => {
                             writeln!(writer, "- **Hashes**: changed")?;
@@ -265,6 +271,10 @@ mod tests {
                         Some("pkg:npm/pkg-a@1.0".into()),
                         Some("pkg:npm/pkg-a@1.1".into()),
                     ),
+                    FieldChange::Description(
+                        Some("Old description".into()),
+                        Some("New description".into()),
+                    ),
                     FieldChange::Hashes,
                 ],
             }],
@@ -314,6 +324,9 @@ mod tests {
         assert!(out.contains("Old Corp"));
         assert!(out.contains("New Corp"));
         assert!(out.contains("Purl:"));
+        assert!(out.contains("Description:"));
+        assert!(out.contains("Old description"));
+        assert!(out.contains("New description"));
         assert!(out.contains("Hashes: changed"));
         assert!(out.contains("[~] Edge Changes"));
     }
@@ -354,6 +367,7 @@ mod tests {
         assert!(out.contains("**License**"));
         assert!(out.contains("**Supplier**"));
         assert!(out.contains("**Purl**"));
+        assert!(out.contains("**Description**"));
         assert!(out.contains("**Hashes**: changed"));
         assert!(out.contains("Edge Changes"));
         assert!(out.contains("**Removed dependencies:**"));
@@ -387,7 +401,7 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert_eq!(val["changed"].as_array().unwrap().len(), 1);
-        assert_eq!(val["changed"][0]["changes"].as_array().unwrap().len(), 5);
+        assert_eq!(val["changed"][0]["changes"].as_array().unwrap().len(), 6);
         assert_eq!(val["edge_diffs"].as_array().unwrap().len(), 1);
     }
 
