@@ -240,6 +240,14 @@ impl Differ {
     ) -> Vec<EdgeDiff> {
         let mut edge_diffs = Vec::new();
 
+        // Build reverse mapping (new_id -> old_id) once upfront for O(1) lookups.
+        // The forward id_mapping is old_id -> new_id; we need the inverse for
+        // translating new parent IDs back to old parent IDs.
+        let reverse_mapping: BTreeMap<ComponentId, ComponentId> = id_mapping
+            .iter()
+            .map(|(old_id, new_id)| (new_id.clone(), old_id.clone()))
+            .collect();
+
         // Helper to translate old ID to new ID (if mapped) or keep as-is
         let translate_id = |old_id: &ComponentId| -> ComponentId {
             id_mapping
@@ -266,11 +274,10 @@ impl Differ {
                 .unwrap_or_default();
 
             // Get old dependencies, translating both parent and child IDs
-            // First find the old parent ID (reverse lookup or same ID)
-            let old_parent_id = id_mapping
-                .iter()
-                .find(|(_, new_id)| *new_id == &parent_id)
-                .map(|(old_id, _)| old_id.clone())
+            // Look up the old parent ID via the reverse map
+            let old_parent_id = reverse_mapping
+                .get(&parent_id)
+                .cloned()
                 .unwrap_or_else(|| parent_id.clone());
 
             let old_children: BTreeSet<ComponentId> = old
