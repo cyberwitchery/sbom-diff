@@ -589,4 +589,34 @@ mod tests {
         });
         assert!(check_fail_on(&diff, &[FailOn::Deps]));
     }
+
+    #[test]
+    fn test_description_only_changes_do_not_trigger_gates() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0".into()));
+        let mut new = old.clone();
+        new.description = Some("updated description".into());
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Description(
+                    None,
+                    Some("updated description".into()),
+                )],
+            }],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        assert!(!check_fail_on(
+            &diff,
+            &[FailOn::AddedComponents, FailOn::MissingHashes, FailOn::Deps]
+        ));
+    }
 }
