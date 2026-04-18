@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- show per-algorithm hash diffs (algorithm, old digest, new digest) instead of the generic "Hashes: changed" message in all output formats (text, markdown, JSON)
 - fix text and markdown renderers showing Rust debug format (`Some("MIT")`, `None`, `{"MIT"}`) for License, Supplier, Purl, and Description fields; these now display as plain strings with `<none>` for absent values
 - optimize edge diff computation from O(n²) to O(n) by building a reverse ID map upfront instead of linear-scanning per parent
 - add description field change tracking to the diff engine: the `description` field is now compared between SBOM versions and reported in all output formats; supports `--only description` filtering

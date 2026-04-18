@@ -100,8 +100,24 @@ impl Renderer for TextRenderer {
                                 format_option(new)
                             )?;
                         }
-                        FieldChange::Hashes => {
-                            writeln!(writer, "  Hashes: changed")?;
+                        FieldChange::Hashes(old, new) => {
+                            writeln!(writer, "  Hashes:")?;
+                            for (algo, digest) in old {
+                                if !new.contains_key(algo) {
+                                    writeln!(writer, "    - {}: {}", algo, digest)?;
+                                } else if new[algo] != *digest {
+                                    writeln!(
+                                        writer,
+                                        "    ~ {}: {} -> {}",
+                                        algo, digest, new[algo]
+                                    )?;
+                                }
+                            }
+                            for (algo, digest) in new {
+                                if !old.contains_key(algo) {
+                                    writeln!(writer, "    + {}: {}", algo, digest)?;
+                                }
+                            }
                         }
                     }
                 }
@@ -221,8 +237,24 @@ impl Renderer for MarkdownRenderer {
                                 format_option(new)
                             )?;
                         }
-                        FieldChange::Hashes => {
-                            writeln!(writer, "- **Hashes**: changed")?;
+                        FieldChange::Hashes(old, new) => {
+                            writeln!(writer, "- **Hashes**:")?;
+                            for (algo, digest) in old {
+                                if !new.contains_key(algo) {
+                                    writeln!(writer, "  - `{}`: removed `{}`", algo, digest)?;
+                                } else if new[algo] != *digest {
+                                    writeln!(
+                                        writer,
+                                        "  - `{}`: `{}` &rarr; `{}`",
+                                        algo, digest, new[algo]
+                                    )?;
+                                }
+                            }
+                            for (algo, digest) in new {
+                                if !old.contains_key(algo) {
+                                    writeln!(writer, "  - `{}`: added `{}`", algo, digest)?;
+                                }
+                            }
                         }
                     }
                 }
@@ -278,6 +310,7 @@ mod tests {
     use super::*;
     use crate::{ComponentChange, Diff, FieldChange};
     use sbom_model::Component;
+    use std::collections::BTreeMap;
 
     fn mock_diff() -> Diff {
         let c1 = Component::new("pkg-a".into(), Some("1.0".into()));
@@ -328,7 +361,10 @@ mod tests {
                         Some("Old description".into()),
                         Some("New description".into()),
                     ),
-                    FieldChange::Hashes,
+                    FieldChange::Hashes(
+                        BTreeMap::from([("sha256".into(), "aaa".into())]),
+                        BTreeMap::from([("sha256".into(), "bbb".into())]),
+                    ),
                 ],
             }],
             edge_diffs: vec![crate::EdgeDiff {
@@ -380,7 +416,8 @@ mod tests {
         assert!(out.contains("Description:"));
         assert!(out.contains("Old description"));
         assert!(out.contains("New description"));
-        assert!(out.contains("Hashes: changed"));
+        assert!(out.contains("Hashes:"));
+        assert!(out.contains("~ sha256: aaa -> bbb"));
         assert!(out.contains("[~] Edge Changes"));
     }
 
@@ -421,7 +458,8 @@ mod tests {
         assert!(out.contains("**Supplier**"));
         assert!(out.contains("**Purl**"));
         assert!(out.contains("**Description**"));
-        assert!(out.contains("**Hashes**: changed"));
+        assert!(out.contains("**Hashes**:"));
+        assert!(out.contains("`sha256`: `aaa` &rarr; `bbb`"));
         assert!(out.contains("Edge Changes"));
         assert!(out.contains("**Removed dependencies:**"));
         assert!(out.contains("**Added dependencies:**"));

@@ -61,8 +61,8 @@ pub enum FieldChange {
     Purl(Option<String>, Option<String>),
     /// Description changed: (old, new).
     Description(Option<String>, Option<String>),
-    /// Hashes changed (details not tracked).
-    Hashes,
+    /// Hashes changed: (old, new).
+    Hashes(BTreeMap<String, String>, BTreeMap<String, String>),
 }
 
 /// Fields that can be compared and filtered.
@@ -350,7 +350,7 @@ impl Differ {
         }
 
         if should_include(Field::Hashes) && old.hashes != new.hashes {
-            changes.push(FieldChange::Hashes);
+            changes.push(FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()));
         }
 
         if changes.is_empty() {
@@ -485,7 +485,7 @@ mod tests {
         assert!(diff.changed[0]
             .changes
             .iter()
-            .any(|c| matches!(c, FieldChange::Hashes)));
+            .any(|c| matches!(c, FieldChange::Hashes(_, _))));
     }
 
     #[test]
