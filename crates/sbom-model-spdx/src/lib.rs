@@ -85,7 +85,12 @@ impl SpdxReader {
                 props.push(("version", v_str.as_str()));
             }
 
-            let supplier = pkg.package_supplier.clone();
+            let supplier = pkg.package_supplier.clone().map(|s| {
+                s.strip_prefix("Organization: ")
+                    .or_else(|| s.strip_prefix("Person: "))
+                    .map(|stripped| stripped.to_string())
+                    .unwrap_or(s)
+            });
             let s_str = supplier.clone().unwrap_or_default();
             if supplier.is_some() {
                 props.push(("supplier", s_str.as_str()));
@@ -306,10 +311,7 @@ mod tests {
             "relationships": []
         }"#;
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
-        assert_eq!(
-            sbom.components[0].supplier,
-            Some("Organization: Acme Corp".to_string())
-        );
+        assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
     }
 
     #[test]

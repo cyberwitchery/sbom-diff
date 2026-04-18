@@ -2,6 +2,9 @@
 
 ## unreleased
 
+- strip SPDX supplier prefixes (`Organization: `, `Person: `) during parsing so cross-format diffs no longer produce false positives
+- add `Diff::is_empty()` convenience method
+- optimize `by_purl()` from O(n) linear scan to O(1) via direct `ComponentId` lookup
 - show per-algorithm hash diffs (algorithm, old digest, new digest) instead of the generic "Hashes: changed" message in all output formats (text, markdown, JSON)
 - fix text and markdown renderers showing Rust debug format (`Some("MIT")`, `None`, `{"MIT"}`) for License, Supplier, Purl, and Description fields; these now display as plain strings with `<none>` for absent values
 - optimize edge diff computation from O(n²) to O(n) by building a reverse ID map upfront instead of linear-scanning per parent

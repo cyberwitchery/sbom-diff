@@ -273,9 +273,8 @@ impl Sbom {
 
     /// Finds a component by its package URL.
     pub fn by_purl(&self, purl: &str) -> Option<&Component> {
-        self.components
-            .values()
-            .find(|c| c.purl.as_deref() == Some(purl))
+        let id = ComponentId::new(Some(purl), &[]);
+        self.components.get(&id)
     }
 }
 

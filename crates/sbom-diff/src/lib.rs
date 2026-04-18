@@ -24,6 +24,17 @@ pub struct Diff {
     pub metadata_changed: bool,
 }
 
+impl Diff {
+    /// Returns `true` if the diff contains no changes of any kind.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && self.edge_diffs.is_empty()
+            && !self.metadata_changed
+    }
+}
+
 /// A component that exists in both SBOMs with detected changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentChange {
