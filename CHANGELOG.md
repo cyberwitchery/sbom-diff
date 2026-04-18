@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- fix text and markdown renderers showing Rust debug format (`Some("MIT")`, `None`, `{"MIT"}`) for License, Supplier, Purl, and Description fields; these now display as plain strings with `<none>` for absent values
 - optimize edge diff computation from O(n²) to O(n) by building a reverse ID map upfront instead of linear-scanning per parent
 - add description field change tracking to the diff engine: the `description` field is now compared between SBOM versions and reported in all output formats; supports `--only description` filtering
 - fix case-insensitive license matching in `--deny-license` and `--allow-license`: SPDX license IDs are case-insensitive by spec, but were compared with exact string equality, so `--deny-license GPL-3.0-only` would miss `gpl-3.0-only`

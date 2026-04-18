@@ -16,10 +16,10 @@ pkg:npm/pkg-b@1.0.0
 -----------
 pkg:npm/parent@1.1.0
   Version: 1.0.0 -> 1.1.0
-  Purl: Some("pkg:npm/parent@1.0.0") -> Some("pkg:npm/parent@1.1.0")
+  Purl: pkg:npm/parent@1.0.0 -> pkg:npm/parent@1.1.0
 pkg:npm/pkg-a@1.1.0
   Version: 1.0.0 -> 1.1.0
-  Purl: Some("pkg:npm/pkg-a@1.0.0") -> Some("pkg:npm/pkg-a@1.1.0")
+  Purl: pkg:npm/pkg-a@1.0.0 -> pkg:npm/pkg-a@1.1.0
 
 [~] Edge Changes
 ----------------

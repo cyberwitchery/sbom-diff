@@ -7,7 +7,20 @@
 //! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
 
 use crate::{Diff, FieldChange};
+use std::collections::BTreeSet;
 use std::io::Write;
+
+fn format_option(opt: &Option<String>) -> &str {
+    opt.as_deref().unwrap_or("<none>")
+}
+
+fn format_set(set: &BTreeSet<String>) -> String {
+    if set.is_empty() {
+        "<none>".to_string()
+    } else {
+        set.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
 
 /// Trait for rendering a [`Diff`] to an output stream.
 pub trait Renderer {
@@ -56,16 +69,36 @@ impl Renderer for TextRenderer {
                             writeln!(writer, "  Version: {} -> {}", old, new)?;
                         }
                         FieldChange::License(old, new) => {
-                            writeln!(writer, "  License: {:?} -> {:?}", old, new)?;
+                            writeln!(
+                                writer,
+                                "  License: {} -> {}",
+                                format_set(old),
+                                format_set(new)
+                            )?;
                         }
                         FieldChange::Supplier(old, new) => {
-                            writeln!(writer, "  Supplier: {:?} -> {:?}", old, new)?;
+                            writeln!(
+                                writer,
+                                "  Supplier: {} -> {}",
+                                format_option(old),
+                                format_option(new)
+                            )?;
                         }
                         FieldChange::Purl(old, new) => {
-                            writeln!(writer, "  Purl: {:?} -> {:?}", old, new)?;
+                            writeln!(
+                                writer,
+                                "  Purl: {} -> {}",
+                                format_option(old),
+                                format_option(new)
+                            )?;
                         }
                         FieldChange::Description(old, new) => {
-                            writeln!(writer, "  Description: {:?} -> {:?}", old, new)?;
+                            writeln!(
+                                writer,
+                                "  Description: {} -> {}",
+                                format_option(old),
+                                format_option(new)
+                            )?;
                         }
                         FieldChange::Hashes => {
                             writeln!(writer, "  Hashes: changed")?;
@@ -157,16 +190,36 @@ impl Renderer for MarkdownRenderer {
                             writeln!(writer, "- **Version**: `{}` &rarr; `{}`", old, new)?;
                         }
                         FieldChange::License(old, new) => {
-                            writeln!(writer, "- **License**: `{:?}` &rarr; `{:?}`", old, new)?;
+                            writeln!(
+                                writer,
+                                "- **License**: `{}` &rarr; `{}`",
+                                format_set(old),
+                                format_set(new)
+                            )?;
                         }
                         FieldChange::Supplier(old, new) => {
-                            writeln!(writer, "- **Supplier**: `{:?}` &rarr; `{:?}`", old, new)?;
+                            writeln!(
+                                writer,
+                                "- **Supplier**: `{}` &rarr; `{}`",
+                                format_option(old),
+                                format_option(new)
+                            )?;
                         }
                         FieldChange::Purl(old, new) => {
-                            writeln!(writer, "- **Purl**: `{:?}` &rarr; `{:?}`", old, new)?;
+                            writeln!(
+                                writer,
+                                "- **Purl**: `{}` &rarr; `{}`",
+                                format_option(old),
+                                format_option(new)
+                            )?;
                         }
                         FieldChange::Description(old, new) => {
-                            writeln!(writer, "- **Description**: `{:?}` &rarr; `{:?}`", old, new)?;
+                            writeln!(
+                                writer,
+                                "- **Description**: `{}` &rarr; `{}`",
+                                format_option(old),
+                                format_option(new)
+                            )?;
                         }
                         FieldChange::Hashes => {
                             writeln!(writer, "- **Hashes**: changed")?;

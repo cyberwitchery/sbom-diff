@@ -20,10 +20,10 @@
 
 #### `pkg:npm/parent@1.1.0`
 - **Version**: `1.0.0` &rarr; `1.1.0`
-- **Purl**: `Some("pkg:npm/parent@1.0.0")` &rarr; `Some("pkg:npm/parent@1.1.0")`
+- **Purl**: `pkg:npm/parent@1.0.0` &rarr; `pkg:npm/parent@1.1.0`
 #### `pkg:npm/pkg-a@1.1.0`
 - **Version**: `1.0.0` &rarr; `1.1.0`
-- **Purl**: `Some("pkg:npm/pkg-a@1.0.0")` &rarr; `Some("pkg:npm/pkg-a@1.1.0")`
+- **Purl**: `pkg:npm/pkg-a@1.0.0` &rarr; `pkg:npm/pkg-a@1.1.0`
 </details>
 
 <details><summary><b>Edge Changes (1)</b></summary>
