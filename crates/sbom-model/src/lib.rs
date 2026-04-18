@@ -186,13 +186,6 @@ impl Sbom {
         // Sort components by ID for deterministic output
         self.components.sort_keys();
 
-        // Sort dependencies
-        for deps in self.dependencies.values_mut() {
-            // BTreeSet is already sorted
-            // But we might want to ensure consistency if we change container types later
-            let _ = deps;
-        }
-
         // Normalize components
         for component in self.components.values_mut() {
             component.normalize();
