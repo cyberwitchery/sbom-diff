@@ -131,83 +131,9 @@ impl CycloneDxReader {
             }
         }
 
-        // 2. Process Components
+        // 2. Process Components (recursively including sub-components)
         if let Some(components) = bom.components {
-            for cdx_comp in components.0 {
-                let name = cdx_comp.name.to_string();
-                let version = cdx_comp.version.as_ref().map(|v| v.to_string());
-
-                let mut props = vec![("name", name.as_str())];
-                let v_str = version.clone().unwrap_or_default();
-                if version.is_some() {
-                    props.push(("version", v_str.as_str()));
-                }
-
-                let supplier = cdx_comp
-                    .supplier
-                    .as_ref()
-                    .map(|s| s.name.as_ref().map(|n| n.to_string()).unwrap_or_default());
-                let s_str = supplier.clone().unwrap_or_default();
-                if supplier.is_some() {
-                    props.push(("supplier", s_str.as_str()));
-                }
-
-                let purl = cdx_comp.purl.as_ref().map(|p| p.to_string());
-                let purl_str = purl.as_deref();
-
-                // Extract ecosystem from purl
-                let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
-
-                let id = ComponentId::new(purl_str, &props);
-
-                let mut comp = Component {
-                    id: id.clone(),
-                    name,
-                    version,
-                    ecosystem,
-                    supplier,
-                    description: cdx_comp.description.as_ref().map(|d| d.to_string()),
-                    purl,
-                    licenses: BTreeSet::new(),
-                    hashes: BTreeMap::new(),
-                    source_ids: Vec::new(),
-                };
-
-                if let Some(bom_ref) = cdx_comp.bom_ref {
-                    comp.source_ids.push(bom_ref.to_string());
-                }
-
-                if let Some(licenses) = cdx_comp.licenses {
-                    for license_choice in licenses.0 {
-                        match license_choice {
-                            cyclonedx_bom::models::license::LicenseChoice::License(l) => {
-                                let li = l.license_identifier;
-                                let s = match li {
-                                    cyclonedx_bom::models::license::LicenseIdentifier::Name(n) => {
-                                        n.to_string()
-                                    }
-                                    cyclonedx_bom::models::license::LicenseIdentifier::SpdxId(
-                                        id,
-                                    ) => id.to_string(),
-                                };
-                                comp.licenses.insert(s);
-                            }
-                            cyclonedx_bom::models::license::LicenseChoice::Expression(e) => {
-                                comp.licenses
-                                    .extend(parse_license_expression(&e.to_string()));
-                            }
-                        }
-                    }
-                }
-
-                if let Some(hashes) = cdx_comp.hashes {
-                    for h in hashes.0 {
-                        comp.hashes.insert(h.alg.to_string(), h.content.0);
-                    }
-                }
-
-                sbom.components.insert(id, comp);
-            }
+            Self::collect_components(&components.0, &mut sbom);
         }
 
         // 3. Process Dependencies
@@ -241,6 +167,91 @@ impl CycloneDxReader {
         }
 
         Ok(sbom)
+    }
+
+    fn collect_components(
+        cdx_components: &[cyclonedx_bom::models::component::Component],
+        sbom: &mut Sbom,
+    ) {
+        for cdx_comp in cdx_components {
+            let name = cdx_comp.name.to_string();
+            let version = cdx_comp.version.as_ref().map(|v| v.to_string());
+
+            let mut props = vec![("name", name.as_str())];
+            let v_str = version.clone().unwrap_or_default();
+            if version.is_some() {
+                props.push(("version", v_str.as_str()));
+            }
+
+            let supplier = cdx_comp
+                .supplier
+                .as_ref()
+                .map(|s| s.name.as_ref().map(|n| n.to_string()).unwrap_or_default());
+            let s_str = supplier.clone().unwrap_or_default();
+            if supplier.is_some() {
+                props.push(("supplier", s_str.as_str()));
+            }
+
+            let purl = cdx_comp.purl.as_ref().map(|p| p.to_string());
+            let purl_str = purl.as_deref();
+
+            // Extract ecosystem from purl
+            let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
+
+            let id = ComponentId::new(purl_str, &props);
+
+            let mut comp = Component {
+                id: id.clone(),
+                name,
+                version,
+                ecosystem,
+                supplier,
+                description: cdx_comp.description.as_ref().map(|d| d.to_string()),
+                purl,
+                licenses: BTreeSet::new(),
+                hashes: BTreeMap::new(),
+                source_ids: Vec::new(),
+            };
+
+            if let Some(bom_ref) = &cdx_comp.bom_ref {
+                comp.source_ids.push(bom_ref.to_string());
+            }
+
+            if let Some(licenses) = &cdx_comp.licenses {
+                for license_choice in &licenses.0 {
+                    match license_choice {
+                        cyclonedx_bom::models::license::LicenseChoice::License(l) => {
+                            let s = match &l.license_identifier {
+                                cyclonedx_bom::models::license::LicenseIdentifier::Name(n) => {
+                                    n.to_string()
+                                }
+                                cyclonedx_bom::models::license::LicenseIdentifier::SpdxId(id) => {
+                                    id.to_string()
+                                }
+                            };
+                            comp.licenses.insert(s);
+                        }
+                        cyclonedx_bom::models::license::LicenseChoice::Expression(e) => {
+                            comp.licenses
+                                .extend(parse_license_expression(&e.to_string()));
+                        }
+                    }
+                }
+            }
+
+            if let Some(hashes) = &cdx_comp.hashes {
+                for h in &hashes.0 {
+                    comp.hashes.insert(h.alg.to_string(), h.content.0.clone());
+                }
+            }
+
+            sbom.components.insert(id, comp);
+
+            // Recurse into sub-components
+            if let Some(sub) = &cdx_comp.components {
+                Self::collect_components(&sub.0, sbom);
+            }
+        }
     }
 }
 
@@ -506,5 +517,174 @@ mod tests {
             .find(|c| c.name == "no-purl-pkg")
             .unwrap();
         assert_eq!(no_purl.ecosystem, None);
+    }
+
+    #[test]
+    fn test_nested_subcomponents_parsed() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "container",
+                    "name": "my-image",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-image",
+                    "components": [
+                        {
+                            "type": "library",
+                            "name": "libc",
+                            "version": "0.2.0",
+                            "bom-ref": "ref-libc",
+                            "purl": "pkg:cargo/libc@0.2.0"
+                        },
+                        {
+                            "type": "library",
+                            "name": "openssl",
+                            "version": "1.1.1",
+                            "bom-ref": "ref-openssl"
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        // Parent + 2 children = 3 components
+        assert_eq!(sbom.components.len(), 3);
+        assert!(sbom.components.values().any(|c| c.name == "my-image"));
+        assert!(sbom.components.values().any(|c| c.name == "libc"));
+        assert!(sbom.components.values().any(|c| c.name == "openssl"));
+    }
+
+    #[test]
+    fn test_deeply_nested_subcomponents() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "container",
+                    "name": "root",
+                    "version": "1.0.0",
+                    "components": [
+                        {
+                            "type": "application",
+                            "name": "mid",
+                            "version": "2.0.0",
+                            "components": [
+                                {
+                                    "type": "library",
+                                    "name": "leaf",
+                                    "version": "3.0.0",
+                                    "purl": "pkg:npm/leaf@3.0.0",
+                                    "licenses": [{"license": {"id": "MIT"}}]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 3);
+
+        let leaf = sbom.components.values().find(|c| c.name == "leaf").unwrap();
+        assert_eq!(leaf.ecosystem, Some("npm".to_string()));
+        assert!(leaf.licenses.contains("MIT"));
+    }
+
+    #[test]
+    fn test_nested_subcomponents_bom_refs_in_dependency_graph() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "container",
+                    "name": "image",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-image",
+                    "components": [
+                        {
+                            "type": "library",
+                            "name": "inner-a",
+                            "version": "1.0.0",
+                            "bom-ref": "ref-inner-a"
+                        },
+                        {
+                            "type": "library",
+                            "name": "inner-b",
+                            "version": "2.0.0",
+                            "bom-ref": "ref-inner-b"
+                        }
+                    ]
+                }
+            ],
+            "dependencies": [
+                {
+                    "ref": "ref-image",
+                    "dependsOn": ["ref-inner-a"]
+                },
+                {
+                    "ref": "ref-inner-a",
+                    "dependsOn": ["ref-inner-b"]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 3);
+
+        let image_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "image")
+            .unwrap()
+            .id
+            .clone();
+        let inner_a_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "inner-a")
+            .unwrap()
+            .id
+            .clone();
+        let inner_b_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "inner-b")
+            .unwrap()
+            .id
+            .clone();
+
+        // image -> inner-a dependency
+        assert!(sbom.dependencies[&image_id].contains(&inner_a_id));
+        // inner-a -> inner-b dependency
+        assert!(sbom.dependencies[&inner_a_id].contains(&inner_b_id));
+    }
+
+    #[test]
+    fn test_nested_subcomponents_xml() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.4" version="1">
+  <components>
+    <component type="container">
+      <name>my-image</name>
+      <version>1.0.0</version>
+      <components>
+        <component type="library">
+          <name>inner-lib</name>
+          <version>0.5.0</version>
+        </component>
+      </components>
+    </component>
+  </components>
+</bom>"#;
+        let sbom = CycloneDxReader::read_xml(xml.as_slice()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+        assert!(sbom.components.values().any(|c| c.name == "my-image"));
+        assert!(sbom.components.values().any(|c| c.name == "inner-lib"));
     }
 }

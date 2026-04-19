@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- parse nested CycloneDX sub-components recursively: components with child `components` arrays (common in container images and monorepos) are now flattened into the SBOM instead of being silently dropped
 - add `--fail-on removed-components` and `--fail-on changed-components` CI gate variants: supply-chain policies can now flag component removals and field-level changes alongside additions
 - strip SPDX supplier prefixes (`Organization: `, `Person: `) during parsing so cross-format diffs no longer produce false positives
 - add `Diff::is_empty()` convenience method
