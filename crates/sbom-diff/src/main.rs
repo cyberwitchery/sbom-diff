@@ -59,6 +59,10 @@ enum FailOn {
     MissingHashes,
     /// Fail if any components were added.
     AddedComponents,
+    /// Fail if any components were removed.
+    RemovedComponents,
+    /// Fail if any components changed.
+    ChangedComponents,
     /// Fail if any dependency edges changed.
     Deps,
 }
@@ -220,6 +224,28 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                         );
                         violation = true;
                     }
+                }
+            }
+            FailOn::RemovedComponents => {
+                if !diff.removed.is_empty() {
+                    for comp in &diff.removed {
+                        eprintln!(
+                            "error: removed component {} (--fail-on removed-components)",
+                            comp.id
+                        );
+                    }
+                    violation = true;
+                }
+            }
+            FailOn::ChangedComponents => {
+                if !diff.changed.is_empty() {
+                    for change in &diff.changed {
+                        eprintln!(
+                            "error: changed component {} (--fail-on changed-components)",
+                            change.id
+                        );
+                    }
+                    violation = true;
                 }
             }
             FailOn::Deps => {
@@ -591,6 +617,54 @@ mod tests {
     }
 
     #[test]
+    fn test_check_fail_on_removed_components() {
+        use sbom_diff::Diff;
+
+        let mut diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        // No removed components - no violation
+        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
+
+        // With removed component - violation
+        diff.removed
+            .push(Component::new("old-pkg".into(), Some("1.0".into())));
+        assert!(check_fail_on(&diff, &[FailOn::RemovedComponents]));
+    }
+
+    #[test]
+    fn test_check_fail_on_changed_components() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        // No changed components - no violation
+        assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
+
+        // With changed component - violation
+        let old = Component::new("pkg".into(), Some("1.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0".into()));
+        diff.changed.push(ComponentChange {
+            id: old.id.clone(),
+            old: old.clone(),
+            new,
+            changes: vec![FieldChange::Version("1.0".into(), "2.0".into())],
+        });
+        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+    }
+
+    #[test]
     fn test_description_only_changes_do_not_trigger_gates() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
@@ -616,7 +690,14 @@ mod tests {
 
         assert!(!check_fail_on(
             &diff,
-            &[FailOn::AddedComponents, FailOn::MissingHashes, FailOn::Deps]
+            &[
+                FailOn::AddedComponents,
+                FailOn::RemovedComponents,
+                FailOn::MissingHashes,
+                FailOn::Deps,
+            ]
         ));
+        // But ChangedComponents *should* trigger on description changes
+        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
     }
 }

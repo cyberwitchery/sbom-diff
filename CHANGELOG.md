@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- add `--fail-on removed-components` and `--fail-on changed-components` CI gate variants: supply-chain policies can now flag component removals and field-level changes alongside additions
 - strip SPDX supplier prefixes (`Organization: `, `Person: `) during parsing so cross-format diffs no longer produce false positives
 - add `Diff::is_empty()` convenience method
 - optimize `by_purl()` from O(n) linear scan to O(1) via direct `ComponentId` lookup
