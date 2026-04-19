@@ -292,16 +292,23 @@ fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
             SpdxReader::read_json(&content[..]).map_err(|e| anyhow!("spdx error: {}", e))
         }
         Format::Auto => {
-            if let Ok(sbom) = CycloneDxReader::read_json(&content[..]) {
-                return Ok(sbom);
+            let mut errors = Vec::new();
+            match CycloneDxReader::read_json(&content[..]) {
+                Ok(sbom) => return Ok(sbom),
+                Err(e) => errors.push(format!("  cyclonedx json: {e}")),
             }
-            if let Ok(sbom) = CycloneDxReader::read_xml(&content[..]) {
-                return Ok(sbom);
+            match CycloneDxReader::read_xml(&content[..]) {
+                Ok(sbom) => return Ok(sbom),
+                Err(e) => errors.push(format!("  cyclonedx xml: {e}")),
             }
-            if let Ok(sbom) = SpdxReader::read_json(&content[..]) {
-                return Ok(sbom);
+            match SpdxReader::read_json(&content[..]) {
+                Ok(sbom) => return Ok(sbom),
+                Err(e) => errors.push(format!("  spdx json: {e}")),
             }
-            Err(anyhow!("could not detect sbom format automatically"))
+            Err(anyhow!(
+                "could not detect sbom format automatically; tried:\n{}",
+                errors.join("\n")
+            ))
         }
     }
 }
