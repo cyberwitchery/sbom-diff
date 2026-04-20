@@ -31,8 +31,6 @@ spdx = "0.10"
 packageurl = "0.3"
 sha2 = "0.10"
 hex = "0.4"
-semver = "1.0"
-schemars = "0.8"
 
 [profile.release]
 strip = true
