@@ -1,6 +1,8 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::{parse_license_expression, Component, ComponentId, Sbom};
+use sbom_model::{
+    canonical_algorithm_name, parse_license_expression, Component, ComponentId, Sbom,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
@@ -250,7 +252,10 @@ impl CycloneDxReader {
 
             if let Some(hashes) = &cdx_comp.hashes {
                 for h in &hashes.0 {
-                    comp.hashes.insert(h.alg.to_string(), h.content.0.clone());
+                    comp.hashes.insert(
+                        canonical_algorithm_name(&h.alg.to_string()),
+                        h.content.0.clone(),
+                    );
                 }
             }
 

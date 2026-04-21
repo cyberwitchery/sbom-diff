@@ -350,6 +350,44 @@ pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
     }
 }
 
+/// Normalizes a hash algorithm name to its canonical form.
+///
+/// Handles variations in casing and hyphenation so that algorithm names
+/// from different SBOM formats (SPDX, CycloneDX) compare equal.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::canonical_algorithm_name;
+///
+/// assert_eq!(canonical_algorithm_name("SHA256"), "SHA-256");
+/// assert_eq!(canonical_algorithm_name("SHA-256"), "SHA-256");
+/// assert_eq!(canonical_algorithm_name("sha256"), "SHA-256");
+/// ```
+pub fn canonical_algorithm_name(name: &str) -> String {
+    match name.replace('-', "").to_uppercase().as_str() {
+        "MD2" => "MD2",
+        "MD4" => "MD4",
+        "MD5" => "MD5",
+        "MD6" => "MD6",
+        "SHA1" => "SHA-1",
+        "SHA224" => "SHA-224",
+        "SHA256" => "SHA-256",
+        "SHA384" => "SHA-384",
+        "SHA512" => "SHA-512",
+        "SHA3256" => "SHA3-256",
+        "SHA3384" => "SHA3-384",
+        "SHA3512" => "SHA3-512",
+        "BLAKE2B256" => "BLAKE2b-256",
+        "BLAKE2B384" => "BLAKE2b-384",
+        "BLAKE2B512" => "BLAKE2b-512",
+        "BLAKE3" => "BLAKE3",
+        "ADLER32" => "ADLER-32",
+        _ => return name.to_string(),
+    }
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,5 +634,44 @@ mod tests {
         );
         assert_eq!(ecosystem_from_purl("invalid-purl"), None);
         assert_eq!(ecosystem_from_purl(""), None);
+    }
+
+    #[test]
+    fn test_canonical_algorithm_name() {
+        // SHA family without hyphens (SPDX style)
+        assert_eq!(canonical_algorithm_name("SHA256"), "SHA-256");
+        assert_eq!(canonical_algorithm_name("SHA1"), "SHA-1");
+        assert_eq!(canonical_algorithm_name("SHA384"), "SHA-384");
+        assert_eq!(canonical_algorithm_name("SHA512"), "SHA-512");
+        assert_eq!(canonical_algorithm_name("SHA224"), "SHA-224");
+
+        // SHA family with hyphens (CycloneDX style)
+        assert_eq!(canonical_algorithm_name("SHA-256"), "SHA-256");
+        assert_eq!(canonical_algorithm_name("SHA-1"), "SHA-1");
+        assert_eq!(canonical_algorithm_name("SHA-384"), "SHA-384");
+
+        // Case-insensitive
+        assert_eq!(canonical_algorithm_name("sha256"), "SHA-256");
+        assert_eq!(canonical_algorithm_name("sha-256"), "SHA-256");
+
+        // SHA-3
+        assert_eq!(canonical_algorithm_name("SHA3-256"), "SHA3-256");
+        assert_eq!(canonical_algorithm_name("SHA3256"), "SHA3-256");
+
+        // MD family
+        assert_eq!(canonical_algorithm_name("MD5"), "MD5");
+        assert_eq!(canonical_algorithm_name("md5"), "MD5");
+
+        // BLAKE
+        assert_eq!(canonical_algorithm_name("BLAKE2b-256"), "BLAKE2b-256");
+        assert_eq!(canonical_algorithm_name("BLAKE2B256"), "BLAKE2b-256");
+        assert_eq!(canonical_algorithm_name("BLAKE3"), "BLAKE3");
+
+        // ADLER
+        assert_eq!(canonical_algorithm_name("ADLER32"), "ADLER-32");
+        assert_eq!(canonical_algorithm_name("ADLER-32"), "ADLER-32");
+
+        // Unknown algorithm passes through
+        assert_eq!(canonical_algorithm_name("TIGER"), "TIGER");
     }
 }

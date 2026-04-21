@@ -1,6 +1,8 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::{parse_license_expression, Component, ComponentId, Sbom};
+use sbom_model::{
+    canonical_algorithm_name, parse_license_expression, Component, ComponentId, Sbom,
+};
 use spdx_rs::models::RelationshipType;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -15,30 +17,6 @@ pub enum Error {
     /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-fn canonical_algorithm_name(alg: &spdx_rs::models::Algorithm) -> String {
-    use spdx_rs::models::Algorithm;
-    match alg {
-        Algorithm::MD2 => "MD2",
-        Algorithm::MD4 => "MD4",
-        Algorithm::MD5 => "MD5",
-        Algorithm::MD6 => "MD6",
-        Algorithm::SHA1 => "SHA-1",
-        Algorithm::SHA224 => "SHA-224",
-        Algorithm::SHA256 => "SHA-256",
-        Algorithm::SHA384 => "SHA-384",
-        Algorithm::SHA512 => "SHA-512",
-        Algorithm::SHA3256 => "SHA3-256",
-        Algorithm::SHA3384 => "SHA3-384",
-        Algorithm::SHA3512 => "SHA3-512",
-        Algorithm::BLAKE2B256 => "BLAKE2b-256",
-        Algorithm::BLAKE2B384 => "BLAKE2b-384",
-        Algorithm::BLAKE2B512 => "BLAKE2b-512",
-        Algorithm::BLAKE3 => "BLAKE3",
-        Algorithm::ADLER32 => "ADLER-32",
-    }
-    .to_string()
 }
 
 /// Parser for SPDX JSON documents.
@@ -138,7 +116,7 @@ impl SpdxReader {
             // Hashes
             for checksum in pkg.package_checksum {
                 comp.hashes.insert(
-                    canonical_algorithm_name(&checksum.algorithm),
+                    canonical_algorithm_name(&format!("{:?}", checksum.algorithm)),
                     checksum.value,
                 );
             }
