@@ -5,6 +5,7 @@ use sbom_diff::{
 use sbom_model::Sbom;
 use sbom_model_cyclonedx::CycloneDxReader;
 use sbom_model_spdx::SpdxReader;
+use std::collections::BTreeMap;
 use std::fs;
 
 fn fixture_path(name: &str) -> String {
@@ -228,4 +229,85 @@ fn cyclonedx_xml_markdown_renderer_golden_output_matches_fixture() {
         .expect("golden markdown snapshot should exist");
 
     assert_eq!(actual, expected);
+}
+
+// Cross-format hash normalization: identical components parsed from
+// SPDX and CycloneDX should produce identical hash algorithm keys,
+// so diffing them yields no hash changes.
+
+#[test]
+fn cross_format_identical_hashes_produce_no_diff() {
+    let spdx_json = r#"{
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "test",
+        "documentNamespace": "http://spdx.org/spdxdocs/test",
+        "creationInfo": {
+            "creators": ["Tool: test"],
+            "created": "2023-01-01T00:00:00Z"
+        },
+        "packages": [
+            {
+                "name": "pkg-a",
+                "SPDXID": "SPDXRef-pkg-a",
+                "downloadLocation": "NONE",
+                "versionInfo": "1.0.0",
+                "externalRefs": [
+                    {
+                        "referenceCategory": "PACKAGE-MANAGER",
+                        "referenceType": "purl",
+                        "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+                    }
+                ],
+                "checksums": [
+                    {"algorithm": "SHA256", "checksumValue": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+                    {"algorithm": "SHA1", "checksumValue": "abcdef1234567890abcdef1234567890abcdef12"},
+                    {"algorithm": "MD5", "checksumValue": "abcdef1234567890abcdef1234567890"}
+                ]
+            }
+        ],
+        "relationships": []
+    }"#;
+
+    let cdx_json = r#"{
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.4",
+        "version": 1,
+        "components": [
+            {
+                "type": "library",
+                "name": "pkg-a",
+                "version": "1.0.0",
+                "purl": "pkg:npm/pkg-a@1.0.0",
+                "hashes": [
+                    {"alg": "SHA-256", "content": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
+                    {"alg": "SHA-1", "content": "abcdef1234567890abcdef1234567890abcdef12"},
+                    {"alg": "MD5", "content": "abcdef1234567890abcdef1234567890"}
+                ]
+            }
+        ]
+    }"#;
+
+    let spdx_sbom = SpdxReader::read_json(spdx_json.as_bytes()).unwrap();
+    let cdx_sbom = CycloneDxReader::read_json(cdx_json.as_bytes()).unwrap();
+
+    // Algorithm keys must match exactly between formats
+    let spdx_hashes: BTreeMap<_, _> = spdx_sbom.components[0].hashes.clone();
+    let cdx_hashes: BTreeMap<_, _> = cdx_sbom.components[0].hashes.clone();
+    assert_eq!(
+        spdx_hashes.keys().collect::<Vec<_>>(),
+        cdx_hashes.keys().collect::<Vec<_>>(),
+        "hash algorithm names should be identical across SPDX and CycloneDX"
+    );
+
+    // Diffing SPDX-old against CycloneDX-new should yield no changes
+    let diff = Differ::diff(&spdx_sbom, &cdx_sbom, None);
+    assert!(
+        diff.changed.is_empty(),
+        "identical components from SPDX and CycloneDX should produce no diff, but got {} changed",
+        diff.changed.len()
+    );
+    assert!(diff.added.is_empty());
+    assert!(diff.removed.is_empty());
 }
