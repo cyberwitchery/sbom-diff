@@ -80,20 +80,21 @@ fn compare(old: &Sbom, new: &Sbom) -> Diff {
 built-in renderers for common output formats:
 
 ```rust
-use sbom_diff::{Diff, renderer::{Renderer, TextRenderer, MarkdownRenderer, JsonRenderer}};
+use sbom_diff::{Diff, renderer::{Renderer, RenderOptions, TextRenderer, MarkdownRenderer, JsonRenderer}};
 use std::io::stdout;
 
 fn render(diff: &Diff) -> anyhow::Result<()> {
     let mut out = stdout().lock();
+    let opts = RenderOptions::default();
 
     // plain text (default)
-    TextRenderer.render(diff, &mut out)?;
+    TextRenderer.render(diff, &opts, &mut out)?;
 
     // markdown with collapsible sections
-    MarkdownRenderer.render(diff, &mut out)?;
+    MarkdownRenderer.render(diff, &opts, &mut out)?;
 
     // json for machine consumption
-    JsonRenderer.render(diff, &mut out)?;
+    JsonRenderer.render(diff, &opts, &mut out)?;
 
     Ok(())
 }

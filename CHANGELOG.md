@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- add `--group-by-ecosystem` flag: breaks down added/removed/changed counts by package ecosystem (npm, cargo, pypi, etc.) and groups detail sections per ecosystem in all three output formats; JSON additionally includes `by_ecosystem` with full per-ecosystem component data
 - parse nested CycloneDX sub-components recursively: components with child `components` arrays (common in container images and monorepos) are now flattened into the SBOM instead of being silently dropped
 - add `--fail-on removed-components` and `--fail-on changed-components` CI gate variants: supply-chain policies can now flag component removals and field-level changes alongside additions
 - show per-parser rejection reasons when `--format auto` fails to detect the SBOM format, instead of the generic "could not detect sbom format automatically" message
