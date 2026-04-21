@@ -168,13 +168,28 @@ impl SpdxReader {
             );
 
             if is_dependency {
-                if let (Some(parent_id), Some(child_id)) =
-                    (ref_map.get(&parent_spdx), ref_map.get(&child_spdx))
-                {
-                    sbom.dependencies
-                        .entry(parent_id.clone())
-                        .or_default()
-                        .insert(child_id.clone());
+                let parent_id = ref_map.get(&parent_spdx);
+                let child_id = ref_map.get(&child_spdx);
+
+                match (parent_id, child_id) {
+                    (Some(pid), Some(cid)) => {
+                        sbom.dependencies
+                            .entry(pid.clone())
+                            .or_default()
+                            .insert(cid.clone());
+                    }
+                    (None, _) => {
+                        sbom.warnings.push(format!(
+                            "SPDX: relationship source '{}' does not match any package",
+                            parent_spdx
+                        ));
+                    }
+                    (_, None) => {
+                        sbom.warnings.push(format!(
+                            "SPDX: relationship target '{}' (from '{}') does not match any package",
+                            child_spdx, parent_spdx
+                        ));
+                    }
                 }
             }
         }
@@ -412,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_relationship_with_unknown_spdxid_ignored() {
+    fn test_relationship_with_unknown_spdxid_warned() {
         let json = r#"{
             "spdxVersion": "SPDX-2.3",
             "dataLicense": "CC0-1.0",
@@ -439,8 +454,42 @@ mod tests {
             ]
         }"#;
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
-        // Unknown target ref should be silently ignored
         assert!(sbom.dependencies.is_empty());
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].contains("SPDXRef-unknown"));
+    }
+
+    #[test]
+    fn test_relationship_with_unknown_source_warned() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-unknown-parent",
+                    "relatedSpdxElement": "SPDXRef-pkg-a",
+                    "relationshipType": "DEPENDS_ON"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.dependencies.is_empty());
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].contains("SPDXRef-unknown-parent"));
     }
 
     #[test]

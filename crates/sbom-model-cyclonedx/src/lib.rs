@@ -153,15 +153,24 @@ impl CycloneDxReader {
                 let parent_ref = dep.dependency_ref;
                 if let Some(parent_id) = ref_map.get(&parent_ref.to_string()) {
                     let mut children = BTreeSet::new();
-                    // dependencies is Vec<String>
                     for child_ref in dep.dependencies {
                         if let Some(child_id) = ref_map.get(&child_ref.to_string()) {
                             children.insert(child_id.clone());
+                        } else {
+                            sbom.warnings.push(format!(
+                                "CycloneDX: dependency bom-ref '{}' (child of '{}') does not match any component",
+                                child_ref, parent_ref
+                            ));
                         }
                     }
                     if !children.is_empty() {
                         sbom.dependencies.insert(parent_id.clone(), children);
                     }
+                } else {
+                    sbom.warnings.push(format!(
+                        "CycloneDX: dependency bom-ref '{}' does not match any component",
+                        parent_ref
+                    ));
                 }
             }
         }
@@ -440,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dependencies_with_unknown_ref_ignored() {
+    fn test_dependencies_with_unknown_ref_warned() {
         let json = r#"{
             "bomFormat": "CycloneDX",
             "specVersion": "1.4",
@@ -465,8 +474,10 @@ mod tests {
             ]
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
-        // Unknown refs should be silently ignored
         assert!(sbom.dependencies.is_empty());
+        assert_eq!(sbom.warnings.len(), 2);
+        assert!(sbom.warnings[0].contains("ref-unknown"));
+        assert!(sbom.warnings[1].contains("ref-also-unknown"));
     }
 
     #[test]
