@@ -103,6 +103,10 @@ fn main() -> anyhow::Result<()> {
     let old_sbom = load_sbom(&args.old, args.format).context("failed to load old sbom")?;
     let new_sbom = load_sbom(&args.new, args.format).context("failed to load new sbom")?;
 
+    for w in old_sbom.warnings.iter().chain(new_sbom.warnings.iter()) {
+        eprintln!("warning: {}", w);
+    }
+
     let only_fields: Vec<sbom_diff::Field> = args
         .only
         .iter()

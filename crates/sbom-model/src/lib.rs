@@ -29,6 +29,9 @@ pub struct Sbom {
     pub components: IndexMap<ComponentId, Component>,
     /// Dependency graph as adjacency list: parent -> set of children.
     pub dependencies: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
+    /// Non-fatal warnings produced during parsing (e.g. orphaned dependency refs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl Default for Sbom {
@@ -37,6 +40,7 @@ impl Default for Sbom {
             metadata: Metadata::default(),
             components: IndexMap::new(),
             dependencies: BTreeMap::new(),
+            warnings: Vec::new(),
         }
     }
 }
