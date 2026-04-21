@@ -127,12 +127,23 @@ impl SpdxReader {
                 source_ids: vec![pkg.package_spdx_identifier.clone()],
             };
 
-            // Licenses
-            if let Some(l) = pkg.concluded_license {
-                let l_str = l.to_string();
-                if l_str != "NOASSERTION" && l_str != "NONE" {
-                    comp.licenses.extend(parse_license_expression(&l_str));
-                }
+            // Licenses: prefer concludedLicense, fall back to declaredLicense
+            // when concluded is absent or NOASSERTION/NONE (common in
+            // automated tooling output from syft, trivy, etc.).
+            let license_expr = pkg
+                .concluded_license
+                .as_ref()
+                .filter(|l| {
+                    let s = l.to_string();
+                    s != "NOASSERTION" && s != "NONE"
+                })
+                .or(pkg.declared_license.as_ref().filter(|l| {
+                    let s = l.to_string();
+                    s != "NOASSERTION" && s != "NONE"
+                }));
+            if let Some(l) = license_expr {
+                comp.licenses
+                    .extend(parse_license_expression(&l.to_string()));
             }
 
             // Hashes
@@ -155,6 +166,11 @@ impl SpdxReader {
             }
         }
 
+        let doc_spdx_id = spdx_doc
+            .document_creation_information
+            .spdx_identifier
+            .clone();
+
         for rel in spdx_doc.relationships {
             let parent_spdx = rel.spdx_element_id;
             let child_spdx = rel.related_spdx_element;
@@ -168,6 +184,14 @@ impl SpdxReader {
             );
 
             if is_dependency {
+                // Skip relationships involving the document element itself
+                // (e.g. SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package). The
+                // document element is not a package so it will never appear
+                // in ref_map, and warning about it is a false positive.
+                if parent_spdx == doc_spdx_id || child_spdx == doc_spdx_id {
+                    continue;
+                }
+
                 let parent_id = ref_map.get(&parent_spdx);
                 let child_id = ref_map.get(&child_spdx);
 
@@ -767,5 +791,107 @@ mod tests {
             sbom.metadata.authors,
             vec!["Organization: Acme Corp", "Person: alice"]
         );
+    }
+
+    #[test]
+    fn test_document_describes_no_false_positive_warning() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relatedSpdxElement": "SPDXRef-pkg-a",
+                    "relationshipType": "DESCRIBES"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.warnings.is_empty());
+        assert!(sbom.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_declared_license_fallback() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "concluded-noassertion",
+                    "SPDXID": "SPDXRef-a",
+                    "downloadLocation": "NONE",
+                    "licenseConcluded": "NOASSERTION",
+                    "licenseDeclared": "MIT"
+                },
+                {
+                    "name": "concluded-none",
+                    "SPDXID": "SPDXRef-b",
+                    "downloadLocation": "NONE",
+                    "licenseConcluded": "NONE",
+                    "licenseDeclared": "Apache-2.0"
+                },
+                {
+                    "name": "both-noassertion",
+                    "SPDXID": "SPDXRef-c",
+                    "downloadLocation": "NONE",
+                    "licenseConcluded": "NOASSERTION",
+                    "licenseDeclared": "NOASSERTION"
+                },
+                {
+                    "name": "concluded-present",
+                    "SPDXID": "SPDXRef-d",
+                    "downloadLocation": "NONE",
+                    "licenseConcluded": "GPL-3.0-only",
+                    "licenseDeclared": "MIT"
+                },
+                {
+                    "name": "no-license-fields",
+                    "SPDXID": "SPDXRef-e",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+
+        let find = |name: &str| sbom.components.values().find(|c| c.name == name).unwrap();
+
+        // NOASSERTION concluded -> falls back to declared MIT
+        assert!(find("concluded-noassertion").licenses.contains("MIT"));
+
+        // NONE concluded -> falls back to declared Apache-2.0
+        assert!(find("concluded-none").licenses.contains("Apache-2.0"));
+
+        // Both NOASSERTION -> no licenses
+        assert!(find("both-noassertion").licenses.is_empty());
+
+        // Valid concluded -> uses concluded, ignores declared
+        assert!(find("concluded-present").licenses.contains("GPL-3.0"));
+        assert!(!find("concluded-present").licenses.contains("MIT"));
+
+        // No license fields at all -> empty
+        assert!(find("no-license-fields").licenses.is_empty());
     }
 }
