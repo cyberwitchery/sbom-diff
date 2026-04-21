@@ -1,5 +1,5 @@
 use sbom_diff::{
-    renderer::{MarkdownRenderer, Renderer, TextRenderer},
+    renderer::{MarkdownRenderer, RenderOptions, Renderer, TextRenderer},
     Differ,
 };
 use sbom_model::Sbom;
@@ -87,7 +87,7 @@ fn text_renderer_golden_output_matches_fixture() {
 
     let mut out = Vec::new();
     TextRenderer
-        .render(&diff, &mut out)
+        .render(&diff, &RenderOptions::default(), &mut out)
         .expect("text renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
@@ -106,7 +106,7 @@ fn markdown_renderer_golden_output_matches_fixture() {
 
     let mut out = Vec::new();
     MarkdownRenderer
-        .render(&diff, &mut out)
+        .render(&diff, &RenderOptions::default(), &mut out)
         .expect("markdown renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
@@ -145,7 +145,7 @@ fn spdx_text_renderer_golden_output_matches_fixture() {
 
     let mut out = Vec::new();
     TextRenderer
-        .render(&diff, &mut out)
+        .render(&diff, &RenderOptions::default(), &mut out)
         .expect("text renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
@@ -164,7 +164,7 @@ fn spdx_markdown_renderer_golden_output_matches_fixture() {
 
     let mut out = Vec::new();
     MarkdownRenderer
-        .render(&diff, &mut out)
+        .render(&diff, &RenderOptions::default(), &mut out)
         .expect("markdown renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
@@ -201,7 +201,7 @@ fn cyclonedx_xml_text_renderer_golden_output_matches_fixture() {
 
     let mut out = Vec::new();
     TextRenderer
-        .render(&diff, &mut out)
+        .render(&diff, &RenderOptions::default(), &mut out)
         .expect("text renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
@@ -220,7 +220,7 @@ fn cyclonedx_xml_markdown_renderer_golden_output_matches_fixture() {
 
     let mut out = Vec::new();
     MarkdownRenderer
-        .render(&diff, &mut out)
+        .render(&diff, &RenderOptions::default(), &mut out)
         .expect("markdown renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");

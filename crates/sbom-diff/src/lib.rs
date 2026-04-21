@@ -6,6 +6,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub mod renderer;
 
+/// Per-ecosystem counts of added, removed, and changed components.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EcosystemCounts {
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+}
+
 /// The result of comparing two SBOMs.
 ///
 /// Contains lists of added, removed, and changed components,
@@ -33,6 +41,76 @@ impl Diff {
             && self.edge_diffs.is_empty()
             && !self.metadata_changed
     }
+
+    /// Groups added/removed/changed counts by package ecosystem.
+    ///
+    /// Components without an ecosystem are grouped under `"unknown"`.
+    pub fn ecosystem_breakdown(&self) -> BTreeMap<String, EcosystemCounts> {
+        let mut breakdown: BTreeMap<String, EcosystemCounts> = BTreeMap::new();
+
+        for comp in &self.added {
+            let eco = comp.ecosystem.clone().unwrap_or_else(|| "unknown".into());
+            breakdown.entry(eco).or_default().added += 1;
+        }
+
+        for comp in &self.removed {
+            let eco = comp.ecosystem.clone().unwrap_or_else(|| "unknown".into());
+            breakdown.entry(eco).or_default().removed += 1;
+        }
+
+        for change in &self.changed {
+            let eco = change
+                .new
+                .ecosystem
+                .clone()
+                .unwrap_or_else(|| "unknown".into());
+            breakdown.entry(eco).or_default().changed += 1;
+        }
+
+        breakdown
+    }
+
+    /// Groups the full diff by ecosystem, returning per-ecosystem slices.
+    ///
+    /// Components without an ecosystem are grouped under `"unknown"`.
+    pub fn group_by_ecosystem(&self) -> GroupedDiff {
+        let mut ecosystems: BTreeMap<String, EcosystemDiff> = BTreeMap::new();
+
+        for c in &self.added {
+            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
+            ecosystems.entry(eco).or_default().added.push(c.clone());
+        }
+        for c in &self.removed {
+            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
+            ecosystems.entry(eco).or_default().removed.push(c.clone());
+        }
+        for c in &self.changed {
+            let eco = c.new.ecosystem.as_deref().unwrap_or("unknown").to_string();
+            ecosystems.entry(eco).or_default().changed.push(c.clone());
+        }
+
+        GroupedDiff {
+            by_ecosystem: ecosystems,
+            edge_diffs: self.edge_diffs.clone(),
+            metadata_changed: self.metadata_changed,
+        }
+    }
+}
+
+/// Diff grouped by package ecosystem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupedDiff {
+    pub by_ecosystem: BTreeMap<String, EcosystemDiff>,
+    pub edge_diffs: Vec<EdgeDiff>,
+    pub metadata_changed: bool,
+}
+
+/// Per-ecosystem slice of added, removed, and changed components.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EcosystemDiff {
+    pub added: Vec<Component>,
+    pub removed: Vec<Component>,
+    pub changed: Vec<ComponentChange>,
 }
 
 /// A component that exists in both SBOMs with detected changes.
@@ -980,5 +1058,56 @@ mod tests {
         // With filtering to include Deps - should have edge diff
         let diff_with_deps = Differ::diff(&old, &new, Some(&[Field::Deps]));
         assert_eq!(diff_with_deps.edge_diffs.len(), 1);
+    }
+
+    #[test]
+    fn test_ecosystem_breakdown() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // npm component in old only (removed)
+        let mut c1 = Component::new("lodash".into(), Some("4.17.21".into()));
+        c1.ecosystem = Some("npm".into());
+        old.components.insert(c1.id.clone(), c1);
+
+        // npm component in new only (added)
+        let mut c2 = Component::new("express".into(), Some("4.18.0".into()));
+        c2.ecosystem = Some("npm".into());
+        new.components.insert(c2.id.clone(), c2);
+
+        // cargo component in new only (added)
+        let mut c3 = Component::new("serde".into(), Some("1.0.0".into()));
+        c3.ecosystem = Some("cargo".into());
+        new.components.insert(c3.id.clone(), c3);
+
+        // npm component changed (present in both, different version)
+        let mut c4_old = Component::new("react".into(), Some("17.0.0".into()));
+        c4_old.ecosystem = Some("npm".into());
+        let mut c4_new = Component::new("react".into(), Some("18.0.0".into()));
+        c4_new.ecosystem = Some("npm".into());
+        old.components.insert(c4_old.id.clone(), c4_old);
+        new.components.insert(c4_new.id.clone(), c4_new);
+
+        // component with no ecosystem (added)
+        let c5 = Component::new("mystery".into(), Some("1.0".into()));
+        new.components.insert(c5.id.clone(), c5);
+
+        let diff = Differ::diff(&old, &new, None);
+        let breakdown = diff.ecosystem_breakdown();
+
+        let npm = breakdown.get("npm").unwrap();
+        assert_eq!(npm.added, 1);
+        assert_eq!(npm.removed, 1);
+        assert_eq!(npm.changed, 1);
+
+        let cargo = breakdown.get("cargo").unwrap();
+        assert_eq!(cargo.added, 1);
+        assert_eq!(cargo.removed, 0);
+        assert_eq!(cargo.changed, 0);
+
+        let unknown = breakdown.get("unknown").unwrap();
+        assert_eq!(unknown.added, 1);
+        assert_eq!(unknown.removed, 0);
+        assert_eq!(unknown.changed, 0);
     }
 }

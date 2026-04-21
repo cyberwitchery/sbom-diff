@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context};
 use clap::{Parser, ValueEnum};
 use sbom_diff::{
-    renderer::{JsonRenderer, MarkdownRenderer, Renderer, TextRenderer},
+    renderer::{JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, TextRenderer},
     Differ,
 };
 use sbom_model::Sbom;
@@ -42,6 +42,10 @@ struct Args {
     /// fail on specific conditions (repeatable)
     #[arg(long, value_enum)]
     fail_on: Vec<FailOn>,
+
+    /// break down counts by package ecosystem (npm, cargo, pypi, etc)
+    #[arg(long)]
+    group_by_ecosystem: bool,
 
     /// print only summary counts (no component details)
     #[arg(long)]
@@ -130,13 +134,17 @@ fn main() -> anyhow::Result<()> {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
 
+        let render_opts = RenderOptions {
+            group_by_ecosystem: args.group_by_ecosystem,
+        };
+
         if args.summary {
-            render_summary(&diff, &mut handle)?;
+            render_summary(&diff, &render_opts, &mut handle)?;
         } else {
             match args.output {
-                Output::Text => TextRenderer.render(&diff, &mut handle)?,
-                Output::Markdown => MarkdownRenderer.render(&diff, &mut handle)?,
-                Output::Json => JsonRenderer.render(&diff, &mut handle)?,
+                Output::Text => TextRenderer.render(&diff, &render_opts, &mut handle)?,
+                Output::Markdown => MarkdownRenderer.render(&diff, &render_opts, &mut handle)?,
+                Output::Json => JsonRenderer.render(&diff, &render_opts, &mut handle)?,
             }
         }
     }
@@ -191,11 +199,31 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     violation
 }
 
-fn render_summary(diff: &sbom_diff::Diff, out: &mut impl io::Write) -> io::Result<()> {
+fn render_summary(
+    diff: &sbom_diff::Diff,
+    opts: &RenderOptions,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
     writeln!(out, "Added:        {}", diff.added.len())?;
     writeln!(out, "Removed:      {}", diff.removed.len())?;
     writeln!(out, "Changed:      {}", diff.changed.len())?;
     writeln!(out, "Edge changes: {}", diff.edge_diffs.len())?;
+
+    if opts.group_by_ecosystem {
+        let breakdown = diff.ecosystem_breakdown();
+        if !breakdown.is_empty() {
+            writeln!(out)?;
+            writeln!(out, "By ecosystem:")?;
+            for (eco, counts) in &breakdown {
+                writeln!(
+                    out,
+                    "  {}: {} added, {} removed, {} changed",
+                    eco, counts.added, counts.removed, counts.changed
+                )?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -426,7 +454,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary(&diff, &mut buf).unwrap();
+        render_summary(&diff, &RenderOptions::default(), &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Added:        2"));
@@ -461,7 +489,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary(&diff, &mut buf).unwrap();
+        render_summary(&diff, &RenderOptions::default(), &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Edge changes: 2"));
