@@ -2,6 +2,8 @@
 
 ## unreleased
 
+- fix false-positive orphan warnings for `SPDXRef-DOCUMENT` DESCRIBES relationships (fires on every real SPDX file because the document element is not a package)
+- fall back to `licenseDeclared` when SPDX `licenseConcluded` is NOASSERTION or NONE, so tools like syft and trivy that leave `licenseConcluded` unset no longer produce components with empty license data
 - warn on orphaned dependency references: both SPDX and CycloneDX parsers now emit warnings to stderr when a dependency relationship references a component ID (bom-ref or SPDXID) that doesn't exist in the document, instead of silently dropping the edge
 - add `--group-by-ecosystem` flag: breaks down added/removed/changed counts by package ecosystem (npm, cargo, pypi, etc.) and groups detail sections per ecosystem in all three output formats; JSON additionally includes `by_ecosystem` with full per-ecosystem component data
 - parse nested CycloneDX sub-components recursively: components with child `components` arrays (common in container images and monorepos) are now flattened into the SBOM instead of being silently dropped
