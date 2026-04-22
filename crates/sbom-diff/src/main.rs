@@ -7,6 +7,7 @@ use sbom_diff::{
 use sbom_model::Sbom;
 use sbom_model_cyclonedx::CycloneDxReader;
 use sbom_model_spdx::SpdxReader;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read};
 
@@ -168,8 +169,8 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
     // Normalize to lowercase for matching so that e.g. --deny-license GPL-3.0-only
     // catches components whose SBOM uses gpl-3.0-only.
-    let deny_lower: Vec<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
-    let allow_lower: Vec<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let deny_lower: HashSet<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let allow_lower: HashSet<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     let mut violation = false;
     for comp in sbom.components.values() {
