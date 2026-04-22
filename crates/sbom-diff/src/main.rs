@@ -55,6 +55,10 @@ struct Args {
     /// suppress all output except errors
     #[arg(short, long)]
     quiet: bool,
+
+    /// include parser warnings in rendered output
+    #[arg(long)]
+    show_warnings: bool,
 }
 
 /// Conditions that trigger a non-zero exit code.
@@ -139,8 +143,17 @@ fn main() -> anyhow::Result<()> {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
 
+        let warnings: Vec<String> = old_sbom
+            .warnings
+            .iter()
+            .chain(new_sbom.warnings.iter())
+            .cloned()
+            .collect();
+
         let render_opts = RenderOptions {
             group_by_ecosystem: args.group_by_ecosystem,
+            show_warnings: args.show_warnings,
+            warnings,
         };
 
         if args.summary {
@@ -213,6 +226,14 @@ fn render_summary_text(
     opts: &RenderOptions,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
+    if opts.show_warnings && !opts.warnings.is_empty() {
+        writeln!(out, "Warnings:     {}", opts.warnings.len())?;
+        for w in &opts.warnings {
+            writeln!(out, "  {}", w)?;
+        }
+        writeln!(out)?;
+    }
+
     writeln!(out, "Added:        {}", diff.added.len())?;
     writeln!(out, "Removed:      {}", diff.removed.len())?;
     writeln!(out, "Changed:      {}", diff.changed.len())?;
