@@ -142,7 +142,7 @@ impl Renderer for TextRenderer {
 
         if opts.group_by_ecosystem {
             let grouped = diff.group_by_ecosystem();
-            let breakdown = diff.ecosystem_breakdown();
+            let breakdown = grouped.ecosystem_breakdown();
 
             writeln!(writer, "By Ecosystem")?;
             writeln!(writer, "------------")?;
@@ -327,7 +327,7 @@ impl Renderer for MarkdownRenderer {
 
         if opts.group_by_ecosystem {
             let grouped = diff.group_by_ecosystem();
-            let breakdown = diff.ecosystem_breakdown();
+            let breakdown = grouped.ecosystem_breakdown();
 
             writeln!(writer, "#### By Ecosystem")?;
             writeln!(writer)?;
@@ -477,7 +477,7 @@ impl Renderer for JsonRenderer {
             let grouped = diff.group_by_ecosystem();
             let output = JsonOutput {
                 diff,
-                ecosystem_breakdown: Some(diff.ecosystem_breakdown()),
+                ecosystem_breakdown: Some(grouped.ecosystem_breakdown()),
                 by_ecosystem: Some(&grouped),
             };
             serde_json::to_writer_pretty(writer, &output)?;
