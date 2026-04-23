@@ -105,6 +105,29 @@ pub struct GroupedDiff {
     pub metadata_changed: bool,
 }
 
+impl GroupedDiff {
+    /// Derives per-ecosystem counts from the already-grouped data.
+    ///
+    /// This avoids a redundant traversal when both grouped components and
+    /// counts are needed — call [`Diff::group_by_ecosystem`] once, then
+    /// derive counts from the result.
+    pub fn ecosystem_breakdown(&self) -> BTreeMap<String, EcosystemCounts> {
+        self.by_ecosystem
+            .iter()
+            .map(|(eco, eco_diff)| {
+                (
+                    eco.clone(),
+                    EcosystemCounts {
+                        added: eco_diff.added.len(),
+                        removed: eco_diff.removed.len(),
+                        changed: eco_diff.changed.len(),
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
 /// Per-ecosystem slice of added, removed, and changed components.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EcosystemDiff {
