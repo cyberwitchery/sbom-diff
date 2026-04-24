@@ -2,7 +2,7 @@
 
 ## unreleased
 
-- add `--show-warnings` flag to surface parser warnings (orphaned deps, format quirks) in rendered output instead of only printing them to stderr; warnings appear in text, markdown, JSON, and summary modes
+- add `--show-warnings` flag to surface parser warnings (orphaned deps, format quirks) in rendered output instead of only printing them to stderr; each warning is labeled with its source SBOM (`[old]`/`[new]` in text/summary, `old`/`new` keys in JSON) across all output formats
 - `--summary` now respects the `--output` flag: markdown output produces a compact table (overall counts plus per-ecosystem breakdown when `--group-by-ecosystem` is set), and JSON output produces a summary object with counts; previously `--summary` always rendered plain text regardless of the output format
 - eliminate redundant component traversal when `--group-by-ecosystem` is set: renderers now derive per-ecosystem counts from the already-grouped data instead of walking all components a second time
 - fix false-positive orphan warnings for `SPDXRef-DOCUMENT` DESCRIBES relationships (fires on every real SPDX file because the document element is not a package)

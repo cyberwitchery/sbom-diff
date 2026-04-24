@@ -143,17 +143,11 @@ fn main() -> anyhow::Result<()> {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
 
-        let warnings: Vec<String> = old_sbom
-            .warnings
-            .iter()
-            .chain(new_sbom.warnings.iter())
-            .cloned()
-            .collect();
-
         let render_opts = RenderOptions {
             group_by_ecosystem: args.group_by_ecosystem,
             show_warnings: args.show_warnings,
-            warnings,
+            old_warnings: old_sbom.warnings.clone(),
+            new_warnings: new_sbom.warnings.clone(),
         };
 
         if args.summary {
@@ -226,10 +220,13 @@ fn render_summary_text(
     opts: &RenderOptions,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
-    if opts.show_warnings && !opts.warnings.is_empty() {
-        writeln!(out, "Warnings:     {}", opts.warnings.len())?;
-        for w in &opts.warnings {
-            writeln!(out, "  {}", w)?;
+    if opts.has_warnings() {
+        writeln!(out, "Warnings:     {}", opts.warning_count())?;
+        for w in &opts.old_warnings {
+            writeln!(out, "  [old] {}", w)?;
+        }
+        for w in &opts.new_warnings {
+            writeln!(out, "  [new] {}", w)?;
         }
         writeln!(out)?;
     }

@@ -19,8 +19,22 @@ pub struct RenderOptions {
     pub group_by_ecosystem: bool,
     /// When true, include parser warnings in the output.
     pub show_warnings: bool,
-    /// Parser warnings collected during SBOM loading.
-    pub warnings: Vec<String>,
+    /// Parser warnings from the old SBOM.
+    pub old_warnings: Vec<String>,
+    /// Parser warnings from the new SBOM.
+    pub new_warnings: Vec<String>,
+}
+
+impl RenderOptions {
+    /// Returns true when warnings should be displayed.
+    pub fn has_warnings(&self) -> bool {
+        self.show_warnings && (!self.old_warnings.is_empty() || !self.new_warnings.is_empty())
+    }
+
+    /// Total number of warnings across both SBOMs.
+    pub fn warning_count(&self) -> usize {
+        self.old_warnings.len() + self.new_warnings.len()
+    }
 }
 
 fn format_option(opt: &Option<String>) -> &str {
@@ -137,11 +151,14 @@ impl Renderer for TextRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
-        if opts.show_warnings && !opts.warnings.is_empty() {
+        if opts.has_warnings() {
             writeln!(writer, "[!] Warnings")?;
             writeln!(writer, "------------")?;
-            for w in &opts.warnings {
-                writeln!(writer, "{}", w)?;
+            for w in &opts.old_warnings {
+                writeln!(writer, "[old] {}", w)?;
+            }
+            for w in &opts.new_warnings {
+                writeln!(writer, "[new] {}", w)?;
             }
             writeln!(writer)?;
         }
@@ -329,15 +346,18 @@ impl Renderer for MarkdownRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
-        if opts.show_warnings && !opts.warnings.is_empty() {
+        if opts.has_warnings() {
             writeln!(
                 writer,
                 "<details><summary><b>Warnings ({})</b></summary>",
-                opts.warnings.len()
+                opts.warning_count()
             )?;
             writeln!(writer)?;
-            for w in &opts.warnings {
-                writeln!(writer, "- {}", w)?;
+            for w in &opts.old_warnings {
+                writeln!(writer, "- **old:** {}", w)?;
+            }
+            for w in &opts.new_warnings {
+                writeln!(writer, "- **new:** {}", w)?;
             }
             writeln!(writer, "</details>")?;
             writeln!(writer)?;
@@ -492,7 +512,13 @@ struct JsonOutput<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     by_ecosystem: Option<&'a GroupedDiff>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    warnings: Option<&'a Vec<String>>,
+    warnings: Option<JsonWarnings<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonWarnings<'a> {
+    old: &'a Vec<String>,
+    new: &'a Vec<String>,
 }
 
 impl Renderer for JsonRenderer {
@@ -502,8 +528,11 @@ impl Renderer for JsonRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
-        let warnings = if opts.show_warnings && !opts.warnings.is_empty() {
-            Some(&opts.warnings)
+        let warnings = if opts.has_warnings() {
+            Some(JsonWarnings {
+                old: &opts.old_warnings,
+                new: &opts.new_warnings,
+            })
         } else {
             None
         };
@@ -859,10 +888,8 @@ mod tests {
     fn opts_with_warnings() -> RenderOptions {
         RenderOptions {
             show_warnings: true,
-            warnings: vec![
-                "SPDX: orphaned ref 'SPDXRef-foo'".into(),
-                "CycloneDX: unknown bom-ref 'bar'".into(),
-            ],
+            old_warnings: vec!["SPDX: orphaned ref 'SPDXRef-foo'".into()],
+            new_warnings: vec!["CycloneDX: unknown bom-ref 'bar'".into()],
             ..Default::default()
         }
     }
@@ -876,8 +903,8 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("[!] Warnings"));
-        assert!(out.contains("SPDX: orphaned ref 'SPDXRef-foo'"));
-        assert!(out.contains("CycloneDX: unknown bom-ref 'bar'"));
+        assert!(out.contains("[old] SPDX: orphaned ref 'SPDXRef-foo'"));
+        assert!(out.contains("[new] CycloneDX: unknown bom-ref 'bar'"));
     }
 
     #[test]
@@ -901,8 +928,8 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("<details><summary><b>Warnings (2)</b></summary>"));
-        assert!(out.contains("- SPDX: orphaned ref 'SPDXRef-foo'"));
-        assert!(out.contains("- CycloneDX: unknown bom-ref 'bar'"));
+        assert!(out.contains("- **old:** SPDX: orphaned ref 'SPDXRef-foo'"));
+        assert!(out.contains("- **new:** CycloneDX: unknown bom-ref 'bar'"));
     }
 
     #[test]
@@ -925,10 +952,13 @@ mod tests {
         JsonRenderer.render(&diff, &opts, &mut buf).unwrap();
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
-        let warnings = val["warnings"].as_array().unwrap();
-        assert_eq!(warnings.len(), 2);
-        assert_eq!(warnings[0], "SPDX: orphaned ref 'SPDXRef-foo'");
-        assert_eq!(warnings[1], "CycloneDX: unknown bom-ref 'bar'");
+        let warnings = &val["warnings"];
+        let old = warnings["old"].as_array().unwrap();
+        let new = warnings["new"].as_array().unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(new.len(), 1);
+        assert_eq!(old[0], "SPDX: orphaned ref 'SPDXRef-foo'");
+        assert_eq!(new[0], "CycloneDX: unknown bom-ref 'bar'");
     }
 
     #[test]
@@ -948,7 +978,6 @@ mod tests {
         let diff = mock_diff();
         let opts = RenderOptions {
             show_warnings: true,
-            warnings: vec![],
             ..Default::default()
         };
 
