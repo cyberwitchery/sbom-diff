@@ -144,7 +144,11 @@ fn main() -> anyhow::Result<()> {
         };
 
         if args.summary {
-            render_summary(&diff, &render_opts, &mut handle)?;
+            match args.output {
+                Output::Text => render_summary_text(&diff, &render_opts, &mut handle)?,
+                Output::Markdown => render_summary_markdown(&diff, &render_opts, &mut handle)?,
+                Output::Json => render_summary_json(&diff, &render_opts, &mut handle)?,
+            }
         } else {
             match args.output {
                 Output::Text => TextRenderer.render(&diff, &render_opts, &mut handle)?,
@@ -204,7 +208,7 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     violation
 }
 
-fn render_summary(
+fn render_summary_text(
     diff: &sbom_diff::Diff,
     opts: &RenderOptions,
     out: &mut impl io::Write,
@@ -230,6 +234,64 @@ fn render_summary(
     }
 
     Ok(())
+}
+
+fn render_summary_markdown(
+    diff: &sbom_diff::Diff,
+    opts: &RenderOptions,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    writeln!(out, "### SBOM Diff Summary")?;
+    writeln!(out)?;
+    writeln!(out, "| Change | Count |")?;
+    writeln!(out, "| --- | --- |")?;
+    writeln!(out, "| Added | {} |", diff.added.len())?;
+    writeln!(out, "| Removed | {} |", diff.removed.len())?;
+    writeln!(out, "| Changed | {} |", diff.changed.len())?;
+    writeln!(out, "| Edge changes | {} |", diff.edge_diffs.len())?;
+
+    if opts.group_by_ecosystem {
+        let breakdown = diff.ecosystem_breakdown();
+        if !breakdown.is_empty() {
+            writeln!(out)?;
+            writeln!(out, "#### By Ecosystem")?;
+            writeln!(out)?;
+            writeln!(out, "| Ecosystem | Added | Removed | Changed |")?;
+            writeln!(out, "| --- | --- | --- | --- |")?;
+            for (eco, counts) in &breakdown {
+                writeln!(
+                    out,
+                    "| {} | {} | {} | {} |",
+                    eco, counts.added, counts.removed, counts.changed
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn render_summary_json(
+    diff: &sbom_diff::Diff,
+    opts: &RenderOptions,
+    out: &mut impl io::Write,
+) -> io::Result<()> {
+    let mut summary = serde_json::json!({
+        "added": diff.added.len(),
+        "removed": diff.removed.len(),
+        "changed": diff.changed.len(),
+        "edge_changes": diff.edge_diffs.len(),
+    });
+
+    if opts.group_by_ecosystem {
+        let breakdown = diff.ecosystem_breakdown();
+        if !breakdown.is_empty() {
+            summary["ecosystem_breakdown"] =
+                serde_json::to_value(&breakdown).expect("serializable breakdown");
+        }
+    }
+
+    serde_json::to_writer_pretty(out, &summary).map_err(io::Error::other)
 }
 
 fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
@@ -459,7 +521,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        render_summary_text(&diff, &RenderOptions::default(), &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Added:        2"));
@@ -494,7 +556,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        render_summary_text(&diff, &RenderOptions::default(), &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Edge changes: 2"));
@@ -739,5 +801,144 @@ mod tests {
         ));
         // But ChangedComponents *should* trigger on description changes
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+    }
+
+    #[test]
+    fn test_render_summary_markdown() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![
+                Component::new("a".into(), Some("1".into())),
+                Component::new("b".into(), Some("1".into())),
+            ],
+            removed: vec![Component::new("c".into(), Some("1".into()))],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let mut buf = Vec::new();
+        render_summary_markdown(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("### SBOM Diff Summary"));
+        assert!(out.contains("| Change | Count |"));
+        assert!(out.contains("| Added | 2 |"));
+        assert!(out.contains("| Removed | 1 |"));
+        assert!(out.contains("| Changed | 0 |"));
+        assert!(out.contains("| Edge changes | 0 |"));
+        // Should NOT contain component details
+        assert!(!out.contains("<details>"));
+    }
+
+    #[test]
+    fn test_render_summary_markdown_with_ecosystems() {
+        use sbom_diff::Diff;
+
+        let mut added_npm = Component::new("express".into(), Some("4.18.0".into()));
+        added_npm.ecosystem = Some("npm".into());
+        let mut added_cargo = Component::new("serde".into(), Some("1.0.0".into()));
+        added_cargo.ecosystem = Some("cargo".into());
+        let mut removed = Component::new("lodash".into(), Some("4.17.21".into()));
+        removed.ecosystem = Some("npm".into());
+
+        let diff = Diff {
+            added: vec![added_npm, added_cargo],
+            removed: vec![removed],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            group_by_ecosystem: true,
+        };
+
+        let mut buf = Vec::new();
+        render_summary_markdown(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("#### By Ecosystem"));
+        assert!(out.contains("| Ecosystem | Added | Removed | Changed |"));
+        assert!(out.contains("| cargo | 1 | 0 | 0 |"));
+        assert!(out.contains("| npm | 1 | 1 | 0 |"));
+    }
+
+    #[test]
+    fn test_render_summary_markdown_empty() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let mut buf = Vec::new();
+        render_summary_markdown(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("| Added | 0 |"));
+        assert!(out.contains("| Removed | 0 |"));
+        assert!(out.contains("| Changed | 0 |"));
+        assert!(out.contains("| Edge changes | 0 |"));
+    }
+
+    #[test]
+    fn test_render_summary_json() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![
+                Component::new("a".into(), Some("1".into())),
+                Component::new("b".into(), Some("1".into())),
+            ],
+            removed: vec![Component::new("c".into(), Some("1".into()))],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let mut buf = Vec::new();
+        render_summary_json(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["added"], 2);
+        assert_eq!(val["removed"], 1);
+        assert_eq!(val["changed"], 0);
+        assert_eq!(val["edge_changes"], 0);
+        assert!(val.get("ecosystem_breakdown").is_none());
+    }
+
+    #[test]
+    fn test_render_summary_json_with_ecosystems() {
+        use sbom_diff::Diff;
+
+        let mut added_npm = Component::new("express".into(), Some("4.18.0".into()));
+        added_npm.ecosystem = Some("npm".into());
+
+        let diff = Diff {
+            added: vec![added_npm],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            group_by_ecosystem: true,
+        };
+
+        let mut buf = Vec::new();
+        render_summary_json(&diff, &opts, &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["added"], 1);
+        let breakdown = &val["ecosystem_breakdown"];
+        assert!(breakdown.is_object());
+        assert_eq!(breakdown["npm"]["added"], 1);
     }
 }
