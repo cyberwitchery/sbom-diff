@@ -2,6 +2,7 @@
 
 ## unreleased
 
+- `--summary` now respects the `--output` flag: markdown output produces a compact table (overall counts plus per-ecosystem breakdown when `--group-by-ecosystem` is set), and JSON output produces a summary object with counts; previously `--summary` always rendered plain text regardless of the output format
 - eliminate redundant component traversal when `--group-by-ecosystem` is set: renderers now derive per-ecosystem counts from the already-grouped data instead of walking all components a second time
 - fix false-positive orphan warnings for `SPDXRef-DOCUMENT` DESCRIBES relationships (fires on every real SPDX file because the document element is not a package)
 - fall back to `licenseDeclared` when SPDX `licenseConcluded` is NOASSERTION or NONE, so tools like syft and trivy that leave `licenseConcluded` unset no longer produce components with empty license data
