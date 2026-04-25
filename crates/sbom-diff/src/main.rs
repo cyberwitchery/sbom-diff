@@ -871,6 +871,7 @@ mod tests {
 
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
 
         let mut buf = Vec::new();
@@ -948,6 +949,7 @@ mod tests {
 
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
 
         let mut buf = Vec::new();
