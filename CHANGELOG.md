@@ -1,6 +1,6 @@
 # changelog
 
-## unreleased
+## [0.2.0] - 2026-04-26
 
 - add `--show-warnings` flag to surface parser warnings (orphaned deps, format quirks) in rendered output instead of only printing them to stderr; each warning is labeled with its source SBOM (`[old]`/`[new]` in text/summary, `old`/`new` keys in JSON) across all output formats
 - `--summary` now respects the `--output` flag: markdown output produces a compact table (overall counts plus per-ecosystem breakdown when `--group-by-ecosystem` is set), and JSON output produces a summary object with counts; previously `--summary` always rendered plain text regardless of the output format
@@ -64,7 +64,7 @@
 
 initial release
 
-[unreleased]: https://github.com/cyberwitchery/sbom-diff/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/cyberwitchery/sbom-diff/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.6...v0.1.0
 [0.0.6]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.4...v0.0.5
