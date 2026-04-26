@@ -58,9 +58,8 @@ impl SpdxReader {
             let version = pkg.package_version;
 
             let mut props = vec![("name", name.as_str())];
-            let v_str = version.clone().unwrap_or_default();
-            if version.is_some() {
-                props.push(("version", v_str.as_str()));
+            if let Some(ref v) = version {
+                props.push(("version", v.as_str()));
             }
 
             let supplier = pkg.package_supplier.clone().map(|s| {
@@ -69,9 +68,8 @@ impl SpdxReader {
                     .map(|stripped| stripped.to_string())
                     .unwrap_or(s)
             });
-            let s_str = supplier.clone().unwrap_or_default();
-            if supplier.is_some() {
-                props.push(("supplier", s_str.as_str()));
+            if let Some(ref s) = supplier {
+                props.push(("supplier", s.as_str()));
             }
 
             // Purl handling
