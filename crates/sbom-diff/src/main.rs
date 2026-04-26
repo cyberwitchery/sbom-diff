@@ -55,6 +55,10 @@ struct Args {
     /// suppress all output except errors
     #[arg(short, long)]
     quiet: bool,
+
+    /// include parser warnings in rendered output
+    #[arg(long)]
+    show_warnings: bool,
 }
 
 /// Conditions that trigger a non-zero exit code.
@@ -141,6 +145,9 @@ fn main() -> anyhow::Result<()> {
 
         let render_opts = RenderOptions {
             group_by_ecosystem: args.group_by_ecosystem,
+            show_warnings: args.show_warnings,
+            old_warnings: old_sbom.warnings.clone(),
+            new_warnings: new_sbom.warnings.clone(),
         };
 
         if args.summary {
@@ -213,6 +220,17 @@ fn render_summary_text(
     opts: &RenderOptions,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
+    if opts.has_warnings() {
+        writeln!(out, "Warnings:     {}", opts.warning_count())?;
+        for w in &opts.old_warnings {
+            writeln!(out, "  [old] {}", w)?;
+        }
+        for w in &opts.new_warnings {
+            writeln!(out, "  [new] {}", w)?;
+        }
+        writeln!(out)?;
+    }
+
     writeln!(out, "Added:        {}", diff.added.len())?;
     writeln!(out, "Removed:      {}", diff.removed.len())?;
     writeln!(out, "Changed:      {}", diff.changed.len())?;
@@ -853,6 +871,7 @@ mod tests {
 
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
 
         let mut buf = Vec::new();
@@ -930,6 +949,7 @@ mod tests {
 
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
 
         let mut buf = Vec::new();

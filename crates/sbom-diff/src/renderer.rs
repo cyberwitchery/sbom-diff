@@ -17,6 +17,24 @@ use std::io::Write;
 pub struct RenderOptions {
     /// When true, include a per-ecosystem breakdown of added/removed/changed counts.
     pub group_by_ecosystem: bool,
+    /// When true, include parser warnings in the output.
+    pub show_warnings: bool,
+    /// Parser warnings from the old SBOM.
+    pub old_warnings: Vec<String>,
+    /// Parser warnings from the new SBOM.
+    pub new_warnings: Vec<String>,
+}
+
+impl RenderOptions {
+    /// Returns true when warnings should be displayed.
+    pub fn has_warnings(&self) -> bool {
+        self.show_warnings && (!self.old_warnings.is_empty() || !self.new_warnings.is_empty())
+    }
+
+    /// Total number of warnings across both SBOMs.
+    pub fn warning_count(&self) -> usize {
+        self.old_warnings.len() + self.new_warnings.len()
+    }
 }
 
 fn format_option(opt: &Option<String>) -> &str {
@@ -133,6 +151,18 @@ impl Renderer for TextRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
+        if opts.has_warnings() {
+            writeln!(writer, "[!] Warnings")?;
+            writeln!(writer, "------------")?;
+            for w in &opts.old_warnings {
+                writeln!(writer, "[old] {}", w)?;
+            }
+            for w in &opts.new_warnings {
+                writeln!(writer, "[new] {}", w)?;
+            }
+            writeln!(writer)?;
+        }
+
         writeln!(writer, "Diff Summary")?;
         writeln!(writer, "============")?;
         writeln!(writer, "Added:   {}", diff.added.len())?;
@@ -316,6 +346,23 @@ impl Renderer for MarkdownRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
+        if opts.has_warnings() {
+            writeln!(
+                writer,
+                "<details><summary><b>Warnings ({})</b></summary>",
+                opts.warning_count()
+            )?;
+            writeln!(writer)?;
+            for w in &opts.old_warnings {
+                writeln!(writer, "- **old:** {}", w)?;
+            }
+            for w in &opts.new_warnings {
+                writeln!(writer, "- **new:** {}", w)?;
+            }
+            writeln!(writer, "</details>")?;
+            writeln!(writer)?;
+        }
+
         writeln!(writer, "### SBOM Diff Summary")?;
         writeln!(writer)?;
         writeln!(writer, "| Change | Count |")?;
@@ -464,6 +511,14 @@ struct JsonOutput<'a> {
     ecosystem_breakdown: Option<BTreeMap<String, EcosystemCounts>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     by_ecosystem: Option<&'a GroupedDiff>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warnings: Option<JsonWarnings<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonWarnings<'a> {
+    old: &'a Vec<String>,
+    new: &'a Vec<String>,
 }
 
 impl Renderer for JsonRenderer {
@@ -473,12 +528,22 @@ impl Renderer for JsonRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
+        let warnings = if opts.has_warnings() {
+            Some(JsonWarnings {
+                old: &opts.old_warnings,
+                new: &opts.new_warnings,
+            })
+        } else {
+            None
+        };
+
         if opts.group_by_ecosystem {
             let grouped = diff.group_by_ecosystem();
             let output = JsonOutput {
                 diff,
                 ecosystem_breakdown: Some(grouped.ecosystem_breakdown()),
                 by_ecosystem: Some(&grouped),
+                warnings,
             };
             serde_json::to_writer_pretty(writer, &output)?;
         } else {
@@ -486,6 +551,7 @@ impl Renderer for JsonRenderer {
                 diff,
                 ecosystem_breakdown: None,
                 by_ecosystem: None,
+                warnings,
             };
             serde_json::to_writer_pretty(writer, &output)?;
         }
@@ -747,6 +813,7 @@ mod tests {
         let diff = mock_diff_with_ecosystems();
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
         let mut buf = Vec::new();
         TextRenderer.render(&diff, &opts, &mut buf).unwrap();
@@ -774,6 +841,7 @@ mod tests {
         let diff = mock_diff_with_ecosystems();
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
         let mut buf = Vec::new();
         MarkdownRenderer.render(&diff, &opts, &mut buf).unwrap();
@@ -790,6 +858,7 @@ mod tests {
         let diff = mock_diff_with_ecosystems();
         let opts = RenderOptions {
             group_by_ecosystem: true,
+            ..Default::default()
         };
         let mut buf = Vec::new();
         JsonRenderer.render(&diff, &opts, &mut buf).unwrap();
@@ -814,5 +883,117 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert!(val.get("ecosystem_breakdown").is_none());
+    }
+
+    fn opts_with_warnings() -> RenderOptions {
+        RenderOptions {
+            show_warnings: true,
+            old_warnings: vec!["SPDX: orphaned ref 'SPDXRef-foo'".into()],
+            new_warnings: vec!["CycloneDX: unknown bom-ref 'bar'".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_text_renderer_shows_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        TextRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("[!] Warnings"));
+        assert!(out.contains("[old] SPDX: orphaned ref 'SPDXRef-foo'"));
+        assert!(out.contains("[new] CycloneDX: unknown bom-ref 'bar'"));
+    }
+
+    #[test]
+    fn test_text_renderer_hides_warnings_by_default() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("[!] Warnings"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_shows_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        MarkdownRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("<details><summary><b>Warnings (2)</b></summary>"));
+        assert!(out.contains("- **old:** SPDX: orphaned ref 'SPDXRef-foo'"));
+        assert!(out.contains("- **new:** CycloneDX: unknown bom-ref 'bar'"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_hides_warnings_by_default() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("Warnings"));
+    }
+
+    #[test]
+    fn test_json_renderer_shows_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        JsonRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        let warnings = &val["warnings"];
+        let old = warnings["old"].as_array().unwrap();
+        let new = warnings["new"].as_array().unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(new.len(), 1);
+        assert_eq!(old[0], "SPDX: orphaned ref 'SPDXRef-foo'");
+        assert_eq!(new[0], "CycloneDX: unknown bom-ref 'bar'");
+    }
+
+    #[test]
+    fn test_json_renderer_hides_warnings_by_default() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert!(val.get("warnings").is_none());
+    }
+
+    #[test]
+    fn test_empty_warnings_not_shown() {
+        let diff = mock_diff();
+        let opts = RenderOptions {
+            show_warnings: true,
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        TextRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(!out.contains("[!] Warnings"));
+
+        let mut buf = Vec::new();
+        MarkdownRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(!out.contains("Warnings"));
+
+        let mut buf = Vec::new();
+        JsonRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert!(val.get("warnings").is_none());
     }
 }
