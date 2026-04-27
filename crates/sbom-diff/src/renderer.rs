@@ -60,79 +60,68 @@ pub trait Renderer {
     ) -> anyhow::Result<()>;
 }
 
-// --- Shared helpers for text output ---
+// --- Shared helpers for field-change rendering ---
 
-fn write_text_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io::Result<()> {
-    for c in components {
-        writeln!(writer, "{}", c.purl.as_deref().unwrap_or(c.id.as_str()))?;
-    }
-    Ok(())
+trait FieldChangeFormatter {
+    fn field_change<W: Write>(
+        &self,
+        w: &mut W,
+        name: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()>;
+    fn hash_header<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
+    fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()>;
+    fn hash_changed<W: Write>(
+        &self,
+        w: &mut W,
+        algo: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()>;
+    fn hash_added<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()>;
+    fn component_header<W: Write>(&self, w: &mut W, id: &str) -> std::io::Result<()>;
 }
 
-fn write_text_changed<W: Write>(
-    writer: &mut W,
-    changes: &[ComponentChange],
-) -> std::io::Result<()> {
-    for c in changes {
-        writeln!(writer, "{}", c.new.purl.as_deref().unwrap_or(c.id.as_str()))?;
-        write_text_field_changes(writer, &c.changes)?;
-    }
-    Ok(())
-}
-
-fn write_text_field_changes<W: Write>(
+fn write_field_changes<F: FieldChangeFormatter, W: Write>(
+    fmt: &F,
     writer: &mut W,
     changes: &[FieldChange],
 ) -> std::io::Result<()> {
     for change in changes {
         match change {
             FieldChange::Version(old, new) => {
-                writeln!(writer, "  Version: {} -> {}", old, new)?;
+                fmt.field_change(writer, "Version", old, new)?;
             }
             FieldChange::License(old, new) => {
-                writeln!(
-                    writer,
-                    "  License: {} -> {}",
-                    format_set(old),
-                    format_set(new)
-                )?;
+                fmt.field_change(writer, "License", &format_set(old), &format_set(new))?;
             }
             FieldChange::Supplier(old, new) => {
-                writeln!(
-                    writer,
-                    "  Supplier: {} -> {}",
-                    format_option(old),
-                    format_option(new)
-                )?;
+                fmt.field_change(writer, "Supplier", format_option(old), format_option(new))?;
             }
             FieldChange::Purl(old, new) => {
-                writeln!(
-                    writer,
-                    "  Purl: {} -> {}",
-                    format_option(old),
-                    format_option(new)
-                )?;
+                fmt.field_change(writer, "Purl", format_option(old), format_option(new))?;
             }
             FieldChange::Description(old, new) => {
-                writeln!(
+                fmt.field_change(
                     writer,
-                    "  Description: {} -> {}",
+                    "Description",
                     format_option(old),
-                    format_option(new)
+                    format_option(new),
                 )?;
             }
             FieldChange::Hashes(old, new) => {
-                writeln!(writer, "  Hashes:")?;
+                fmt.hash_header(writer)?;
                 for (algo, digest) in old {
                     if !new.contains_key(algo) {
-                        writeln!(writer, "    - {}: {}", algo, digest)?;
+                        fmt.hash_removed(writer, algo, digest)?;
                     } else if new[algo] != *digest {
-                        writeln!(writer, "    ~ {}: {} -> {}", algo, digest, new[algo])?;
+                        fmt.hash_changed(writer, algo, digest, &new[algo])?;
                     }
                 }
                 for (algo, digest) in new {
                     if !old.contains_key(algo) {
-                        writeln!(writer, "    + {}: {}", algo, digest)?;
+                        fmt.hash_added(writer, algo, digest)?;
                     }
                 }
             }
@@ -141,8 +130,67 @@ fn write_text_field_changes<W: Write>(
     Ok(())
 }
 
+fn write_changed<F: FieldChangeFormatter, W: Write>(
+    fmt: &F,
+    writer: &mut W,
+    changes: &[ComponentChange],
+) -> std::io::Result<()> {
+    for c in changes {
+        fmt.component_header(writer, c.new.purl.as_deref().unwrap_or(c.id.as_str()))?;
+        write_field_changes(fmt, writer, &c.changes)?;
+    }
+    Ok(())
+}
+
+// --- Text output helpers ---
+
+fn write_text_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io::Result<()> {
+    for c in components {
+        writeln!(writer, "{}", c.purl.as_deref().unwrap_or(c.id.as_str()))?;
+    }
+    Ok(())
+}
+
 /// Plain text renderer for terminal output.
 pub struct TextRenderer;
+
+impl FieldChangeFormatter for TextRenderer {
+    fn field_change<W: Write>(
+        &self,
+        w: &mut W,
+        name: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()> {
+        writeln!(w, "  {}: {} -> {}", name, old, new)
+    }
+
+    fn hash_header<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        writeln!(w, "  Hashes:")
+    }
+
+    fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
+        writeln!(w, "    - {}: {}", algo, digest)
+    }
+
+    fn hash_changed<W: Write>(
+        &self,
+        w: &mut W,
+        algo: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()> {
+        writeln!(w, "    ~ {}: {} -> {}", algo, old, new)
+    }
+
+    fn hash_added<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
+        writeln!(w, "    + {}: {}", algo, digest)
+    }
+
+    fn component_header<W: Write>(&self, w: &mut W, id: &str) -> std::io::Result<()> {
+        writeln!(w, "{}", id)
+    }
+}
 
 impl Renderer for TextRenderer {
     fn render<W: Write>(
@@ -203,7 +251,7 @@ impl Renderer for TextRenderer {
                 if !eco_diff.changed.is_empty() {
                     writeln!(writer, "[~] Changed")?;
                     writeln!(writer, "-----------")?;
-                    write_text_changed(writer, &eco_diff.changed)?;
+                    write_changed(self, writer, &eco_diff.changed)?;
                     writeln!(writer)?;
                 }
             }
@@ -225,7 +273,7 @@ impl Renderer for TextRenderer {
             if !diff.changed.is_empty() {
                 writeln!(writer, "[~] Changed")?;
                 writeln!(writer, "-----------")?;
-                write_text_changed(writer, &diff.changed)?;
+                write_changed(self, writer, &diff.changed)?;
                 writeln!(writer)?;
             }
         }
@@ -248,7 +296,7 @@ impl Renderer for TextRenderer {
     }
 }
 
-// --- Shared helpers for markdown output ---
+// --- Markdown output helpers ---
 
 fn write_md_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io::Result<()> {
     for c in components {
@@ -257,87 +305,48 @@ fn write_md_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io
     Ok(())
 }
 
-fn write_md_changed<W: Write>(writer: &mut W, changes: &[ComponentChange]) -> std::io::Result<()> {
-    for c in changes {
-        writeln!(
-            writer,
-            "#### `{}`",
-            c.new.purl.as_deref().unwrap_or(c.id.as_str())
-        )?;
-        write_md_field_changes(writer, &c.changes)?;
-    }
-    Ok(())
-}
-
-fn write_md_field_changes<W: Write>(
-    writer: &mut W,
-    changes: &[FieldChange],
-) -> std::io::Result<()> {
-    for change in changes {
-        match change {
-            FieldChange::Version(old, new) => {
-                writeln!(writer, "- **Version**: `{}` &rarr; `{}`", old, new)?;
-            }
-            FieldChange::License(old, new) => {
-                writeln!(
-                    writer,
-                    "- **License**: `{}` &rarr; `{}`",
-                    format_set(old),
-                    format_set(new)
-                )?;
-            }
-            FieldChange::Supplier(old, new) => {
-                writeln!(
-                    writer,
-                    "- **Supplier**: `{}` &rarr; `{}`",
-                    format_option(old),
-                    format_option(new)
-                )?;
-            }
-            FieldChange::Purl(old, new) => {
-                writeln!(
-                    writer,
-                    "- **Purl**: `{}` &rarr; `{}`",
-                    format_option(old),
-                    format_option(new)
-                )?;
-            }
-            FieldChange::Description(old, new) => {
-                writeln!(
-                    writer,
-                    "- **Description**: `{}` &rarr; `{}`",
-                    format_option(old),
-                    format_option(new)
-                )?;
-            }
-            FieldChange::Hashes(old, new) => {
-                writeln!(writer, "- **Hashes**:")?;
-                for (algo, digest) in old {
-                    if !new.contains_key(algo) {
-                        writeln!(writer, "  - `{}`: removed `{}`", algo, digest)?;
-                    } else if new[algo] != *digest {
-                        writeln!(
-                            writer,
-                            "  - `{}`: `{}` &rarr; `{}`",
-                            algo, digest, new[algo]
-                        )?;
-                    }
-                }
-                for (algo, digest) in new {
-                    if !old.contains_key(algo) {
-                        writeln!(writer, "  - `{}`: added `{}`", algo, digest)?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// GitHub-flavored markdown renderer for PR comments.
 ///
 /// Produces collapsible sections using `<details>` tags.
 pub struct MarkdownRenderer;
+
+impl FieldChangeFormatter for MarkdownRenderer {
+    fn field_change<W: Write>(
+        &self,
+        w: &mut W,
+        name: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()> {
+        writeln!(w, "- **{}**: `{}` &rarr; `{}`", name, old, new)
+    }
+
+    fn hash_header<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        writeln!(w, "- **Hashes**:")
+    }
+
+    fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
+        writeln!(w, "  - `{}`: removed `{}`", algo, digest)
+    }
+
+    fn hash_changed<W: Write>(
+        &self,
+        w: &mut W,
+        algo: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()> {
+        writeln!(w, "  - `{}`: `{}` &rarr; `{}`", algo, old, new)
+    }
+
+    fn hash_added<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
+        writeln!(w, "  - `{}`: added `{}`", algo, digest)
+    }
+
+    fn component_header<W: Write>(&self, w: &mut W, id: &str) -> std::io::Result<()> {
+        writeln!(w, "#### `{}`", id)
+    }
+}
 
 impl Renderer for MarkdownRenderer {
     fn render<W: Write>(
@@ -421,7 +430,7 @@ impl Renderer for MarkdownRenderer {
                         eco_diff.changed.len()
                     )?;
                     writeln!(writer)?;
-                    write_md_changed(writer, &eco_diff.changed)?;
+                    write_changed(self, writer, &eco_diff.changed)?;
                     writeln!(writer, "</details>")?;
                     writeln!(writer)?;
                 }
@@ -458,7 +467,7 @@ impl Renderer for MarkdownRenderer {
                     diff.changed.len()
                 )?;
                 writeln!(writer)?;
-                write_md_changed(writer, &diff.changed)?;
+                write_changed(self, writer, &diff.changed)?;
                 writeln!(writer, "</details>")?;
                 writeln!(writer)?;
             }
