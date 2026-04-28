@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix CycloneDX supplier element with no name (or empty name) producing `Some("")` instead of `None`, which caused spurious supplier-change diffs
+
 ## [0.2.0] - 2026-04-26
 
 - add `--show-warnings` flag to surface parser warnings (orphaned deps, format quirks) in rendered output instead of only printing them to stderr; each warning is labeled with its source SBOM (`[old]`/`[new]` in text/summary, `old`/`new` keys in JSON) across all output formats
