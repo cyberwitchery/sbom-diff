@@ -197,7 +197,8 @@ impl CycloneDxReader {
             let supplier = cdx_comp
                 .supplier
                 .as_ref()
-                .map(|s| s.name.as_ref().map(|n| n.to_string()).unwrap_or_default());
+                .and_then(|s| s.name.as_ref().map(|n| n.to_string()))
+                .filter(|s| !s.is_empty());
             let s_str = supplier.clone().unwrap_or_default();
             if supplier.is_some() {
                 props.push(("supplier", s_str.as_str()));
@@ -412,6 +413,44 @@ mod tests {
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
+    }
+
+    #[test]
+    fn test_supplier_without_name_is_none() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "supplier": {"url": ["https://example.com"]}
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components[0].supplier, None);
+    }
+
+    #[test]
+    fn test_supplier_with_empty_name_is_none() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "supplier": {"name": ""}
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components[0].supplier, None);
     }
 
     #[test]
