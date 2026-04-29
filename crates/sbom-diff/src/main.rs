@@ -259,6 +259,23 @@ fn render_summary_markdown(
     opts: &RenderOptions,
     out: &mut impl io::Write,
 ) -> io::Result<()> {
+    if opts.has_warnings() {
+        writeln!(
+            out,
+            "<details><summary><b>Warnings ({})</b></summary>",
+            opts.warning_count()
+        )?;
+        writeln!(out)?;
+        for w in &opts.old_warnings {
+            writeln!(out, "- **old:** {}", w)?;
+        }
+        for w in &opts.new_warnings {
+            writeln!(out, "- **new:** {}", w)?;
+        }
+        writeln!(out, "</details>")?;
+        writeln!(out)?;
+    }
+
     writeln!(out, "### SBOM Diff Summary")?;
     writeln!(out)?;
     writeln!(out, "| Change | Count |")?;
@@ -300,6 +317,13 @@ fn render_summary_json(
         "changed": diff.changed.len(),
         "edge_changes": diff.edge_diffs.len(),
     });
+
+    if opts.has_warnings() {
+        summary["warnings"] = serde_json::json!({
+            "old": opts.old_warnings,
+            "new": opts.new_warnings,
+        });
+    }
 
     if opts.group_by_ecosystem {
         let breakdown = diff.ecosystem_breakdown();
@@ -960,5 +984,146 @@ mod tests {
         let breakdown = &val["ecosystem_breakdown"];
         assert!(breakdown.is_object());
         assert_eq!(breakdown["npm"]["added"], 1);
+    }
+
+    #[test]
+    fn test_render_summary_text_with_warnings() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![Component::new("a".into(), Some("1".into()))],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            show_warnings: true,
+            old_warnings: vec!["old sbom missing supplier".into()],
+            new_warnings: vec!["new sbom missing license".into()],
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        render_summary_text(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Warnings:     2"));
+        assert!(out.contains("[old] old sbom missing supplier"));
+        assert!(out.contains("[new] new sbom missing license"));
+        assert!(out.contains("Added:        1"));
+    }
+
+    #[test]
+    fn test_render_summary_markdown_with_warnings() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![Component::new("a".into(), Some("1".into()))],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            show_warnings: true,
+            old_warnings: vec!["old sbom missing supplier".into()],
+            new_warnings: vec!["new sbom missing license".into()],
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        render_summary_markdown(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("<details><summary><b>Warnings (2)</b></summary>"));
+        assert!(out.contains("- **old:** old sbom missing supplier"));
+        assert!(out.contains("- **new:** new sbom missing license"));
+        assert!(out.contains("</details>"));
+        assert!(out.contains("### SBOM Diff Summary"));
+        assert!(out.contains("| Added | 1 |"));
+    }
+
+    #[test]
+    fn test_render_summary_markdown_no_warnings_without_flag() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            show_warnings: false,
+            old_warnings: vec!["some warning".into()],
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        render_summary_markdown(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("Warnings"));
+        assert!(!out.contains("<details>"));
+    }
+
+    #[test]
+    fn test_render_summary_json_with_warnings() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![Component::new("a".into(), Some("1".into()))],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            show_warnings: true,
+            old_warnings: vec!["old sbom missing supplier".into()],
+            new_warnings: vec!["new sbom missing license".into()],
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        render_summary_json(&diff, &opts, &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["added"], 1);
+        let warnings = &val["warnings"];
+        assert!(warnings.is_object());
+        assert_eq!(warnings["old"][0], "old sbom missing supplier");
+        assert_eq!(warnings["new"][0], "new sbom missing license");
+    }
+
+    #[test]
+    fn test_render_summary_json_no_warnings_without_flag() {
+        use sbom_diff::Diff;
+
+        let diff = Diff {
+            added: vec![],
+            removed: vec![],
+            changed: vec![],
+            edge_diffs: vec![],
+            metadata_changed: false,
+        };
+
+        let opts = RenderOptions {
+            show_warnings: false,
+            old_warnings: vec!["some warning".into()],
+            ..Default::default()
+        };
+
+        let mut buf = Vec::new();
+        render_summary_json(&diff, &opts, &mut buf).unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert!(val.get("warnings").is_none());
     }
 }
