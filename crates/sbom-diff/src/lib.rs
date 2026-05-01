@@ -96,6 +96,31 @@ impl Diff {
             metadata_changed: self.metadata_changed,
         }
     }
+
+    /// Consuming variant of [`group_by_ecosystem`](Self::group_by_ecosystem)
+    /// that moves components instead of cloning them.
+    pub fn into_group_by_ecosystem(self) -> GroupedDiff {
+        let mut ecosystems: BTreeMap<String, EcosystemDiff> = BTreeMap::new();
+
+        for c in self.added {
+            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
+            ecosystems.entry(eco).or_default().added.push(c);
+        }
+        for c in self.removed {
+            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
+            ecosystems.entry(eco).or_default().removed.push(c);
+        }
+        for c in self.changed {
+            let eco = c.new.ecosystem.as_deref().unwrap_or("unknown").to_string();
+            ecosystems.entry(eco).or_default().changed.push(c);
+        }
+
+        GroupedDiff {
+            by_ecosystem: ecosystems,
+            edge_diffs: self.edge_diffs,
+            metadata_changed: self.metadata_changed,
+        }
+    }
 }
 
 /// Diff grouped by package ecosystem.
@@ -268,13 +293,19 @@ impl Differ {
         // 2. Reconciliation: Match by "Identity" (Name + Ecosystem)
         // When purls are absent or change, we match by (ecosystem, name).
         // If either ecosystem is None, we treat it as a wildcard and match by name alone.
-        let mut old_identity_map: BTreeMap<(Option<String>, String), Vec<ComponentId>> =
+        //
+        // The map is keyed by name, then by ecosystem, so the wildcard lookup
+        // (case 3: new has no ecosystem → match any old with same name) is
+        // O(k) where k is the number of distinct ecosystems sharing that name,
+        // rather than a linear scan of the entire map.
+        let mut old_identity_map: BTreeMap<String, BTreeMap<Option<String>, Vec<ComponentId>>> =
             BTreeMap::new();
         for (id, comp) in &old.components {
             if !processed_old.contains(id) {
-                let identity = (comp.ecosystem.clone(), comp.name.clone());
                 old_identity_map
-                    .entry(identity)
+                    .entry(comp.name.clone())
+                    .or_default()
+                    .entry(comp.ecosystem.clone())
                     .or_default()
                     .push(id.clone());
             }
@@ -285,28 +316,26 @@ impl Differ {
                 continue;
             }
 
-            let identity = (new_comp.ecosystem.clone(), new_comp.name.clone());
-
             // Try to find a matching old component:
             // 1. Exact match on (ecosystem, name)
             // 2. If new has ecosystem but no exact match, try old with None ecosystem (same name)
             // 3. If new has no ecosystem, try any old with same name
             let matched_old_id = old_identity_map
-                .get_mut(&identity)
-                .and_then(|ids| ids.pop())
-                .or_else(|| {
-                    if new_comp.ecosystem.is_some() {
-                        // New has ecosystem, try matching old with None ecosystem
-                        old_identity_map
-                            .get_mut(&(None, new_comp.name.clone()))
-                            .and_then(|ids| ids.pop())
-                    } else {
-                        // New has no ecosystem, try matching any old with same name
-                        old_identity_map
-                            .iter_mut()
-                            .find(|((_, name), ids)| name == &new_comp.name && !ids.is_empty())
-                            .and_then(|(_, ids)| ids.pop())
-                    }
+                .get_mut(&new_comp.name)
+                .and_then(|eco_map| {
+                    // Case 1: exact match on (ecosystem, name)
+                    eco_map
+                        .get_mut(&new_comp.ecosystem)
+                        .and_then(|ids| ids.pop())
+                        .or_else(|| {
+                            if new_comp.ecosystem.is_some() {
+                                // Case 2: new has ecosystem, try old with None ecosystem
+                                eco_map.get_mut(&None).and_then(|ids| ids.pop())
+                            } else {
+                                // Case 3: new has no ecosystem, try any old with same name
+                                eco_map.values_mut().find_map(|ids| ids.pop())
+                            }
+                        })
                 });
 
             if let Some(old_id) = matched_old_id {
