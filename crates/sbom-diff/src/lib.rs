@@ -49,12 +49,12 @@ impl Diff {
         let mut breakdown: BTreeMap<String, EcosystemCounts> = BTreeMap::new();
 
         for comp in &self.added {
-            let eco = comp.ecosystem.clone().unwrap_or_else(|| "unknown".into());
+            let eco = comp.ecosystem.as_deref().unwrap_or("unknown").to_string();
             breakdown.entry(eco).or_default().added += 1;
         }
 
         for comp in &self.removed {
-            let eco = comp.ecosystem.clone().unwrap_or_else(|| "unknown".into());
+            let eco = comp.ecosystem.as_deref().unwrap_or("unknown").to_string();
             breakdown.entry(eco).or_default().removed += 1;
         }
 
@@ -62,8 +62,9 @@ impl Diff {
             let eco = change
                 .new
                 .ecosystem
-                .clone()
-                .unwrap_or_else(|| "unknown".into());
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string();
             breakdown.entry(eco).or_default().changed += 1;
         }
 
@@ -1132,5 +1133,84 @@ mod tests {
         assert_eq!(unknown.added, 1);
         assert_eq!(unknown.removed, 0);
         assert_eq!(unknown.changed, 0);
+    }
+
+    #[test]
+    fn test_ecosystem_breakdown_empty_diff() {
+        let old = Sbom::default();
+        let new = Sbom::default();
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.is_empty());
+        assert!(diff.ecosystem_breakdown().is_empty());
+    }
+
+    #[test]
+    fn test_group_by_ecosystem_empty_diff() {
+        let old = Sbom::default();
+        let new = Sbom::default();
+
+        let diff = Differ::diff(&old, &new, None);
+        let grouped = diff.group_by_ecosystem();
+        assert!(grouped.by_ecosystem.is_empty());
+        assert!(grouped.edge_diffs.is_empty());
+        assert!(!grouped.metadata_changed);
+        assert!(grouped.ecosystem_breakdown().is_empty());
+    }
+
+    #[test]
+    fn test_group_by_ecosystem_groups_correctly() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // npm removed
+        let mut c1 = Component::new("lodash".into(), Some("4.17.21".into()));
+        c1.ecosystem = Some("npm".into());
+        old.components.insert(c1.id.clone(), c1);
+
+        // npm added
+        let mut c2 = Component::new("express".into(), Some("4.18.0".into()));
+        c2.ecosystem = Some("npm".into());
+        new.components.insert(c2.id.clone(), c2);
+
+        // cargo added
+        let mut c3 = Component::new("serde".into(), Some("1.0.0".into()));
+        c3.ecosystem = Some("cargo".into());
+        new.components.insert(c3.id.clone(), c3);
+
+        // npm changed
+        let mut c4_old = Component::new("react".into(), Some("17.0.0".into()));
+        c4_old.ecosystem = Some("npm".into());
+        let mut c4_new = Component::new("react".into(), Some("18.0.0".into()));
+        c4_new.ecosystem = Some("npm".into());
+        old.components.insert(c4_old.id.clone(), c4_old);
+        new.components.insert(c4_new.id.clone(), c4_new);
+
+        // unknown added
+        let c5 = Component::new("mystery".into(), Some("1.0".into()));
+        new.components.insert(c5.id.clone(), c5);
+
+        let diff = Differ::diff(&old, &new, None);
+        let grouped = diff.group_by_ecosystem();
+
+        let npm = grouped.by_ecosystem.get("npm").unwrap();
+        assert_eq!(npm.added.len(), 1);
+        assert_eq!(npm.removed.len(), 1);
+        assert_eq!(npm.changed.len(), 1);
+
+        let cargo = grouped.by_ecosystem.get("cargo").unwrap();
+        assert_eq!(cargo.added.len(), 1);
+        assert_eq!(cargo.removed.len(), 0);
+        assert_eq!(cargo.changed.len(), 0);
+
+        let unknown = grouped.by_ecosystem.get("unknown").unwrap();
+        assert_eq!(unknown.added.len(), 1);
+        assert_eq!(unknown.removed.len(), 0);
+        assert_eq!(unknown.changed.len(), 0);
+
+        // Derived breakdown should match direct breakdown
+        let grouped_counts = grouped.ecosystem_breakdown();
+        let direct_counts = diff.ecosystem_breakdown();
+        assert_eq!(grouped_counts, direct_counts);
     }
 }
