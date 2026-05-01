@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix `Diff::metadata_changed` always being false: the field was computed after `normalize()` cleared timestamps, tools, and authors, making the comparison a no-op; it is now computed before normalization
 - fix `--summary --show-warnings` silently dropping warnings in markdown (`-o markdown`) and JSON (`-o json`) summary output; `render_summary_markdown` and `render_summary_json` now check `opts.has_warnings()` and emit warnings in the same format as their full-output counterparts
 - fix CycloneDX supplier element with no name (or empty name) producing `Some("")` instead of `None`, which caused spurious supplier-change diffs
 
