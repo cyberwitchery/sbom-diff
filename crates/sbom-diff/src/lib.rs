@@ -236,6 +236,9 @@ impl Differ {
         let mut old = old.clone();
         let mut new = new.clone();
 
+        // Compare metadata before normalize() strips volatile fields
+        let metadata_changed = old.metadata != new.metadata;
+
         old.normalize();
         new.normalize();
 
@@ -342,7 +345,7 @@ impl Differ {
             removed,
             changed,
             edge_diffs,
-            metadata_changed: old.metadata != new.metadata,
+            metadata_changed,
         }
     }
 
@@ -753,17 +756,53 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_metadata_changed() {
+    fn test_diff_metadata_changed_timestamp() {
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Metadata is stripped during normalization, so metadata_changed should
-        // always be false after normalize
         old.metadata.timestamp = Some("2024-01-01".into());
         new.metadata.timestamp = Some("2024-01-02".into());
 
         let diff = Differ::diff(&old, &new, None);
-        // After normalization, both timestamps are cleared
+        assert!(diff.metadata_changed);
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn test_diff_metadata_changed_tools() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        old.metadata.tools = vec!["syft".into()];
+        new.metadata.tools = vec!["trivy".into()];
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.metadata_changed);
+    }
+
+    #[test]
+    fn test_diff_metadata_changed_authors() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        old.metadata.authors = vec!["alice".into()];
+        new.metadata.authors = vec!["bob".into()];
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.metadata_changed);
+    }
+
+    #[test]
+    fn test_diff_metadata_unchanged() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        old.metadata.timestamp = Some("2024-01-01".into());
+        new.metadata.timestamp = Some("2024-01-01".into());
+        old.metadata.tools = vec!["syft".into()];
+        new.metadata.tools = vec!["syft".into()];
+
+        let diff = Differ::diff(&old, &new, None);
         assert!(!diff.metadata_changed);
     }
 
