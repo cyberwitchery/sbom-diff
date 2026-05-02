@@ -3,6 +3,7 @@
 ## Unreleased
 
 - fix CycloneDX XML `read_xml()` reporting only the last spec-version error: when parsing fails for all versions (1.5, 1.4, 1.3), the error now includes diagnostics from every attempted version instead of only the v1.3 attempt
+- consolidate `render_summary_text`/`render_summary_markdown`/`render_summary_json` into a `SummaryRenderer` trait (mirrors the existing `Renderer` trait); all summary rendering logic now lives in the `renderer` module, making new output formats trivial to add
 
 ## [0.2.1] - 2026-05-06
 

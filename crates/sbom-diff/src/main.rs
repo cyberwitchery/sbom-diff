@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context};
 use clap::{Parser, ValueEnum};
 use sbom_diff::{
-    renderer::{JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, TextRenderer},
+    renderer::{
+        JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SummaryRenderer, TextRenderer,
+    },
     Differ,
 };
 use sbom_model::Sbom;
@@ -152,9 +154,11 @@ fn main() -> anyhow::Result<()> {
 
         if args.summary {
             match args.output {
-                Output::Text => render_summary_text(&diff, &render_opts, &mut handle)?,
-                Output::Markdown => render_summary_markdown(&diff, &render_opts, &mut handle)?,
-                Output::Json => render_summary_json(&diff, &render_opts, &mut handle)?,
+                Output::Text => TextRenderer.render_summary(&diff, &render_opts, &mut handle)?,
+                Output::Markdown => {
+                    MarkdownRenderer.render_summary(&diff, &render_opts, &mut handle)?
+                }
+                Output::Json => JsonRenderer.render_summary(&diff, &render_opts, &mut handle)?,
             }
         } else {
             match args.output {
@@ -213,136 +217,6 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
         }
     }
     violation
-}
-
-fn render_summary_text(
-    diff: &sbom_diff::Diff,
-    opts: &RenderOptions,
-    out: &mut impl io::Write,
-) -> io::Result<()> {
-    if opts.has_warnings() {
-        writeln!(out, "Warnings:     {}", opts.warning_count())?;
-        for w in &opts.old_warnings {
-            writeln!(out, "  [old] {}", w)?;
-        }
-        for w in &opts.new_warnings {
-            writeln!(out, "  [new] {}", w)?;
-        }
-        writeln!(out)?;
-    }
-
-    writeln!(out, "Old total:    {} components", diff.old_total)?;
-    writeln!(out, "New total:    {} components", diff.new_total)?;
-    writeln!(out, "Unchanged:    {}", diff.unchanged)?;
-    writeln!(out, "Added:        {}", diff.added.len())?;
-    writeln!(out, "Removed:      {}", diff.removed.len())?;
-    writeln!(out, "Changed:      {}", diff.changed.len())?;
-    writeln!(out, "Edge changes: {}", diff.edge_diffs.len())?;
-
-    if opts.group_by_ecosystem {
-        let breakdown = diff.ecosystem_breakdown();
-        if !breakdown.is_empty() {
-            writeln!(out)?;
-            writeln!(out, "By ecosystem:")?;
-            for (eco, counts) in &breakdown {
-                writeln!(
-                    out,
-                    "  {}: {} added, {} removed, {} changed",
-                    eco, counts.added, counts.removed, counts.changed
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn render_summary_markdown(
-    diff: &sbom_diff::Diff,
-    opts: &RenderOptions,
-    out: &mut impl io::Write,
-) -> io::Result<()> {
-    if opts.has_warnings() {
-        writeln!(
-            out,
-            "<details><summary><b>Warnings ({})</b></summary>",
-            opts.warning_count()
-        )?;
-        writeln!(out)?;
-        for w in &opts.old_warnings {
-            writeln!(out, "- **old:** {}", w)?;
-        }
-        for w in &opts.new_warnings {
-            writeln!(out, "- **new:** {}", w)?;
-        }
-        writeln!(out, "</details>")?;
-        writeln!(out)?;
-    }
-
-    writeln!(out, "### SBOM Diff Summary")?;
-    writeln!(out)?;
-    writeln!(out, "| Metric | Count |")?;
-    writeln!(out, "| --- | --- |")?;
-    writeln!(out, "| Old total | {} |", diff.old_total)?;
-    writeln!(out, "| New total | {} |", diff.new_total)?;
-    writeln!(out, "| Unchanged | {} |", diff.unchanged)?;
-    writeln!(out, "| Added | {} |", diff.added.len())?;
-    writeln!(out, "| Removed | {} |", diff.removed.len())?;
-    writeln!(out, "| Changed | {} |", diff.changed.len())?;
-    writeln!(out, "| Edge changes | {} |", diff.edge_diffs.len())?;
-
-    if opts.group_by_ecosystem {
-        let breakdown = diff.ecosystem_breakdown();
-        if !breakdown.is_empty() {
-            writeln!(out)?;
-            writeln!(out, "#### By Ecosystem")?;
-            writeln!(out)?;
-            writeln!(out, "| Ecosystem | Added | Removed | Changed |")?;
-            writeln!(out, "| --- | --- | --- | --- |")?;
-            for (eco, counts) in &breakdown {
-                writeln!(
-                    out,
-                    "| {} | {} | {} | {} |",
-                    eco, counts.added, counts.removed, counts.changed
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn render_summary_json(
-    diff: &sbom_diff::Diff,
-    opts: &RenderOptions,
-    out: &mut impl io::Write,
-) -> io::Result<()> {
-    let mut summary = serde_json::json!({
-        "old_total": diff.old_total,
-        "new_total": diff.new_total,
-        "unchanged": diff.unchanged,
-        "added": diff.added.len(),
-        "removed": diff.removed.len(),
-        "changed": diff.changed.len(),
-        "edge_changes": diff.edge_diffs.len(),
-    });
-
-    if opts.has_warnings() {
-        summary["warnings"] = serde_json::json!({
-            "old": opts.old_warnings,
-            "new": opts.new_warnings,
-        });
-    }
-
-    if opts.group_by_ecosystem {
-        let breakdown = diff.ecosystem_breakdown();
-        if !breakdown.is_empty() {
-            summary["ecosystem_breakdown"] =
-                serde_json::to_value(&breakdown).map_err(io::Error::other)?;
-        }
-    }
-
-    serde_json::to_writer_pretty(out, &summary).map_err(io::Error::other)
 }
 
 fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
@@ -572,7 +446,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_text(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        TextRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Added:        2"));
@@ -607,7 +483,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_text(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        TextRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Edge changes: 2"));
@@ -870,7 +748,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_markdown(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        MarkdownRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("### SBOM Diff Summary"));
@@ -911,7 +791,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_markdown(&diff, &opts, &mut buf).unwrap();
+        MarkdownRenderer
+            .render_summary(&diff, &opts, &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("#### By Ecosystem"));
@@ -933,7 +815,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_markdown(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        MarkdownRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("| Added | 0 |"));
@@ -958,7 +842,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_json(&diff, &RenderOptions::default(), &mut buf).unwrap();
+        JsonRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert_eq!(val["added"], 2);
@@ -989,7 +875,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_json(&diff, &opts, &mut buf).unwrap();
+        JsonRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert_eq!(val["added"], 1);
@@ -1018,7 +904,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_text(&diff, &opts, &mut buf).unwrap();
+        TextRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Warnings:     2"));
@@ -1047,7 +933,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_markdown(&diff, &opts, &mut buf).unwrap();
+        MarkdownRenderer
+            .render_summary(&diff, &opts, &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("<details><summary><b>Warnings (2)</b></summary>"));
@@ -1077,7 +965,9 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_markdown(&diff, &opts, &mut buf).unwrap();
+        MarkdownRenderer
+            .render_summary(&diff, &opts, &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(!out.contains("Warnings"));
@@ -1104,7 +994,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_json(&diff, &opts, &mut buf).unwrap();
+        JsonRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert_eq!(val["added"], 1);
@@ -1133,7 +1023,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        render_summary_json(&diff, &opts, &mut buf).unwrap();
+        JsonRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert!(val.get("warnings").is_none());
