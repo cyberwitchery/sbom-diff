@@ -1,7 +1,10 @@
 ### SBOM Diff Summary
 
-| Change | Count |
+| Metric | Count |
 | --- | --- |
+| Old total | 5 |
+| New total | 5 |
+| Unchanged | 2 |
 | Added | 1 |
 | Removed | 1 |
 | Changed | 2 |

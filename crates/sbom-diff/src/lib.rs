@@ -18,7 +18,7 @@ pub struct EcosystemCounts {
 ///
 /// Contains lists of added, removed, and changed components,
 /// as well as dependency edge changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Diff {
     /// Components present in the new SBOM but not the old.
     pub added: Vec<Component>,
@@ -30,6 +30,18 @@ pub struct Diff {
     pub edge_diffs: Vec<EdgeDiff>,
     /// Whether document metadata differs (usually ignored).
     pub metadata_changed: bool,
+    /// Total number of components in the old SBOM.
+    pub old_total: usize,
+    /// Total number of components in the new SBOM.
+    pub new_total: usize,
+    /// Number of components present in both SBOMs with no changes.
+    pub unchanged: usize,
+    /// Human-readable display names for component IDs that appear in edge diffs.
+    ///
+    /// Maps hash-based IDs (`h:...`) to `name@version` or `name` so that edge
+    /// diff output is readable without cross-referencing the full component list.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub component_names: BTreeMap<ComponentId, String>,
 }
 
 impl Diff {
@@ -40,6 +52,16 @@ impl Diff {
             && self.changed.is_empty()
             && self.edge_diffs.is_empty()
             && !self.metadata_changed
+    }
+
+    /// Returns a human-readable display name for a component ID.
+    ///
+    /// Looks up the ID in `component_names`; falls back to the raw ID string.
+    pub fn display_name<'a>(&'a self, id: &'a ComponentId) -> &'a str {
+        self.component_names
+            .get(id)
+            .map(String::as_str)
+            .unwrap_or_else(|| id.as_str())
     }
 
     /// Groups added/removed/changed counts by package ecosystem.
@@ -361,7 +383,14 @@ impl Differ {
             }
         }
 
-        // 3. Compute edge diffs (dependency graph changes)
+        // 3. Compute totals
+        let old_total = old.components.len();
+        let new_total = new.components.len();
+        // matched = all components in the old SBOM that were paired with a new one
+        let matched = processed_old.len();
+        let unchanged = matched - changed.len();
+
+        // 4. Compute edge diffs (dependency graph changes)
         let should_include_deps = only.is_none_or(|fields| fields.contains(&Field::Deps));
         let edge_diffs = if should_include_deps {
             Self::compute_edge_diffs(&old, &new, &id_mapping)
@@ -369,12 +398,19 @@ impl Differ {
             Vec::new()
         };
 
+        // 5. Build human-readable name map for hash-based IDs in edge diffs
+        let component_names = Self::build_component_names(&old, &new, &edge_diffs);
+
         Diff {
             added,
             removed,
             changed,
             edge_diffs,
             metadata_changed,
+            old_total,
+            new_total,
+            unchanged,
+            component_names,
         }
     }
 
@@ -451,6 +487,45 @@ impl Differ {
         }
 
         edge_diffs
+    }
+
+    /// Builds a human-readable display name map for component IDs in edge diffs.
+    ///
+    /// Only includes entries for hash-based IDs (`h:...`) since purl-based IDs
+    /// are already human-readable. Looks up component names from both SBOMs.
+    fn build_component_names(
+        old: &Sbom,
+        new: &Sbom,
+        edge_diffs: &[EdgeDiff],
+    ) -> BTreeMap<ComponentId, String> {
+        let mut names = BTreeMap::new();
+
+        // Collect all IDs that appear in edge diffs
+        let mut ids = BTreeSet::new();
+        for edge in edge_diffs {
+            ids.insert(&edge.parent);
+            ids.extend(&edge.added);
+            ids.extend(&edge.removed);
+        }
+
+        // Only resolve hash-based IDs — purls are already readable
+        for id in ids {
+            if !id.as_str().starts_with("h:") {
+                continue;
+            }
+
+            // Try new SBOM first (edge diffs use new-SBOM IDs), then old
+            let comp = new.components.get(id).or_else(|| old.components.get(id));
+            if let Some(comp) = comp {
+                let display = match &comp.version {
+                    Some(v) => format!("{}@{}", comp.name, v),
+                    None => comp.name.clone(),
+                };
+                names.insert(id.clone(), display);
+            }
+        }
+
+        names
     }
 
     fn compute_change(
@@ -1280,5 +1355,134 @@ mod tests {
         let grouped_counts = grouped.ecosystem_breakdown();
         let direct_counts = diff.ecosystem_breakdown();
         assert_eq!(grouped_counts, direct_counts);
+    }
+
+    #[test]
+    fn test_totals_no_changes() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        let c2 = Component::new("pkg-b".to_string(), Some("2.0".to_string()));
+
+        old.components.insert(c1.id.clone(), c1.clone());
+        old.components.insert(c2.id.clone(), c2.clone());
+        new.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.old_total, 2);
+        assert_eq!(diff.new_total, 2);
+        assert_eq!(diff.unchanged, 2);
+    }
+
+    #[test]
+    fn test_totals_with_changes() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        let mut c1_updated = c1.clone();
+        c1_updated.version = Some("1.1".to_string());
+        let c2 = Component::new("pkg-b".to_string(), Some("2.0".to_string()));
+        let c3 = Component::new("pkg-c".to_string(), Some("3.0".to_string()));
+        let c4 = Component::new("pkg-d".to_string(), Some("4.0".to_string()));
+
+        old.components.insert(c1.id.clone(), c1);
+        old.components.insert(c2.id.clone(), c2.clone());
+        old.components.insert(c3.id.clone(), c3);
+        new.components.insert(c1_updated.id.clone(), c1_updated);
+        new.components.insert(c2.id.clone(), c2);
+        new.components.insert(c4.id.clone(), c4);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.old_total, 3);
+        assert_eq!(diff.new_total, 3);
+        assert_eq!(diff.added.len(), 1); // c4
+        assert_eq!(diff.removed.len(), 1); // c3
+        assert_eq!(diff.changed.len(), 1); // c1
+        assert_eq!(diff.unchanged, 1); // c2
+    }
+
+    #[test]
+    fn test_component_names_for_hash_ids_in_edge_diffs() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Components without purls → hash-based IDs
+        let parent = Component::new("my-app".to_string(), Some("1.0".to_string()));
+        let child_a = Component::new("dep-old".to_string(), Some("0.1".to_string()));
+        let child_b = Component::new("dep-new".to_string(), Some("0.2".to_string()));
+
+        old.components.insert(parent.id.clone(), parent.clone());
+        old.components.insert(child_a.id.clone(), child_a.clone());
+        new.components.insert(parent.id.clone(), parent.clone());
+        new.components.insert(child_b.id.clone(), child_b.clone());
+
+        // Set up edges: old parent -> child_a, new parent -> child_b
+        old.dependencies
+            .insert(parent.id.clone(), BTreeSet::from([child_a.id.clone()]));
+        new.dependencies
+            .insert(parent.id.clone(), BTreeSet::from([child_b.id.clone()]));
+
+        let diff = Differ::diff(&old, &new, None);
+
+        // All IDs in edge diffs should be hash-based (no purls)
+        assert!(diff.edge_diffs[0].parent.as_str().starts_with("h:"));
+
+        // component_names should resolve all hash IDs to readable names
+        assert_eq!(diff.display_name(&diff.edge_diffs[0].parent), "my-app@1.0");
+        for added in &diff.edge_diffs[0].added {
+            assert!(!diff.display_name(added).starts_with("h:"));
+        }
+        for removed in &diff.edge_diffs[0].removed {
+            assert!(!diff.display_name(removed).starts_with("h:"));
+        }
+    }
+
+    #[test]
+    fn test_component_names_skips_purl_ids() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut parent = Component::new("parent".to_string(), Some("1.0".to_string()));
+        parent.purl = Some("pkg:npm/parent@1.0".to_string());
+        parent.id = ComponentId::new(parent.purl.as_deref(), &[]);
+
+        let mut child_a = Component::new("child-a".to_string(), Some("1.0".to_string()));
+        child_a.purl = Some("pkg:npm/child-a@1.0".to_string());
+        child_a.id = ComponentId::new(child_a.purl.as_deref(), &[]);
+
+        let mut child_b = Component::new("child-b".to_string(), Some("1.0".to_string()));
+        child_b.purl = Some("pkg:npm/child-b@1.0".to_string());
+        child_b.id = ComponentId::new(child_b.purl.as_deref(), &[]);
+
+        old.components.insert(parent.id.clone(), parent.clone());
+        old.components.insert(child_a.id.clone(), child_a.clone());
+        new.components.insert(parent.id.clone(), parent.clone());
+        new.components.insert(child_b.id.clone(), child_b.clone());
+
+        old.dependencies
+            .insert(parent.id.clone(), BTreeSet::from([child_a.id.clone()]));
+        new.dependencies
+            .insert(parent.id.clone(), BTreeSet::from([child_b.id.clone()]));
+
+        let diff = Differ::diff(&old, &new, None);
+
+        // component_names should be empty — all IDs are purl-based
+        assert!(diff.component_names.is_empty());
+
+        // display_name should fall back to the purl-based ID string
+        assert!(diff
+            .display_name(&diff.edge_diffs[0].parent)
+            .starts_with("pkg:npm/parent@"));
+    }
+
+    #[test]
+    fn test_display_name_fallback() {
+        let diff = Diff::default();
+        let unknown_id = ComponentId::new(None, &[("name", "mystery")]);
+        // No entry in component_names → falls back to raw ID
+        assert_eq!(diff.display_name(&unknown_id), unknown_id.as_str());
     }
 }

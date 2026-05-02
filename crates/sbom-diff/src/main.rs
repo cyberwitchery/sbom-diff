@@ -231,6 +231,9 @@ fn render_summary_text(
         writeln!(out)?;
     }
 
+    writeln!(out, "Old total:    {} components", diff.old_total)?;
+    writeln!(out, "New total:    {} components", diff.new_total)?;
+    writeln!(out, "Unchanged:    {}", diff.unchanged)?;
     writeln!(out, "Added:        {}", diff.added.len())?;
     writeln!(out, "Removed:      {}", diff.removed.len())?;
     writeln!(out, "Changed:      {}", diff.changed.len())?;
@@ -278,8 +281,11 @@ fn render_summary_markdown(
 
     writeln!(out, "### SBOM Diff Summary")?;
     writeln!(out)?;
-    writeln!(out, "| Change | Count |")?;
+    writeln!(out, "| Metric | Count |")?;
     writeln!(out, "| --- | --- |")?;
+    writeln!(out, "| Old total | {} |", diff.old_total)?;
+    writeln!(out, "| New total | {} |", diff.new_total)?;
+    writeln!(out, "| Unchanged | {} |", diff.unchanged)?;
     writeln!(out, "| Added | {} |", diff.added.len())?;
     writeln!(out, "| Removed | {} |", diff.removed.len())?;
     writeln!(out, "| Changed | {} |", diff.changed.len())?;
@@ -312,6 +318,9 @@ fn render_summary_json(
     out: &mut impl io::Write,
 ) -> io::Result<()> {
     let mut summary = serde_json::json!({
+        "old_total": diff.old_total,
+        "new_total": diff.new_total,
+        "unchanged": diff.unchanged,
         "added": diff.added.len(),
         "removed": diff.removed.len(),
         "changed": diff.changed.len(),
@@ -559,7 +568,7 @@ mod tests {
             removed: vec![Component::new("c".into(), Some("1".into()))],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let mut buf = Vec::new();
@@ -594,7 +603,7 @@ mod tests {
                     removed: BTreeSet::from([ComponentId::new(None, &[("name", "pkg-d")])]),
                 },
             ],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let mut buf = Vec::new();
@@ -619,7 +628,7 @@ mod tests {
                 added: BTreeSet::new(),
                 removed: BTreeSet::from([ComponentId::new(None, &[("name", "child")])]),
             }],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         assert!(check_fail_on(&diff, &[FailOn::Deps]));
@@ -634,7 +643,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         // Both conditions checked
@@ -697,7 +706,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         // No added components - no violation
@@ -718,7 +727,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         // No added components - no violation
@@ -745,7 +754,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         // No edge changes - no violation
@@ -769,7 +778,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         // No removed components - no violation
@@ -790,7 +799,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         // No changed components - no violation
@@ -829,7 +838,7 @@ mod tests {
                 )],
             }],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         assert!(!check_fail_on(
@@ -857,7 +866,7 @@ mod tests {
             removed: vec![Component::new("c".into(), Some("1".into()))],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let mut buf = Vec::new();
@@ -865,7 +874,10 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("### SBOM Diff Summary"));
-        assert!(out.contains("| Change | Count |"));
+        assert!(out.contains("| Metric | Count |"));
+        assert!(out.contains("| Old total | 0 |"));
+        assert!(out.contains("| New total | 0 |"));
+        assert!(out.contains("| Unchanged | 0 |"));
         assert!(out.contains("| Added | 2 |"));
         assert!(out.contains("| Removed | 1 |"));
         assert!(out.contains("| Changed | 0 |"));
@@ -890,7 +902,7 @@ mod tests {
             removed: vec![removed],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
@@ -917,7 +929,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let mut buf = Vec::new();
@@ -942,7 +954,7 @@ mod tests {
             removed: vec![Component::new("c".into(), Some("1".into()))],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let mut buf = Vec::new();
@@ -968,7 +980,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
@@ -995,7 +1007,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
@@ -1024,7 +1036,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
@@ -1055,7 +1067,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
@@ -1081,7 +1093,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
@@ -1111,7 +1123,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         };
 
         let opts = RenderOptions {
