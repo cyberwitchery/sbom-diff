@@ -213,9 +213,12 @@ impl Renderer for TextRenderer {
 
         writeln!(writer, "Diff Summary")?;
         writeln!(writer, "============")?;
-        writeln!(writer, "Added:   {}", diff.added.len())?;
-        writeln!(writer, "Removed: {}", diff.removed.len())?;
-        writeln!(writer, "Changed: {}", diff.changed.len())?;
+        writeln!(writer, "Old total:   {} components", diff.old_total)?;
+        writeln!(writer, "New total:   {} components", diff.new_total)?;
+        writeln!(writer, "Unchanged:   {}", diff.unchanged)?;
+        writeln!(writer, "Added:       {}", diff.added.len())?;
+        writeln!(writer, "Removed:     {}", diff.removed.len())?;
+        writeln!(writer, "Changed:     {}", diff.changed.len())?;
         writeln!(writer)?;
 
         if opts.group_by_ecosystem {
@@ -282,12 +285,12 @@ impl Renderer for TextRenderer {
             writeln!(writer, "[~] Edge Changes")?;
             writeln!(writer, "----------------")?;
             for edge in &diff.edge_diffs {
-                writeln!(writer, "{}", edge.parent)?;
+                writeln!(writer, "{}", diff.display_name(&edge.parent))?;
                 for removed in &edge.removed {
-                    writeln!(writer, "  - {}", removed)?;
+                    writeln!(writer, "  - {}", diff.display_name(removed))?;
                 }
                 for added in &edge.added {
-                    writeln!(writer, "  + {}", added)?;
+                    writeln!(writer, "  + {}", diff.display_name(added))?;
                 }
             }
         }
@@ -374,8 +377,11 @@ impl Renderer for MarkdownRenderer {
 
         writeln!(writer, "### SBOM Diff Summary")?;
         writeln!(writer)?;
-        writeln!(writer, "| Change | Count |")?;
+        writeln!(writer, "| Metric | Count |")?;
         writeln!(writer, "| --- | --- |")?;
+        writeln!(writer, "| Old total | {} |", diff.old_total)?;
+        writeln!(writer, "| New total | {} |", diff.new_total)?;
+        writeln!(writer, "| Unchanged | {} |", diff.unchanged)?;
         writeln!(writer, "| Added | {} |", diff.added.len())?;
         writeln!(writer, "| Removed | {} |", diff.removed.len())?;
         writeln!(writer, "| Changed | {} |", diff.changed.len())?;
@@ -481,17 +487,17 @@ impl Renderer for MarkdownRenderer {
             )?;
             writeln!(writer)?;
             for edge in &diff.edge_diffs {
-                writeln!(writer, "#### `{}`", edge.parent)?;
+                writeln!(writer, "#### `{}`", diff.display_name(&edge.parent))?;
                 if !edge.removed.is_empty() {
                     writeln!(writer, "**Removed dependencies:**")?;
                     for removed in &edge.removed {
-                        writeln!(writer, "- `{}`", removed)?;
+                        writeln!(writer, "- `{}`", diff.display_name(removed))?;
                     }
                 }
                 if !edge.added.is_empty() {
                     writeln!(writer, "**Added dependencies:**")?;
                     for added in &edge.added {
-                        writeln!(writer, "- `{}`", added)?;
+                        writeln!(writer, "- `{}`", diff.display_name(added))?;
                     }
                 }
                 writeln!(writer)?;
@@ -590,7 +596,7 @@ mod tests {
                 changes: vec![FieldChange::Version("1.0".into(), "1.1".into())],
             }],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         }
     }
 
@@ -635,7 +641,7 @@ mod tests {
                 added: BTreeSet::from([ComponentId::new(None, &[("name", "child-b")])]),
                 removed: BTreeSet::from([ComponentId::new(None, &[("name", "child-a")])]),
             }],
-            metadata_changed: false,
+            ..Diff::default()
         }
     }
 
@@ -645,7 +651,7 @@ mod tests {
             removed: vec![],
             changed: vec![],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         }
     }
 
@@ -697,9 +703,12 @@ mod tests {
             .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(out.contains("Added:   0"));
-        assert!(out.contains("Removed: 0"));
-        assert!(out.contains("Changed: 0"));
+        assert!(out.contains("Old total:   0 components"));
+        assert!(out.contains("New total:   0 components"));
+        assert!(out.contains("Unchanged:   0"));
+        assert!(out.contains("Added:       0"));
+        assert!(out.contains("Removed:     0"));
+        assert!(out.contains("Changed:     0"));
         assert!(!out.contains("[+] Added"));
         assert!(!out.contains("[-] Removed"));
         assert!(!out.contains("[~] Changed"));
@@ -813,7 +822,7 @@ mod tests {
                 changes: vec![FieldChange::Version("17.0.0".into(), "18.0.0".into())],
             }],
             edge_diffs: vec![],
-            metadata_changed: false,
+            ..Diff::default()
         }
     }
 
@@ -1004,5 +1013,135 @@ mod tests {
         JsonRenderer.render(&diff, &opts, &mut buf).unwrap();
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         assert!(val.get("warnings").is_none());
+    }
+
+    fn mock_diff_with_hash_edge_diffs() -> Diff {
+        use sbom_model::ComponentId;
+        use std::collections::BTreeSet;
+
+        let parent_id = ComponentId::new(None, &[("name", "parent")]);
+        let child_a_id = ComponentId::new(None, &[("name", "child-a")]);
+        let child_b_id = ComponentId::new(None, &[("name", "child-b")]);
+
+        let mut names = BTreeMap::new();
+        names.insert(parent_id.clone(), "my-app@1.0".to_string());
+        names.insert(child_a_id.clone(), "old-dep@0.1".to_string());
+        names.insert(child_b_id.clone(), "new-dep@0.2".to_string());
+
+        Diff {
+            edge_diffs: vec![crate::EdgeDiff {
+                parent: parent_id,
+                added: BTreeSet::from([child_b_id]),
+                removed: BTreeSet::from([child_a_id]),
+            }],
+            old_total: 10,
+            new_total: 12,
+            unchanged: 5,
+            component_names: names,
+            ..Diff::default()
+        }
+    }
+
+    #[test]
+    fn test_text_renderer_resolves_edge_diff_names() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("my-app@1.0"));
+        assert!(out.contains("- old-dep@0.1"));
+        assert!(out.contains("+ new-dep@0.2"));
+        // Should NOT contain raw hash IDs
+        assert!(!out.contains("h:"));
+    }
+
+    #[test]
+    fn test_text_renderer_shows_totals() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Old total:   10 components"));
+        assert!(out.contains("New total:   12 components"));
+        assert!(out.contains("Unchanged:   5"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_resolves_edge_diff_names() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("`my-app@1.0`"));
+        assert!(out.contains("`old-dep@0.1`"));
+        assert!(out.contains("`new-dep@0.2`"));
+        assert!(!out.contains("h:"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_shows_totals() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("| Old total | 10 |"));
+        assert!(out.contains("| New total | 12 |"));
+        assert!(out.contains("| Unchanged | 5 |"));
+    }
+
+    #[test]
+    fn test_json_renderer_includes_totals() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["old_total"], 10);
+        assert_eq!(val["new_total"], 12);
+        assert_eq!(val["unchanged"], 5);
+    }
+
+    #[test]
+    fn test_json_renderer_includes_component_names() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        let names = &val["component_names"];
+        assert!(names.is_object());
+        assert!(names
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|v| v == "my-app@1.0"));
+    }
+
+    #[test]
+    fn test_json_renderer_omits_empty_component_names() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert!(val.get("component_names").is_none());
     }
 }
