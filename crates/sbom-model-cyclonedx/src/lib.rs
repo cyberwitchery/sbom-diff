@@ -13,9 +13,9 @@ pub enum Error {
     /// The JSON structure doesn't match the CycloneDX schema.
     #[error("CycloneDX JSON parse error: {0}")]
     Parse(#[from] cyclonedx_bom::errors::JsonReadError),
-    /// The XML structure doesn't match the CycloneDX schema.
-    #[error("CycloneDX XML parse error: {0}")]
-    XmlParse(#[from] cyclonedx_bom::errors::XmlReadError),
+    /// XML parsing failed for all attempted spec versions.
+    #[error("CycloneDX XML failed all spec versions:\n{0}")]
+    XmlParseAllVersions(String),
     /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -74,16 +74,25 @@ impl CycloneDxReader {
     /// ```
     pub fn read_xml(data: &[u8]) -> Result<Sbom, Error> {
         use cyclonedx_bom::models::bom::SpecVersion;
+        use std::fmt::Write;
 
-        let versions = [SpecVersion::V1_5, SpecVersion::V1_4, SpecVersion::V1_3];
-        let mut last_err = None;
-        for version in versions {
+        let versions = [
+            ("1.5", SpecVersion::V1_5),
+            ("1.4", SpecVersion::V1_4),
+            ("1.3", SpecVersion::V1_3),
+        ];
+        let mut errors = Vec::new();
+        for (label, version) in versions {
             match cyclonedx_bom::prelude::Bom::parse_from_xml_with_version(data, version) {
                 Ok(bom) => return Self::bom_to_sbom(bom),
-                Err(e) => last_err = Some(e),
+                Err(e) => errors.push((label, e)),
             }
         }
-        Err(last_err.unwrap().into())
+        let mut msg = String::new();
+        for (label, err) in &errors {
+            writeln!(msg, "  v{label}: {err}").unwrap();
+        }
+        Err(Error::XmlParseAllVersions(msg.trim_end().to_string()))
     }
 
     fn bom_to_sbom(bom: cyclonedx_bom::prelude::Bom) -> Result<Sbom, Error> {
@@ -410,7 +419,12 @@ mod tests {
     fn test_read_xml_invalid() {
         let xml = b"<not-a-bom/>";
         let result = CycloneDxReader::read_xml(xml.as_slice());
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        // All three version errors should be present
+        assert!(msg.contains("v1.5:"), "missing v1.5 error: {msg}");
+        assert!(msg.contains("v1.4:"), "missing v1.4 error: {msg}");
+        assert!(msg.contains("v1.3:"), "missing v1.3 error: {msg}");
     }
 
     #[test]
