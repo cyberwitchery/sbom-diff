@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix `render_summary_json` panic: replace `.expect()` on ecosystem breakdown serialization with proper error propagation, preventing a potential panic on malformed `EcosystemCounts` data
+- add recursion depth limit (32 levels) to CycloneDX sub-component collection, emitting a warning instead of stack-overflowing on adversarial or malformed input
+- add SPDX document version detection: `SpdxReader::read_json` now pre-checks the `spdxVersion` field and returns a clear `UnsupportedVersion` error for SPDX 3.x or other unsupported spec versions, instead of producing garbled output or cryptic deserialization errors
 - fix `Diff::metadata_changed` always being false: the field was computed after `normalize()` cleared timestamps, tools, and authors, making the comparison a no-op; it is now computed before normalization
 - fix `--summary --show-warnings` silently dropping warnings in markdown (`-o markdown`) and JSON (`-o json`) summary output; `render_summary_markdown` and `render_summary_json` now check `opts.has_warnings()` and emit warnings in the same format as their full-output counterparts
 - fix CycloneDX supplier element with no name (or empty name) producing `Some("")` instead of `None`, which caused spurious supplier-change diffs

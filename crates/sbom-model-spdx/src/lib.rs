@@ -17,6 +17,12 @@ pub enum Error {
     /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// The SPDX document version is not supported.
+    #[error("unsupported SPDX version '{version}': only SPDX 2.x is supported (e.g. SPDX-2.3)")]
+    UnsupportedVersion {
+        /// The version string found in the document.
+        version: String,
+    },
 }
 
 /// Parser for SPDX JSON documents.
@@ -36,8 +42,16 @@ impl SpdxReader {
     /// let file = File::open("sbom.spdx.json").unwrap();
     /// let sbom = SpdxReader::read_json(file).unwrap();
     /// ```
-    pub fn read_json<R: Read>(reader: R) -> Result<Sbom, Error> {
-        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_reader(reader)?;
+    pub fn read_json<R: Read>(mut reader: R) -> Result<Sbom, Error> {
+        // Buffer the input so we can check the SPDX version before full
+        // parsing. Without this, SPDX 3.0 documents would either produce
+        // garbled output or an inscrutable deserialization error.
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+
+        Self::check_spdx_version(&buf)?;
+
+        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(&buf)?;
 
         let mut sbom = Sbom::default();
 
@@ -195,6 +209,30 @@ impl SpdxReader {
         }
 
         Ok(sbom)
+    }
+
+    /// Pre-check the `spdxVersion` field before full parsing.
+    ///
+    /// Returns an error for SPDX 3.x or any other unsupported spec version,
+    /// giving a clear message instead of cryptic deserialization failures.
+    fn check_spdx_version(data: &[u8]) -> Result<(), Error> {
+        #[derive(serde::Deserialize)]
+        struct VersionProbe {
+            #[serde(rename = "spdxVersion")]
+            spdx_version: Option<String>,
+        }
+
+        let probe: VersionProbe = serde_json::from_slice(data)?;
+
+        match probe.spdx_version.as_deref() {
+            Some(v) if v.starts_with("SPDX-2.") => Ok(()),
+            Some(v) => Err(Error::UnsupportedVersion {
+                version: v.to_string(),
+            }),
+            // Missing version field — let the full parser produce its own
+            // error; the document is malformed either way.
+            None => Ok(()),
+        }
     }
 }
 
@@ -869,5 +907,97 @@ mod tests {
 
         // No license fields at all -> empty
         assert!(find("no-license-fields").licenses.is_empty());
+    }
+
+    #[test]
+    fn test_spdx_3_rejected_with_clear_error() {
+        let json = r#"{
+            "spdxVersion": "SPDX-3.0",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [],
+            "relationships": []
+        }"#;
+        let err = SpdxReader::read_json(json.as_bytes()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported SPDX version"),
+            "expected version error, got: {msg}"
+        );
+        assert!(msg.contains("SPDX-3.0"), "should mention the version found");
+        assert!(
+            msg.contains("SPDX 2.x"),
+            "should mention supported versions"
+        );
+    }
+
+    #[test]
+    fn test_spdx_unknown_future_version_rejected() {
+        let json = r#"{
+            "spdxVersion": "SPDX-4.0",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [],
+            "relationships": []
+        }"#;
+        let err = SpdxReader::read_json(json.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("unsupported SPDX version"));
+    }
+
+    #[test]
+    fn test_spdx_22_accepted() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.2",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+    }
+
+    #[test]
+    fn test_empty_packages_array() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.components.is_empty());
+        assert!(sbom.warnings.is_empty());
     }
 }

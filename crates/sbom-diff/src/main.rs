@@ -338,7 +338,7 @@ fn render_summary_json(
         let breakdown = diff.ecosystem_breakdown();
         if !breakdown.is_empty() {
             summary["ecosystem_breakdown"] =
-                serde_json::to_value(&breakdown).expect("serializable breakdown");
+                serde_json::to_value(&breakdown).map_err(io::Error::other)?;
         }
     }
 
