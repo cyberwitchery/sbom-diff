@@ -24,6 +24,14 @@ pub enum Error {
     Normalization(String),
 }
 
+/// Maximum nesting depth for recursive sub-component collection.
+///
+/// Real-world SBOMs rarely nest more than a handful of levels. A limit
+/// prevents stack overflow from adversarial or malformed input. Kept
+/// below serde_json's own recursion limit so we produce a clear warning
+/// instead of a cryptic parse error.
+const MAX_COMPONENT_DEPTH: usize = 32;
+
 /// Parser for CycloneDX JSON documents.
 ///
 /// Converts CycloneDX 1.4+ JSON into the format-agnostic [`Sbom`] type.
@@ -135,7 +143,7 @@ impl CycloneDxReader {
 
         // 2. Process Components (recursively including sub-components)
         if let Some(components) = bom.components {
-            Self::collect_components(&components.0, &mut sbom);
+            Self::collect_components(&components.0, &mut sbom, 0);
         }
 
         // 3. Process Dependencies
@@ -183,7 +191,16 @@ impl CycloneDxReader {
     fn collect_components(
         cdx_components: &[cyclonedx_bom::models::component::Component],
         sbom: &mut Sbom,
+        depth: usize,
     ) {
+        if depth >= MAX_COMPONENT_DEPTH {
+            sbom.warnings.push(format!(
+                "CycloneDX: sub-component nesting exceeds {} levels; deeper components ignored",
+                MAX_COMPONENT_DEPTH
+            ));
+            return;
+        }
+
         for cdx_comp in cdx_components {
             let name = cdx_comp.name.to_string();
             let version = cdx_comp.version.as_ref().map(|v| v.to_string());
@@ -264,7 +281,7 @@ impl CycloneDxReader {
 
             // Recurse into sub-components
             if let Some(sub) = &cdx_comp.components {
-                Self::collect_components(&sub.0, sbom);
+                Self::collect_components(&sub.0, sbom, depth + 1);
             }
         }
     }
@@ -741,5 +758,94 @@ mod tests {
         assert_eq!(sbom.components.len(), 2);
         assert!(sbom.components.values().any(|c| c.name == "my-image"));
         assert!(sbom.components.values().any(|c| c.name == "inner-lib"));
+    }
+
+    #[test]
+    fn test_recursion_depth_limit() {
+        // Build a CycloneDX JSON with nesting deeper than MAX_COMPONENT_DEPTH.
+        // The parser should collect components up to the limit and emit a
+        // warning instead of stack-overflowing.
+        let depth = super::MAX_COMPONENT_DEPTH + 5;
+        let mut json = String::from(
+            r#"{"bomFormat":"CycloneDX","specVersion":"1.4","version":1,"components":["#,
+        );
+        for i in 0..depth {
+            if i > 0 {
+                // open nested components array inside the previous component
+                json.push_str(r#","components":["#);
+            }
+            json.push_str(&format!(
+                r#"{{"type":"library","name":"level-{}","version":"1.0.0""#,
+                i
+            ));
+        }
+        // Close all the braces: each component + its components array
+        for i in (0..depth).rev() {
+            json.push('}'); // close component object
+            if i > 0 {
+                json.push(']'); // close components array
+            }
+        }
+        json.push_str("]}");
+
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+
+        // Should have collected exactly MAX_COMPONENT_DEPTH components
+        assert_eq!(sbom.components.len(), super::MAX_COMPONENT_DEPTH);
+
+        // Should have a warning about depth
+        assert!(
+            sbom.warnings.iter().any(|w| w.contains("nesting exceeds")),
+            "expected depth warning, got: {:?}",
+            sbom.warnings
+        );
+
+        // Components at the boundary should be present, those beyond should not
+        assert!(sbom.components.values().any(|c| c.name == "level-0"));
+        assert!(sbom
+            .components
+            .values()
+            .any(|c| c.name == format!("level-{}", super::MAX_COMPONENT_DEPTH - 1)));
+        assert!(!sbom
+            .components
+            .values()
+            .any(|c| c.name == format!("level-{}", super::MAX_COMPONENT_DEPTH)));
+    }
+
+    #[test]
+    fn test_empty_components_array() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": []
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.components.is_empty());
+        assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_component_missing_optional_fields() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "bare-minimum"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        let comp = &sbom.components[0];
+        assert_eq!(comp.name, "bare-minimum");
+        assert!(comp.version.is_none());
+        assert!(comp.purl.is_none());
+        assert!(comp.supplier.is_none());
+        assert!(comp.licenses.is_empty());
+        assert!(comp.hashes.is_empty());
     }
 }
