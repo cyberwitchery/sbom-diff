@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- handle SPDX inverse and scoped relationship types (DEPENDENCY_OF, CONTAINED_BY, DESCRIBED_BY, RUNTIME_DEPENDENCY_OF, DEV_DEPENDENCY_OF, BUILD_DEPENDENCY_OF, OPTIONAL_DEPENDENCY_OF, PROVIDED_DEPENDENCY_OF, TEST_DEPENDENCY_OF, PREREQUISITE_FOR, HAS_PREREQUISITE) in the dependency graph builder, fixing false-positive edge diffs when comparing SBOMs from tools that use different relationship orientations
 - fix `render_summary_json` panic: replace `.expect()` on ecosystem breakdown serialization with proper error propagation, preventing a potential panic on malformed `EcosystemCounts` data
 - add recursion depth limit (32 levels) to CycloneDX sub-component collection, emitting a warning instead of stack-overflowing on adversarial or malformed input
 - add SPDX document version detection: `SpdxReader::read_json` now pre-checks the `spdxVersion` field and returns a clear `UnsupportedVersion` error for SPDX 3.x or other unsupported spec versions, instead of producing garbled output or cryptic deserialization errors

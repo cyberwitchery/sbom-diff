@@ -25,6 +25,49 @@ pub enum Error {
     },
 }
 
+/// Edge direction for a dependency relationship.
+enum Direction {
+    /// The left element depends on the right (left → right).
+    Forward,
+    /// The right element depends on the left (right → left).
+    Inverse,
+}
+
+/// Classifies an SPDX relationship type into a dependency edge direction.
+///
+/// Returns `Some(Direction::Forward)` for types where `spdx_element_id`
+/// depends on `related_spdx_element` (e.g. DEPENDS_ON, CONTAINS).
+///
+/// Returns `Some(Direction::Inverse)` for types where `related_spdx_element`
+/// depends on `spdx_element_id` (e.g. DEPENDENCY_OF, CONTAINED_BY).
+///
+/// Returns `None` for relationship types that don't represent dependency edges
+/// (e.g. BUILD_TOOL_OF, GENERATED_FROM).
+fn dependency_direction(rel_type: &RelationshipType) -> Option<Direction> {
+    match rel_type {
+        // Forward: A {verb} B means A depends on / contains B.
+        RelationshipType::DependsOn
+        | RelationshipType::Contains
+        | RelationshipType::Describes
+        | RelationshipType::HasPrerequisite => Some(Direction::Forward),
+
+        // Inverse: A {verb} B means B depends on / contains A.
+        RelationshipType::DependencyOf
+        | RelationshipType::ContainedBy
+        | RelationshipType::DescribedBy
+        | RelationshipType::PrerequisiteFor
+        | RelationshipType::RuntimeDependencyOf
+        | RelationshipType::DevDependencyOf
+        | RelationshipType::BuildDependencyOf
+        | RelationshipType::OptionalDependencyOf
+        | RelationshipType::ProvidedDependencyOf
+        | RelationshipType::TestDependencyOf => Some(Direction::Inverse),
+
+        // Not a dependency relationship — ignore.
+        _ => None,
+    }
+}
+
 /// Parser for SPDX JSON documents.
 ///
 /// Converts SPDX 2.3 JSON into the format-agnostic [`Sbom`] type.
@@ -162,48 +205,48 @@ impl SpdxReader {
             .clone();
 
         for rel in spdx_doc.relationships {
-            let parent_spdx = rel.spdx_element_id;
-            let child_spdx = rel.related_spdx_element;
+            let left_spdx = rel.spdx_element_id;
+            let right_spdx = rel.related_spdx_element;
             let rel_type = rel.relationship_type;
 
-            let is_dependency = matches!(
-                rel_type,
-                RelationshipType::DependsOn
-                    | RelationshipType::Contains
-                    | RelationshipType::Describes
-            );
+            // Determine the edge direction for this relationship type.
+            // Forward: left depends on right (left → right edge).
+            // Inverse: right depends on left (right → left edge).
+            let (parent_spdx, child_spdx) = match dependency_direction(&rel_type) {
+                Some(Direction::Forward) => (&left_spdx, &right_spdx),
+                Some(Direction::Inverse) => (&right_spdx, &left_spdx),
+                None => continue,
+            };
 
-            if is_dependency {
-                // Skip relationships involving the document element itself
-                // (e.g. SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package). The
-                // document element is not a package so it will never appear
-                // in ref_map, and warning about it is a false positive.
-                if parent_spdx == doc_spdx_id || child_spdx == doc_spdx_id {
-                    continue;
+            // Skip relationships involving the document element itself
+            // (e.g. SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package). The
+            // document element is not a package so it will never appear
+            // in ref_map, and warning about it is a false positive.
+            if *parent_spdx == doc_spdx_id || *child_spdx == doc_spdx_id {
+                continue;
+            }
+
+            let parent_id = ref_map.get(parent_spdx);
+            let child_id = ref_map.get(child_spdx);
+
+            match (parent_id, child_id) {
+                (Some(pid), Some(cid)) => {
+                    sbom.dependencies
+                        .entry(pid.clone())
+                        .or_default()
+                        .insert(cid.clone());
                 }
-
-                let parent_id = ref_map.get(&parent_spdx);
-                let child_id = ref_map.get(&child_spdx);
-
-                match (parent_id, child_id) {
-                    (Some(pid), Some(cid)) => {
-                        sbom.dependencies
-                            .entry(pid.clone())
-                            .or_default()
-                            .insert(cid.clone());
-                    }
-                    (None, _) => {
-                        sbom.warnings.push(format!(
-                            "SPDX: relationship source '{}' does not match any package",
-                            parent_spdx
-                        ));
-                    }
-                    (_, None) => {
-                        sbom.warnings.push(format!(
-                            "SPDX: relationship target '{}' (from '{}') does not match any package",
-                            child_spdx, parent_spdx
-                        ));
-                    }
+                (None, _) => {
+                    sbom.warnings.push(format!(
+                        "SPDX: relationship source '{}' does not match any package",
+                        parent_spdx
+                    ));
+                }
+                (_, None) => {
+                    sbom.warnings.push(format!(
+                        "SPDX: relationship target '{}' (from '{}') does not match any package",
+                        child_spdx, parent_spdx
+                    ));
                 }
             }
         }
@@ -999,5 +1042,289 @@ mod tests {
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert!(sbom.components.is_empty());
         assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_inverse_dependency_of_relationship() {
+        // "A DEPENDENCY_OF B" means B depends on A → edge from B to A.
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "lib-a",
+                    "SPDXID": "SPDXRef-lib-a",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "app-b",
+                    "SPDXID": "SPDXRef-app-b",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-lib-a",
+                    "relatedSpdxElement": "SPDXRef-app-b",
+                    "relationshipType": "DEPENDENCY_OF"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.warnings.is_empty());
+
+        // The edge should go from app-b → lib-a (app-b depends on lib-a).
+        let app_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "app-b")
+            .unwrap()
+            .id
+            .clone();
+        let lib_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "lib-a")
+            .unwrap()
+            .id
+            .clone();
+
+        let deps = &sbom.dependencies[&app_id];
+        assert!(deps.contains(&lib_id));
+        // lib-a should NOT have app-b as a dependency.
+        assert!(!sbom.dependencies.contains_key(&lib_id));
+    }
+
+    #[test]
+    fn test_inverse_contained_by_relationship() {
+        // "A CONTAINED_BY B" means B contains A → edge from B to A.
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "child",
+                    "SPDXID": "SPDXRef-child",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "parent",
+                    "SPDXID": "SPDXRef-parent",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-child",
+                    "relatedSpdxElement": "SPDXRef-parent",
+                    "relationshipType": "CONTAINED_BY"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.warnings.is_empty());
+
+        let parent_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "parent")
+            .unwrap()
+            .id
+            .clone();
+        let child_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "child")
+            .unwrap()
+            .id
+            .clone();
+
+        let deps = &sbom.dependencies[&parent_id];
+        assert!(deps.contains(&child_id));
+    }
+
+    #[test]
+    fn test_scoped_dependency_of_types() {
+        // Scoped types like RUNTIME_DEPENDENCY_OF are inverse: "A is a
+        // runtime dep of B" means B depends on A.
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "runtime-lib",
+                    "SPDXID": "SPDXRef-runtime-lib",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "dev-lib",
+                    "SPDXID": "SPDXRef-dev-lib",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "app",
+                    "SPDXID": "SPDXRef-app",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-runtime-lib",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "RUNTIME_DEPENDENCY_OF"
+                },
+                {
+                    "spdxElementId": "SPDXRef-dev-lib",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "DEV_DEPENDENCY_OF"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.warnings.is_empty());
+
+        let app_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "app")
+            .unwrap()
+            .id
+            .clone();
+
+        let deps = &sbom.dependencies[&app_id];
+        assert_eq!(deps.len(), 2);
+
+        let dep_names: BTreeSet<_> = deps
+            .iter()
+            .map(|id| sbom.components[id].name.as_str())
+            .collect();
+        assert!(dep_names.contains("runtime-lib"));
+        assert!(dep_names.contains("dev-lib"));
+    }
+
+    #[test]
+    fn test_inverse_and_forward_produce_same_graph() {
+        // DEPENDS_ON and DEPENDENCY_OF expressing the same edge should produce
+        // identical dependency graphs.
+        let forward_json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "app",
+                    "SPDXID": "SPDXRef-app",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "lib",
+                    "SPDXID": "SPDXRef-lib",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-app",
+                    "relatedSpdxElement": "SPDXRef-lib",
+                    "relationshipType": "DEPENDS_ON"
+                }
+            ]
+        }"#;
+
+        let inverse_json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "app",
+                    "SPDXID": "SPDXRef-app",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "lib",
+                    "SPDXID": "SPDXRef-lib",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-lib",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "DEPENDENCY_OF"
+                }
+            ]
+        }"#;
+
+        let forward_sbom = SpdxReader::read_json(forward_json.as_bytes()).unwrap();
+        let inverse_sbom = SpdxReader::read_json(inverse_json.as_bytes()).unwrap();
+
+        assert_eq!(forward_sbom.dependencies, inverse_sbom.dependencies);
+    }
+
+    #[test]
+    fn test_document_element_skipped_for_inverse_types() {
+        // DESCRIBED_BY with the document element should not warn.
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg",
+                    "SPDXID": "SPDXRef-pkg",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-pkg",
+                    "relatedSpdxElement": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBED_BY"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert!(sbom.warnings.is_empty());
+        assert!(sbom.dependencies.is_empty());
     }
 }
