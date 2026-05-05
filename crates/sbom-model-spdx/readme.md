@@ -43,7 +43,7 @@ assert_eq!(sbom.components[0].name, "serde");
 - packages with name, version, licenses, checksums
 - supplier information
 - purl extraction from external references
-- relationship-based dependency graph (DEPENDS_ON, CONTAINS, DESCRIBES)
+- relationship-based dependency graph with forward types (DEPENDS_ON, CONTAINS, DESCRIBES, HAS_PREREQUISITE) and inverse types (DEPENDENCY_OF, CONTAINED_BY, DESCRIBED_BY, PREREQUISITE_FOR, RUNTIME_DEPENDENCY_OF, DEV_DEPENDENCY_OF, BUILD_DEPENDENCY_OF, OPTIONAL_DEPENDENCY_OF, PROVIDED_DEPENDENCY_OF, TEST_DEPENDENCY_OF)
 - creation info (timestamps, tools, authors)
 
 ## error handling
