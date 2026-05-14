@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix CycloneDX XML `read_xml()` reporting only the last spec-version error: when parsing fails for all versions (1.5, 1.4, 1.3), the error now includes diagnostics from every attempted version instead of only the v1.3 attempt
+
 ## [0.2.1] - 2026-05-06
 
 - handle SPDX inverse and scoped relationship types (DEPENDENCY_OF, CONTAINED_BY, DESCRIBED_BY, RUNTIME_DEPENDENCY_OF, DEV_DEPENDENCY_OF, BUILD_DEPENDENCY_OF, OPTIONAL_DEPENDENCY_OF, PROVIDED_DEPENDENCY_OF, TEST_DEPENDENCY_OF, PREREQUISITE_FOR, HAS_PREREQUISITE) in the dependency graph builder, fixing false-positive edge diffs when comparing SBOMs from tools that use different relationship orientations
