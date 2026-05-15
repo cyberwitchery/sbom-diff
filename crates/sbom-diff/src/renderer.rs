@@ -60,6 +60,19 @@ pub trait Renderer {
     ) -> anyhow::Result<()>;
 }
 
+/// Trait for rendering a summary (counts only, no component details) to an output stream.
+///
+/// Mirrors [`Renderer`] but produces compact output suitable for `--summary` mode.
+pub trait SummaryRenderer {
+    /// Writes a summary-only view of the diff to the provided writer.
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()>;
+}
+
 // --- Shared helpers for field-change rendering ---
 
 trait FieldChangeFormatter {
@@ -571,6 +584,197 @@ impl Renderer for JsonRenderer {
             serde_json::to_writer_pretty(writer, &output)?;
         }
         Ok(())
+    }
+}
+
+// --- Summary rendering helpers ---
+
+/// Format-specific building blocks for summary output.
+///
+/// Text and markdown renderers implement this trait; the shared
+/// [`write_summary`] function orchestrates calls in the correct order.
+/// JSON uses a fundamentally different approach (building a single
+/// serializable value) and implements [`SummaryRenderer`] directly.
+trait SummaryFormatter {
+    fn write_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()>;
+    fn write_counts<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()>;
+    fn write_ecosystem_breakdown<W: Write>(
+        &self,
+        w: &mut W,
+        breakdown: &BTreeMap<String, EcosystemCounts>,
+    ) -> std::io::Result<()>;
+}
+
+fn write_summary<F: SummaryFormatter, W: Write>(
+    fmt: &F,
+    diff: &Diff,
+    opts: &RenderOptions,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    if opts.has_warnings() {
+        fmt.write_warnings(writer, opts)?;
+    }
+    fmt.write_counts(writer, diff)?;
+    if opts.group_by_ecosystem {
+        let breakdown = diff.ecosystem_breakdown();
+        if !breakdown.is_empty() {
+            fmt.write_ecosystem_breakdown(writer, &breakdown)?;
+        }
+    }
+    Ok(())
+}
+
+impl SummaryFormatter for TextRenderer {
+    fn write_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()> {
+        writeln!(w, "Warnings:     {}", opts.warning_count())?;
+        for warning in &opts.old_warnings {
+            writeln!(w, "  [old] {}", warning)?;
+        }
+        for warning in &opts.new_warnings {
+            writeln!(w, "  [new] {}", warning)?;
+        }
+        writeln!(w)
+    }
+
+    fn write_counts<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()> {
+        writeln!(w, "Old total:    {} components", diff.old_total)?;
+        writeln!(w, "New total:    {} components", diff.new_total)?;
+        writeln!(w, "Unchanged:    {}", diff.unchanged)?;
+        writeln!(w, "Added:        {}", diff.added.len())?;
+        writeln!(w, "Removed:      {}", diff.removed.len())?;
+        writeln!(w, "Changed:      {}", diff.changed.len())?;
+        writeln!(w, "Edge changes: {}", diff.edge_diffs.len())
+    }
+
+    fn write_ecosystem_breakdown<W: Write>(
+        &self,
+        w: &mut W,
+        breakdown: &BTreeMap<String, EcosystemCounts>,
+    ) -> std::io::Result<()> {
+        writeln!(w)?;
+        writeln!(w, "By ecosystem:")?;
+        for (eco, counts) in breakdown {
+            writeln!(
+                w,
+                "  {}: {} added, {} removed, {} changed",
+                eco, counts.added, counts.removed, counts.changed
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl SummaryRenderer for TextRenderer {
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        write_summary(self, diff, opts, writer)?;
+        Ok(())
+    }
+}
+
+impl SummaryFormatter for MarkdownRenderer {
+    fn write_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<details><summary><b>Warnings ({})</b></summary>",
+            opts.warning_count()
+        )?;
+        writeln!(w)?;
+        for warning in &opts.old_warnings {
+            writeln!(w, "- **old:** {}", warning)?;
+        }
+        for warning in &opts.new_warnings {
+            writeln!(w, "- **new:** {}", warning)?;
+        }
+        writeln!(w, "</details>")?;
+        writeln!(w)
+    }
+
+    fn write_counts<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()> {
+        writeln!(w, "### SBOM Diff Summary")?;
+        writeln!(w)?;
+        writeln!(w, "| Metric | Count |")?;
+        writeln!(w, "| --- | --- |")?;
+        writeln!(w, "| Old total | {} |", diff.old_total)?;
+        writeln!(w, "| New total | {} |", diff.new_total)?;
+        writeln!(w, "| Unchanged | {} |", diff.unchanged)?;
+        writeln!(w, "| Added | {} |", diff.added.len())?;
+        writeln!(w, "| Removed | {} |", diff.removed.len())?;
+        writeln!(w, "| Changed | {} |", diff.changed.len())?;
+        writeln!(w, "| Edge changes | {} |", diff.edge_diffs.len())
+    }
+
+    fn write_ecosystem_breakdown<W: Write>(
+        &self,
+        w: &mut W,
+        breakdown: &BTreeMap<String, EcosystemCounts>,
+    ) -> std::io::Result<()> {
+        writeln!(w)?;
+        writeln!(w, "#### By Ecosystem")?;
+        writeln!(w)?;
+        writeln!(w, "| Ecosystem | Added | Removed | Changed |")?;
+        writeln!(w, "| --- | --- | --- | --- |")?;
+        for (eco, counts) in breakdown {
+            writeln!(
+                w,
+                "| {} | {} | {} | {} |",
+                eco, counts.added, counts.removed, counts.changed
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl SummaryRenderer for MarkdownRenderer {
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        write_summary(self, diff, opts, writer)?;
+        Ok(())
+    }
+}
+
+impl SummaryRenderer for JsonRenderer {
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        let mut summary = serde_json::json!({
+            "old_total": diff.old_total,
+            "new_total": diff.new_total,
+            "unchanged": diff.unchanged,
+            "added": diff.added.len(),
+            "removed": diff.removed.len(),
+            "changed": diff.changed.len(),
+            "edge_changes": diff.edge_diffs.len(),
+        });
+
+        if opts.has_warnings() {
+            summary["warnings"] = serde_json::json!({
+                "old": opts.old_warnings,
+                "new": opts.new_warnings,
+            });
+        }
+
+        if opts.group_by_ecosystem {
+            let breakdown = diff.ecosystem_breakdown();
+            if !breakdown.is_empty() {
+                summary["ecosystem_breakdown"] =
+                    serde_json::to_value(&breakdown).expect("serializable breakdown");
+            }
+        }
+
+        serde_json::to_writer_pretty(writer, &summary)
+            .map_err(|e| anyhow::anyhow!("json summary: {}", e))
     }
 }
 
