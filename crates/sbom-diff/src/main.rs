@@ -95,6 +95,7 @@ enum Format {
     Cyclonedx,
     CyclonedxXml,
     Spdx,
+    SpdxTv,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -311,6 +312,8 @@ fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
         Format::Spdx => {
             SpdxReader::read_json(&content[..]).map_err(|e| anyhow!("spdx error: {}", e))
         }
+        Format::SpdxTv => SpdxReader::read_tag_value(&content[..])
+            .map_err(|e| anyhow!("spdx tag-value error: {}", e)),
         Format::Auto => {
             let mut errors = Vec::new();
             match CycloneDxReader::read_json(&content[..]) {
@@ -324,6 +327,10 @@ fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
             match SpdxReader::read_json(&content[..]) {
                 Ok(sbom) => return Ok(sbom),
                 Err(e) => errors.push(format!("  spdx json: {e}")),
+            }
+            match SpdxReader::read_tag_value(&content[..]) {
+                Ok(sbom) => return Ok(sbom),
+                Err(e) => errors.push(format!("  spdx tag-value: {e}")),
             }
             Err(anyhow!(
                 "could not detect sbom format automatically; tried:\n{}",
@@ -420,6 +427,20 @@ mod tests {
     fn test_load_sbom_explicit_spdx() {
         let path = "../../tests/fixtures/old.spdx.json";
         let sbom = load_sbom(path, Format::Spdx).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_explicit_spdx_tv() {
+        let path = "../../tests/fixtures/old.spdx";
+        let sbom = load_sbom(path, Format::SpdxTv).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_auto_spdx_tv() {
+        let path = "../../tests/fixtures/old.spdx";
+        let sbom = load_sbom(path, Format::Auto).unwrap();
         assert!(!sbom.components.is_empty());
     }
 

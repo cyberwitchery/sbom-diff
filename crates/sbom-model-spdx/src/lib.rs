@@ -4,6 +4,7 @@ use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, Sbom,
 };
 use spdx_rs::models::RelationshipType;
+use spdx_rs::parsers::spdx_from_tag_value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
@@ -23,6 +24,9 @@ pub enum Error {
         /// The version string found in the document.
         version: String,
     },
+    /// The tag-value input could not be parsed.
+    #[error("SPDX tag-value parse error: {0}")]
+    TagValue(String),
 }
 
 /// Edge direction for a dependency relationship.
@@ -96,6 +100,74 @@ impl SpdxReader {
 
         let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(&buf)?;
 
+        Ok(Self::spdx_to_sbom(spdx_doc))
+    }
+
+    /// Parses an SPDX tag-value document from a reader.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use sbom_model_spdx::SpdxReader;
+    /// use std::fs::File;
+    ///
+    /// let file = File::open("sbom.spdx").unwrap();
+    /// let sbom = SpdxReader::read_tag_value(file).unwrap();
+    /// ```
+    pub fn read_tag_value<R: Read>(mut reader: R) -> Result<Sbom, Error> {
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+
+        let input = std::str::from_utf8(&buf)
+            .map_err(|e| Error::TagValue(format!("invalid UTF-8: {e}")))?;
+
+        Self::check_spdx_version_tag_value(input)?;
+
+        // spdx-rs 0.5 has two tag-value parsing quirks we work around:
+        //
+        // 1. CreationInfo default contamination: the parser starts with
+        //    CreationInfo::default() which includes phantom creators
+        //    (e.g. "Tool: LicenseFind-1.0") that get mixed in with real
+        //    ones. We re-parse Creator lines from the raw input.
+        //
+        // 2. Last ExternalRef dropped: the parser uses an "in progress"
+        //    pattern for ExternalRef that only flushes when the next
+        //    PackageName is seen. The very last package's last ExternalRef
+        //    is never flushed. We append a sentinel package to trigger
+        //    the flush, then strip it from the result.
+        let patched = format!(
+            "{}\n\nPackageName: __spdx_rs_flush_sentinel__\nSPDXID: SPDXRef-FLUSH-SENTINEL\nPackageDownloadLocation: NOASSERTION\nFilesAnalyzed: false\n",
+            input.trim_end()
+        );
+
+        let mut spdx_doc =
+            spdx_from_tag_value(&patched).map_err(|e| Error::TagValue(e.to_string()))?;
+
+        // Strip the sentinel package.
+        spdx_doc
+            .package_information
+            .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
+
+        // Fix creator contamination.
+        let actual_creators: Vec<String> = input
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("Creator:")
+                    .map(|v| v.trim().to_string())
+            })
+            .collect();
+        spdx_doc
+            .document_creation_information
+            .creation_info
+            .creators = actual_creators;
+
+        Ok(Self::spdx_to_sbom(spdx_doc))
+    }
+
+    /// Converts a parsed `spdx_rs::models::SPDX` document into the
+    /// format-agnostic [`Sbom`] type. Shared by JSON and tag-value readers.
+    fn spdx_to_sbom(spdx_doc: spdx_rs::models::SPDX) -> Sbom {
         let mut sbom = Sbom::default();
 
         // 1. Metadata
@@ -251,7 +323,7 @@ impl SpdxReader {
             }
         }
 
-        Ok(sbom)
+        sbom
     }
 
     /// Pre-check the `spdxVersion` field before full parsing.
@@ -276,6 +348,30 @@ impl SpdxReader {
             // error; the document is malformed either way.
             None => Ok(()),
         }
+    }
+
+    /// Pre-check the `SPDXVersion` tag in a tag-value document.
+    ///
+    /// Scans for the first `SPDXVersion:` line and rejects non-2.x versions.
+    /// Also rejects input that has no `SPDXVersion:` at all, since the
+    /// spdx-rs tag-value parser is permissive enough to "parse" arbitrary
+    /// text files without error.
+    fn check_spdx_version_tag_value(input: &str) -> Result<(), Error> {
+        for line in input.lines() {
+            let line = line.trim();
+            if let Some(value) = line.strip_prefix("SPDXVersion:") {
+                let version = value.trim();
+                if version.starts_with("SPDX-2.") {
+                    return Ok(());
+                }
+                return Err(Error::UnsupportedVersion {
+                    version: version.to_string(),
+                });
+            }
+        }
+        Err(Error::TagValue(
+            "no SPDXVersion tag found (not a valid SPDX tag-value document)".to_string(),
+        ))
     }
 }
 
@@ -1326,5 +1422,170 @@ mod tests {
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert!(sbom.warnings.is_empty());
         assert!(sbom.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_read_tag_value_minimal() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        let comp = &sbom.components[0];
+        assert_eq!(comp.name, "pkg-a");
+        assert_eq!(comp.version, Some("1.0.0".to_string()));
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_read_tag_value_with_relationships() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: test-tool
+Created: 2023-01-01T00:00:00Z
+
+PackageName: app
+SPDXID: SPDXRef-app
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: Apache-2.0
+PackageCopyrightText: NOASSERTION
+
+PackageName: lib
+SPDXID: SPDXRef-lib
+PackageVersion: 2.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+PackageCopyrightText: NOASSERTION
+
+Relationship: SPDXRef-app DEPENDS_ON SPDXRef-lib
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+
+        let app = sbom.components.values().find(|c| c.name == "app").unwrap();
+        let lib = sbom.components.values().find(|c| c.name == "lib").unwrap();
+
+        assert!(app.licenses.contains("Apache-2.0"));
+        assert!(lib.licenses.contains("MIT"));
+
+        let deps = &sbom.dependencies[&app.id];
+        assert!(deps.contains(&lib.id));
+    }
+
+    #[test]
+    fn test_read_tag_value_with_purl() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: reuse
+Created: 2023-01-01T00:00:00Z
+
+PackageName: serde
+SPDXID: SPDXRef-serde
+PackageVersion: 1.0.200
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+PackageCopyrightText: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:cargo/serde@1.0.200
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+
+        let serde = &sbom.components[0];
+        assert_eq!(serde.purl, Some("pkg:cargo/serde@1.0.200".to_string()));
+        assert_eq!(serde.ecosystem, Some("cargo".to_string()));
+    }
+
+    #[test]
+    fn test_read_tag_value_version_3_rejected() {
+        let tv = "\
+SPDXVersion: SPDX-3.0
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: test
+Created: 2023-01-01T00:00:00Z
+";
+        let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unsupported SPDX version"));
+        assert!(msg.contains("SPDX-3.0"));
+    }
+
+    #[test]
+    fn test_read_tag_value_with_checksums() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageChecksum: SHA256: abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+PackageChecksum: SHA1: da39a3ee5e6b4b0d3255bfef95601890afd80709
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let hashes = &sbom.components[0].hashes;
+        assert_eq!(
+            hashes.get("SHA-256").unwrap(),
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+        );
+        assert_eq!(
+            hashes.get("SHA-1").unwrap(),
+            "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        );
+    }
+
+    #[test]
+    fn test_read_tag_value_with_supplier() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageSupplier: Organization: Acme Corp
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
     }
 }
