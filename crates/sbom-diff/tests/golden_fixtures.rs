@@ -231,6 +231,67 @@ fn cyclonedx_xml_markdown_renderer_golden_output_matches_fixture() {
     assert_eq!(actual, expected);
 }
 
+// SPDX tag-value golden fixture tests
+
+fn load_spdx_tv_fixture(name: &str) -> Sbom {
+    let bytes = fs::read(fixture_path(name)).expect("fixture should be readable");
+    SpdxReader::read_tag_value(bytes.as_slice()).expect("fixture should parse")
+}
+
+#[test]
+fn spdx_tv_fixture_diff_matches_json_diff() {
+    let tv_old = load_spdx_tv_fixture("golden-old.spdx");
+    let tv_new = load_spdx_tv_fixture("golden-new.spdx");
+    let json_old = load_spdx_fixture("golden-old.spdx.json");
+    let json_new = load_spdx_fixture("golden-new.spdx.json");
+
+    let tv_diff = Differ::diff(&tv_old, &tv_new, None);
+    let json_diff = Differ::diff(&json_old, &json_new, None);
+
+    assert_eq!(tv_diff.added.len(), json_diff.added.len());
+    assert_eq!(tv_diff.removed.len(), json_diff.removed.len());
+    assert_eq!(tv_diff.changed.len(), json_diff.changed.len());
+    assert_eq!(tv_diff.edge_diffs.len(), json_diff.edge_diffs.len());
+}
+
+#[test]
+fn spdx_tv_text_renderer_golden_output_matches_fixture() {
+    let old = load_spdx_tv_fixture("golden-old.spdx");
+    let new = load_spdx_tv_fixture("golden-new.spdx");
+
+    let diff = Differ::diff(&old, &new, None);
+
+    let mut out = Vec::new();
+    TextRenderer
+        .render(&diff, &RenderOptions::default(), &mut out)
+        .expect("text renderer should succeed");
+
+    let actual = String::from_utf8(out).expect("renderer should emit utf-8");
+    let expected = fs::read_to_string(fixture_path("golden-text.txt"))
+        .expect("golden text snapshot should exist");
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn spdx_tv_markdown_renderer_golden_output_matches_fixture() {
+    let old = load_spdx_tv_fixture("golden-old.spdx");
+    let new = load_spdx_tv_fixture("golden-new.spdx");
+
+    let diff = Differ::diff(&old, &new, None);
+
+    let mut out = Vec::new();
+    MarkdownRenderer
+        .render(&diff, &RenderOptions::default(), &mut out)
+        .expect("markdown renderer should succeed");
+
+    let actual = String::from_utf8(out).expect("renderer should emit utf-8");
+    let expected = fs::read_to_string(fixture_path("golden-markdown.md"))
+        .expect("golden markdown snapshot should exist");
+
+    assert_eq!(actual, expected);
+}
+
 // Cross-format hash normalization: identical components parsed from
 // SPDX and CycloneDX should produce identical hash algorithm keys,
 // so diffing them yields no hash changes.

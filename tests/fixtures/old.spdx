@@ -1,0 +1,28 @@
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test-old
+DocumentNamespace: http://spdx.org/spdxdocs/test-old
+Creator: Tool: test-generator
+Created: 2024-01-01T00:00:00Z
+
+PackageName: lodash
+SPDXID: SPDXRef-lodash
+PackageVersion: 4.17.20
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: MIT
+PackageCopyrightText: NOASSERTION
+PackageChecksum: SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/lodash@4.17.20
+
+PackageName: express
+SPDXID: SPDXRef-express
+PackageVersion: 4.18.2
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: MIT
+PackageCopyrightText: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/express@4.18.2
+
+Relationship: SPDXRef-express DEPENDS_ON SPDXRef-lodash

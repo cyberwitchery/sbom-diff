@@ -1,0 +1,47 @@
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: Golden Test Document
+DocumentNamespace: http://spdx.org/spdxdocs/golden-test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/pkg-a@1.0.0
+FilesAnalyzed: false
+
+PackageName: pkg-b
+SPDXID: SPDXRef-pkg-b
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/pkg-b@1.0.0
+FilesAnalyzed: false
+
+PackageName: parent
+SPDXID: SPDXRef-parent
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/parent@1.0.0
+FilesAnalyzed: false
+
+PackageName: child-a
+SPDXID: SPDXRef-child-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/child-a@1.0.0
+FilesAnalyzed: false
+
+PackageName: child-b
+SPDXID: SPDXRef-child-b
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:npm/child-b@1.0.0
+FilesAnalyzed: false
+
+Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-pkg-a
+Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-pkg-b
+Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-parent
+Relationship: SPDXRef-parent DEPENDS_ON SPDXRef-child-a
