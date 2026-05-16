@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add `Sbom::detect_cycles()` method using DFS three-color marking to find circular dependencies in the dependency graph; both SPDX and CycloneDX parsers now emit structured `"circular dependency: ..."` warnings when cycles are detected, surfacing data quality issues in source SBOMs
 - add SPDX tag-value format support: new `--format spdx-tv` flag and auto-detection; `SpdxReader::read_tag_value` parses the original SPDX tag-value format (`.spdx` files) emitted by tools like Fossology, reuse, and the SPDX Java tools, using the existing `spdx-rs` tag-value parser with workarounds for two known quirks (phantom default creators and dropped last ExternalRef)
 - fix CycloneDX XML `read_xml()` reporting only the last spec-version error: when parsing fails for all versions (1.5, 1.4, 1.3), the error now includes diagnostics from every attempted version instead of only the v1.3 attempt
 - consolidate `render_summary_text`/`render_summary_markdown`/`render_summary_json` into a `SummaryRenderer` trait (mirrors the existing `Renderer` trait); all summary rendering logic now lives in the `renderer` module, making new output formats trivial to add

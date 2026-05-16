@@ -194,6 +194,8 @@ impl CycloneDxReader {
             }
         }
 
+        sbom.detect_cycles();
+
         Ok(sbom)
     }
 

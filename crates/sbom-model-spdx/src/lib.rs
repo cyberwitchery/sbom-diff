@@ -323,6 +323,8 @@ impl SpdxReader {
             }
         }
 
+        sbom.detect_cycles();
+
         sbom
     }
 

@@ -280,6 +280,132 @@ impl Sbom {
         let id = ComponentId::new(Some(purl), &[]);
         self.components.get(&id)
     }
+
+    /// Detects circular dependencies in the dependency graph.
+    ///
+    /// Uses DFS three-color marking (White → Gray → Black) to find all back
+    /// edges. Each cycle is returned as a list of [`ComponentId`]s in dependency
+    /// order: each element depends on the next, and the last depends on the
+    /// first.
+    ///
+    /// A warning is appended to [`Sbom::warnings`] for every cycle found.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sbom_model::{Sbom, Component};
+    ///
+    /// let mut sbom = Sbom::default();
+    /// let a = Component::new("a".into(), Some("1".into()));
+    /// let b = Component::new("b".into(), Some("1".into()));
+    /// let id_a = a.id.clone();
+    /// let id_b = b.id.clone();
+    /// sbom.components.insert(id_a.clone(), a);
+    /// sbom.components.insert(id_b.clone(), b);
+    ///
+    /// // a -> b -> a
+    /// sbom.dependencies.entry(id_a.clone()).or_default().insert(id_b.clone());
+    /// sbom.dependencies.entry(id_b.clone()).or_default().insert(id_a.clone());
+    ///
+    /// let cycles = sbom.detect_cycles();
+    /// assert_eq!(cycles.len(), 1);
+    /// assert!(sbom.warnings.iter().any(|w| w.starts_with("circular dependency:")));
+    /// ```
+    pub fn detect_cycles(&mut self) -> Vec<Vec<ComponentId>> {
+        // Actions for the iterative DFS stack.
+        enum Action<'a> {
+            Enter(&'a ComponentId),
+            Exit(&'a ComponentId),
+        }
+
+        const WHITE: u8 = 0;
+        const GRAY: u8 = 1;
+        const BLACK: u8 = 2;
+
+        // Collect every node that appears in the dependency graph (as parent
+        // or child) so leaf-only nodes are included in the traversal.
+        let all_nodes: BTreeSet<&ComponentId> = self
+            .dependencies
+            .keys()
+            .chain(self.dependencies.values().flat_map(|c| c.iter()))
+            .collect();
+
+        let mut color: BTreeMap<&ComponentId, u8> = BTreeMap::new();
+        let mut path: Vec<&ComponentId> = Vec::new();
+        let mut path_set: BTreeSet<&ComponentId> = BTreeSet::new();
+        let mut cycles: Vec<Vec<ComponentId>> = Vec::new();
+
+        for &start in &all_nodes {
+            if *color.get(start).unwrap_or(&WHITE) != WHITE {
+                continue;
+            }
+
+            let mut stack: Vec<Action<'_>> = vec![Action::Enter(start)];
+
+            while let Some(action) = stack.pop() {
+                match action {
+                    Action::Exit(node) => {
+                        color.insert(node, BLACK);
+                        path.pop();
+                        path_set.remove(node);
+                    }
+                    Action::Enter(node) => {
+                        let c = *color.get(node).unwrap_or(&WHITE);
+                        if c != WHITE {
+                            continue;
+                        }
+
+                        color.insert(node, GRAY);
+                        path.push(node);
+                        path_set.insert(node);
+                        stack.push(Action::Exit(node));
+
+                        if let Some(children) = self.dependencies.get(node) {
+                            for child in children.iter().rev() {
+                                let cc = *color.get(child).unwrap_or(&WHITE);
+                                if cc == WHITE {
+                                    stack.push(Action::Enter(child));
+                                } else if path_set.contains(child) {
+                                    // Back edge — extract the cycle.
+                                    let pos = path.iter().position(|&n| n == child).unwrap();
+                                    let cycle: Vec<ComponentId> =
+                                        path[pos..].iter().map(|&id| id.clone()).collect();
+                                    cycles.push(cycle);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build human-readable warnings.
+        for cycle in &cycles {
+            let names: Vec<String> = cycle
+                .iter()
+                .map(|id| {
+                    self.components
+                        .get(id)
+                        .map(|c| match &c.version {
+                            Some(v) => format!("{} {}", c.name, v),
+                            None => c.name.clone(),
+                        })
+                        .unwrap_or_else(|| id.to_string())
+                })
+                .collect();
+
+            let display = if names.len() == 1 {
+                format!("{0} \u{2192} {0}", names[0])
+            } else {
+                format!("{} \u{2192} {}", names.join(" \u{2192} "), names[0])
+            };
+
+            self.warnings
+                .push(format!("circular dependency: {}", display));
+        }
+
+        cycles
+    }
 }
 
 impl Component {
@@ -673,5 +799,216 @@ mod tests {
 
         // Unknown algorithm passes through
         assert_eq!(canonical_algorithm_name("TIGER"), "TIGER");
+    }
+
+    // ── detect_cycles tests ──────────────────────────────────────────
+
+    /// Helper: build an SBOM with named components and dependency edges.
+    fn sbom_with_edges(names: &[&str], edges: &[(&str, &str)]) -> Sbom {
+        let mut sbom = Sbom::default();
+        let mut ids: BTreeMap<String, ComponentId> = BTreeMap::new();
+
+        for &name in names {
+            let c = Component::new(name.into(), Some("1".into()));
+            ids.insert(name.into(), c.id.clone());
+            sbom.components.insert(c.id.clone(), c);
+        }
+
+        for &(from, to) in edges {
+            let from_id = ids[from].clone();
+            let to_id = ids[to].clone();
+            sbom.dependencies.entry(from_id).or_default().insert(to_id);
+        }
+
+        sbom
+    }
+
+    #[test]
+    fn test_detect_cycles_empty_graph() {
+        let mut sbom = Sbom::default();
+        let cycles = sbom.detect_cycles();
+        assert!(cycles.is_empty());
+        assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_detect_cycles_no_deps() {
+        let mut sbom = sbom_with_edges(&["a", "b", "c"], &[]);
+        let cycles = sbom.detect_cycles();
+        assert!(cycles.is_empty());
+        assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_detect_cycles_dag() {
+        // Diamond: a -> b, a -> c, b -> d, c -> d (no cycle)
+        let mut sbom = sbom_with_edges(
+            &["a", "b", "c", "d"],
+            &[("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")],
+        );
+        let cycles = sbom.detect_cycles();
+        assert!(cycles.is_empty());
+        assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_detect_cycles_self_loop() {
+        let mut sbom = sbom_with_edges(&["a"], &[("a", "a")]);
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 1);
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].starts_with("circular dependency:"));
+        assert!(sbom.warnings[0].contains("a 1"));
+    }
+
+    #[test]
+    fn test_detect_cycles_mutual_deps() {
+        // a -> b, b -> a
+        let mut sbom = sbom_with_edges(&["a", "b"], &[("a", "b"), ("b", "a")]);
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 2);
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].contains("\u{2192}"));
+    }
+
+    #[test]
+    fn test_detect_cycles_triangle() {
+        // a -> b -> c -> a
+        let mut sbom = sbom_with_edges(&["a", "b", "c"], &[("a", "b"), ("b", "c"), ("c", "a")]);
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 3);
+        assert_eq!(sbom.warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_cycles_larger_cycle() {
+        // a -> b -> c -> d -> a
+        let mut sbom = sbom_with_edges(
+            &["a", "b", "c", "d"],
+            &[("a", "b"), ("b", "c"), ("c", "d"), ("d", "a")],
+        );
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 4);
+    }
+
+    #[test]
+    fn test_detect_cycles_multiple_disjoint() {
+        // Cycle 1: a -> b -> a
+        // Cycle 2: c -> d -> c
+        let mut sbom = sbom_with_edges(
+            &["a", "b", "c", "d"],
+            &[("a", "b"), ("b", "a"), ("c", "d"), ("d", "c")],
+        );
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 2);
+    }
+
+    #[test]
+    fn test_detect_cycles_mixed_cyclic_and_acyclic() {
+        // Acyclic part: x -> y -> z
+        // Cyclic part: a -> b -> c -> a
+        let mut sbom = sbom_with_edges(
+            &["a", "b", "c", "x", "y", "z"],
+            &[("a", "b"), ("b", "c"), ("c", "a"), ("x", "y"), ("y", "z")],
+        );
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 3);
+    }
+
+    #[test]
+    fn test_detect_cycles_nested_cycles() {
+        // a -> b -> c -> a (big cycle) and b -> c -> b (smaller cycle via the
+        // same edges).  The DFS finds back edges; the shorter cycle (b,c) is a
+        // subset of the path when the c -> b back edge is encountered from
+        // inside the larger traversal. Depending on traversal order, DFS may
+        // report one or both.  We just check at least one is found and all
+        // warnings are well-formed.
+        let mut sbom = sbom_with_edges(
+            &["a", "b", "c"],
+            &[("a", "b"), ("b", "c"), ("c", "a"), ("c", "b")],
+        );
+        let cycles = sbom.detect_cycles();
+        assert!(!cycles.is_empty());
+        for w in &sbom.warnings {
+            assert!(w.starts_with("circular dependency:"));
+            assert!(w.contains('\u{2192}'));
+        }
+    }
+
+    #[test]
+    fn test_detect_cycles_warning_format_self_loop() {
+        let mut sbom = sbom_with_edges(&["pkg"], &[("pkg", "pkg")]);
+        sbom.detect_cycles();
+        // Self-loop format: "circular dependency: pkg 1 → pkg 1"
+        assert_eq!(sbom.warnings.len(), 1);
+        let w = &sbom.warnings[0];
+        assert!(w.starts_with("circular dependency: pkg 1 \u{2192} pkg 1"));
+    }
+
+    #[test]
+    fn test_detect_cycles_warning_format_chain() {
+        // a -> b -> a — warning should show: "circular dependency: a 1 → b 1 → a 1"
+        let mut sbom = sbom_with_edges(&["a", "b"], &[("a", "b"), ("b", "a")]);
+        sbom.detect_cycles();
+        assert_eq!(sbom.warnings.len(), 1);
+        let w = &sbom.warnings[0];
+        assert!(w.starts_with("circular dependency:"));
+        // The warning should close the loop by repeating the first name.
+        let arrow = '\u{2192}';
+        let arrow_count = w.matches(arrow).count();
+        assert_eq!(arrow_count, 2, "mutual dep warning should have two arrows");
+    }
+
+    #[test]
+    fn test_detect_cycles_component_without_version() {
+        let mut sbom = Sbom::default();
+        let a = Component::new("alpha".into(), None);
+        let b = Component::new("beta".into(), None);
+        let id_a = a.id.clone();
+        let id_b = b.id.clone();
+        sbom.components.insert(id_a.clone(), a);
+        sbom.components.insert(id_b.clone(), b);
+        sbom.dependencies
+            .entry(id_a.clone())
+            .or_default()
+            .insert(id_b.clone());
+        sbom.dependencies.entry(id_b).or_default().insert(id_a);
+
+        sbom.detect_cycles();
+        assert_eq!(sbom.warnings.len(), 1);
+        // Should use name without version suffix.
+        let w = &sbom.warnings[0];
+        assert!(w.contains("alpha"));
+        assert!(w.contains("beta"));
+        // Should NOT contain "None" or "(no version)"
+        assert!(!w.contains("None"));
+    }
+
+    #[test]
+    fn test_detect_cycles_idempotent() {
+        let mut sbom = sbom_with_edges(&["a", "b"], &[("a", "b"), ("b", "a")]);
+        sbom.detect_cycles();
+        let warnings_after_first = sbom.warnings.len();
+
+        // Second call should find the same cycles and add more warnings
+        // (the method is stateless w.r.t. the graph).
+        sbom.detect_cycles();
+        assert_eq!(sbom.warnings.len(), warnings_after_first * 2);
+    }
+
+    #[test]
+    fn test_detect_cycles_long_chain_no_cycle() {
+        // a -> b -> c -> d -> e -> f (linear, no cycle)
+        let mut sbom = sbom_with_edges(
+            &["a", "b", "c", "d", "e", "f"],
+            &[("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"), ("e", "f")],
+        );
+        let cycles = sbom.detect_cycles();
+        assert!(cycles.is_empty());
     }
 }
