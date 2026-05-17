@@ -16,6 +16,12 @@ pub enum Error {
     /// XML parsing failed for all attempted spec versions.
     #[error("CycloneDX XML failed all spec versions:\n{0}")]
     XmlParseAllVersions(String),
+    /// The CycloneDX document version is not supported.
+    #[error("unsupported CycloneDX specVersion '{version}': only 1.3–1.5 is supported")]
+    UnsupportedVersion {
+        /// The version string found in the document.
+        version: String,
+    },
     /// An I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -23,6 +29,12 @@ pub enum Error {
     #[error("Normalization error: {0}")]
     Normalization(String),
 }
+
+/// Spec versions the `cyclonedx-bom` crate (0.6) can deserialize.
+///
+/// Used by the pre-check guards so there is a single place to update when
+/// the library gains support for newer spec revisions.
+const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1.3", "1.4", "1.5"];
 
 /// Maximum nesting depth for recursive sub-component collection.
 ///
@@ -54,8 +66,16 @@ impl CycloneDxReader {
     ///
     /// let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
     /// ```
-    pub fn read_json<R: Read>(reader: R) -> Result<Sbom, Error> {
-        let bom = cyclonedx_bom::prelude::Bom::parse_from_json(reader)?;
+    pub fn read_json<R: Read>(mut reader: R) -> Result<Sbom, Error> {
+        // Buffer the input so we can check the specVersion before full
+        // parsing. Without this, CycloneDX 1.6+ or 2.0 documents produce
+        // garbled cyclonedx-bom errors instead of a clear message.
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+
+        Self::check_cyclonedx_version(&buf)?;
+
+        let bom = cyclonedx_bom::prelude::Bom::parse_from_json(buf.as_slice())?;
         Self::bom_to_sbom(bom)
     }
 
@@ -76,6 +96,8 @@ impl CycloneDxReader {
         use cyclonedx_bom::models::bom::SpecVersion;
         use std::fmt::Write;
 
+        Self::check_cyclonedx_version_xml(data)?;
+
         let versions = [
             ("1.5", SpecVersion::V1_5),
             ("1.4", SpecVersion::V1_4),
@@ -93,6 +115,61 @@ impl CycloneDxReader {
             writeln!(msg, "  v{label}: {err}").unwrap();
         }
         Err(Error::XmlParseAllVersions(msg.trim_end().to_string()))
+    }
+
+    /// Pre-check the `specVersion` field in a CycloneDX JSON document.
+    ///
+    /// Returns an error for unsupported spec versions, giving a clear
+    /// message instead of cryptic deserialization failures.
+    fn check_cyclonedx_version(data: &[u8]) -> Result<(), Error> {
+        #[derive(serde::Deserialize)]
+        struct VersionProbe {
+            #[serde(rename = "specVersion")]
+            spec_version: Option<String>,
+        }
+
+        let probe: VersionProbe = match serde_json::from_slice(data) {
+            Ok(p) => p,
+            // Not valid JSON — let the full parser produce a proper error.
+            Err(_) => return Ok(()),
+        };
+
+        match probe.spec_version.as_deref() {
+            Some(v) if SUPPORTED_SPEC_VERSIONS.contains(&v) => Ok(()),
+            Some(v) => Err(Error::UnsupportedVersion {
+                version: v.to_string(),
+            }),
+            // Missing specVersion — let the full parser handle it.
+            None => Ok(()),
+        }
+    }
+
+    /// Pre-check the CycloneDX namespace version in an XML document.
+    ///
+    /// Scans for the `http://cyclonedx.org/schema/bom/` namespace URL
+    /// and rejects versions outside the supported set.
+    fn check_cyclonedx_version_xml(data: &[u8]) -> Result<(), Error> {
+        const NS_PREFIX: &[u8] = b"http://cyclonedx.org/schema/bom/";
+
+        let Some(pos) = data.windows(NS_PREFIX.len()).position(|w| w == NS_PREFIX) else {
+            // No CycloneDX namespace found — let the parser handle it.
+            return Ok(());
+        };
+
+        let after = &data[pos + NS_PREFIX.len()..];
+        let end = after
+            .iter()
+            .position(|&b| b == b'"' || b == b'\'' || b == b' ' || b == b'>')
+            .unwrap_or(after.len());
+        let version = std::str::from_utf8(&after[..end]).unwrap_or("");
+
+        if version.is_empty() || SUPPORTED_SPEC_VERSIONS.contains(&version) {
+            Ok(())
+        } else {
+            Err(Error::UnsupportedVersion {
+                version: version.to_string(),
+            })
+        }
     }
 
     fn bom_to_sbom(bom: cyclonedx_bom::prelude::Bom) -> Result<Sbom, Error> {
@@ -861,5 +938,109 @@ mod tests {
         assert!(comp.supplier.is_none());
         assert!(comp.licenses.is_empty());
         assert!(comp.hashes.is_empty());
+    }
+
+    #[test]
+    fn test_cyclonedx_16_json_rejected_with_clear_error() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "version": 1,
+            "components": []
+        }"#;
+        let err = CycloneDxReader::read_json(json.as_bytes()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported CycloneDX specVersion"),
+            "expected version error, got: {msg}"
+        );
+        assert!(msg.contains("1.6"), "should mention the version found");
+        assert!(msg.contains("1.3"), "should mention supported versions");
+    }
+
+    #[test]
+    fn test_cyclonedx_20_json_rejected() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "2.0",
+            "version": 1,
+            "components": []
+        }"#;
+        let err = CycloneDxReader::read_json(json.as_bytes()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported CycloneDX specVersion"));
+        assert!(err.to_string().contains("2.0"));
+    }
+
+    #[test]
+    fn test_cyclonedx_13_json_accepted() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.3",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+    }
+
+    #[test]
+    fn test_cyclonedx_15_json_accepted() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "components": []
+        }"#;
+        CycloneDxReader::read_json(json.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn test_cyclonedx_16_xml_rejected() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
+  <components/>
+</bom>"#;
+        let err = CycloneDxReader::read_xml(xml.as_slice()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported CycloneDX specVersion"),
+            "expected version error, got: {msg}"
+        );
+        assert!(msg.contains("1.6"), "should mention the version found");
+    }
+
+    #[test]
+    fn test_cyclonedx_20_xml_rejected() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/2.0" version="1">
+  <components/>
+</bom>"#;
+        let err = CycloneDxReader::read_xml(xml.as_slice()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("unsupported CycloneDX specVersion"));
+        assert!(err.to_string().contains("2.0"));
+    }
+
+    #[test]
+    fn test_cyclonedx_xml_no_namespace_falls_through() {
+        let xml = b"<not-a-bom/>";
+        let result = CycloneDxReader::read_xml(xml.as_slice());
+        // Should fail, but with a parse error, not UnsupportedVersion
+        let err = result.unwrap_err();
+        assert!(
+            !err.to_string()
+                .contains("unsupported CycloneDX specVersion"),
+            "expected parse error, not version error: {}",
+            err
+        );
     }
 }
