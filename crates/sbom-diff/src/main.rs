@@ -66,7 +66,7 @@ struct Args {
 /// Conditions that trigger a non-zero exit code.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum FailOn {
-    /// Fail if any added component lacks checksums.
+    /// Fail if any added component lacks checksums or a changed component dropped all its checksums.
     MissingHashes,
     /// Fail if any components were added.
     AddedComponents,
@@ -242,6 +242,15 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                         eprintln!(
                             "error: added component {} has no hashes (--fail-on missing-hashes)",
                             comp.id
+                        );
+                        violation = true;
+                    }
+                }
+                for change in &diff.changed {
+                    if !change.old.hashes.is_empty() && change.new.hashes.is_empty() {
+                        eprintln!(
+                            "error: changed component {} dropped all hashes (--fail-on missing-hashes)",
+                            change.id
                         );
                         violation = true;
                     }
@@ -639,6 +648,79 @@ mod tests {
 
         // Added component with hashes - no violation
         diff.added[0].hashes.insert("sha256".into(), "abc".into());
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+    }
+
+    #[test]
+    fn test_check_fail_on_missing_hashes_changed_component_dropped() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeMap;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.hashes.insert("sha256".into(), "abc".into());
+        let new = Component::new("pkg".into(), Some("1.1".into()));
+        // new has no hashes — regression
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![
+                    FieldChange::Version("1.0".into(), "1.1".into()),
+                    FieldChange::Hashes(old.hashes.clone(), BTreeMap::new()),
+                ],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::MissingHashes]));
+    }
+
+    #[test]
+    fn test_check_fail_on_missing_hashes_changed_component_kept() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.hashes.insert("sha256".into(), "abc".into());
+        let mut new = Component::new("pkg".into(), Some("1.1".into()));
+        new.hashes.insert("sha256".into(), "def".into());
+        // new still has hashes — not a regression
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![
+                    FieldChange::Version("1.0".into(), "1.1".into()),
+                    FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()),
+                ],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+    }
+
+    #[test]
+    fn test_check_fail_on_missing_hashes_changed_component_both_empty() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0".into()));
+        let new = Component::new("pkg".into(), Some("1.1".into()));
+        // both have no hashes — not a regression, was already missing
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Version("1.0".into(), "1.1".into())],
+            }],
+            ..Diff::default()
+        };
+
         assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
     }
 
