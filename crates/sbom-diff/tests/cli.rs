@@ -532,3 +532,58 @@ fn identity_diff_exits_0_with_no_output_changes() {
     assert_eq!(v["removed"], 0);
     assert_eq!(v["changed"], 0);
 }
+
+// ---------------------------------------------------------------------------
+// --output html
+// ---------------------------------------------------------------------------
+
+#[test]
+fn html_output_produces_valid_document() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--output")
+        .arg("html")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("<!DOCTYPE html>"));
+    assert!(stdout.contains("<style>"));
+    assert!(stdout.contains("</html>"));
+    assert!(stdout.contains("SBOM Diff Report"));
+}
+
+#[test]
+fn html_summary_output() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("html")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("SBOM Diff Summary"));
+    assert!(stdout.contains("<table>"));
+    assert!(stdout.contains("Edge changes"));
+}
+
+#[test]
+fn html_output_with_quiet_produces_no_output() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--output")
+        .arg("html")
+        .arg("--quiet")
+        .output()
+        .unwrap();
+
+    assert!(out.stdout.is_empty());
+    assert_eq!(out.status.code(), Some(0));
+}

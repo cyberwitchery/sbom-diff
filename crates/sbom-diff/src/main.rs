@@ -2,7 +2,8 @@ use anyhow::{anyhow, Context};
 use clap::{Parser, ValueEnum};
 use sbom_diff::{
     renderer::{
-        JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SummaryRenderer, TextRenderer,
+        HtmlRenderer, JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SummaryRenderer,
+        TextRenderer,
     },
     Differ,
 };
@@ -103,6 +104,7 @@ enum Output {
     Text,
     Markdown,
     Json,
+    Html,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -160,12 +162,14 @@ fn main() -> anyhow::Result<()> {
                     MarkdownRenderer.render_summary(&diff, &render_opts, &mut handle)?
                 }
                 Output::Json => JsonRenderer.render_summary(&diff, &render_opts, &mut handle)?,
+                Output::Html => HtmlRenderer.render_summary(&diff, &render_opts, &mut handle)?,
             }
         } else {
             match args.output {
                 Output::Text => TextRenderer.render(&diff, &render_opts, &mut handle)?,
                 Output::Markdown => MarkdownRenderer.render(&diff, &render_opts, &mut handle)?,
                 Output::Json => JsonRenderer.render(&diff, &render_opts, &mut handle)?,
+                Output::Html => HtmlRenderer.render(&diff, &render_opts, &mut handle)?,
             }
         }
     }

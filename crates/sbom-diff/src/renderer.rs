@@ -5,6 +5,7 @@
 //! - [`TextRenderer`] - Plain text for terminal output
 //! - [`MarkdownRenderer`] - GitHub-flavored markdown for PR comments
 //! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
+//! - [`HtmlRenderer`] - Self-contained HTML for browser-viewable reports
 
 use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange, GroupedDiff};
 use sbom_model::Component;
@@ -587,6 +588,351 @@ impl Renderer for JsonRenderer {
     }
 }
 
+// --- HTML output helpers ---
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn write_html_component_list<W: Write>(
+    writer: &mut W,
+    components: &[Component],
+    class: &str,
+) -> std::io::Result<()> {
+    writeln!(writer, "<ul class=\"{}\">", class)?;
+    for c in components {
+        writeln!(
+            writer,
+            "<li><code>{}</code></li>",
+            html_escape(c.purl.as_deref().unwrap_or(c.id.as_str()))
+        )?;
+    }
+    writeln!(writer, "</ul>")
+}
+
+/// Self-contained HTML renderer for browser-viewable diff reports.
+///
+/// Produces a complete HTML document with inline CSS. All SBOM data is
+/// HTML-escaped to prevent injection.
+pub struct HtmlRenderer;
+
+impl FieldChangeFormatter for HtmlRenderer {
+    fn field_change<W: Write>(
+        &self,
+        w: &mut W,
+        name: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<div class=\"field-change\"><strong>{}</strong>: \
+             <code class=\"old-value\">{}</code> &rarr; \
+             <code class=\"new-value\">{}</code></div>",
+            html_escape(name),
+            html_escape(old),
+            html_escape(new)
+        )
+    }
+
+    fn hash_header<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<div class=\"field-change\"><strong>Hashes</strong>:</div>"
+        )
+    }
+
+    fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<div class=\"hash-detail removed\"><code>{}</code>: \
+             removed <code>{}</code></div>",
+            html_escape(algo),
+            html_escape(digest)
+        )
+    }
+
+    fn hash_changed<W: Write>(
+        &self,
+        w: &mut W,
+        algo: &str,
+        old: &str,
+        new: &str,
+    ) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<div class=\"hash-detail changed\"><code>{}</code>: \
+             <code class=\"old-value\">{}</code> &rarr; \
+             <code class=\"new-value\">{}</code></div>",
+            html_escape(algo),
+            html_escape(old),
+            html_escape(new)
+        )
+    }
+
+    fn hash_added<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<div class=\"hash-detail added\"><code>{}</code>: \
+             added <code>{}</code></div>",
+            html_escape(algo),
+            html_escape(digest)
+        )
+    }
+
+    fn component_header<W: Write>(&self, w: &mut W, id: &str) -> std::io::Result<()> {
+        writeln!(
+            w,
+            "<h4 class=\"component-id\"><code>{}</code></h4>",
+            html_escape(id)
+        )
+    }
+}
+
+const HTML_CSS: &str = r#"<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         max-width: 960px; margin: 0 auto; padding: 2rem; color: #24292f; background: #fff; }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: .5rem; }
+  h3 { margin-top: 1.5rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  th, td { border: 1px solid #d0d7de; padding: .4rem .8rem; text-align: left; }
+  th { background: #f6f8fa; }
+  code { background: #f6f8fa; padding: .15rem .3rem; border-radius: 3px; font-size: .9em; }
+  details { margin: .5rem 0; }
+  summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
+  .section { margin: 1.5rem 0; }
+  .added { color: #1a7f37; }
+  .removed { color: #cf222e; }
+  .changed { color: #9a6700; }
+  .warning { color: #bf8700; }
+  .field-change { margin-left: 1.5rem; padding: .15rem 0; }
+  .hash-detail { margin-left: 3rem; padding: .1rem 0; }
+  .old-value { text-decoration: line-through; opacity: .7; }
+  .component-id { margin: .8rem 0 .2rem 0; font-size: 1rem; }
+  ul { margin: .3rem 0; padding-left: 1.5rem; }
+  li { margin: .15rem 0; }
+</style>"#;
+
+impl Renderer for HtmlRenderer {
+    fn render<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        writeln!(writer, "<!DOCTYPE html>")?;
+        writeln!(writer, "<html lang=\"en\"><head>")?;
+        writeln!(writer, "<meta charset=\"utf-8\">")?;
+        writeln!(
+            writer,
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        )?;
+        writeln!(writer, "<title>SBOM Diff Report</title>")?;
+        writeln!(writer, "{}", HTML_CSS)?;
+        writeln!(writer, "</head><body>")?;
+        writeln!(writer, "<h1>SBOM Diff Report</h1>")?;
+
+        if opts.has_warnings() {
+            writeln!(writer, "<details class=\"section\">")?;
+            writeln!(
+                writer,
+                "<summary class=\"warning\">Warnings ({})</summary>",
+                opts.warning_count()
+            )?;
+            writeln!(writer, "<ul>")?;
+            for w in &opts.old_warnings {
+                writeln!(writer, "<li><strong>old:</strong> {}</li>", html_escape(w))?;
+            }
+            for w in &opts.new_warnings {
+                writeln!(writer, "<li><strong>new:</strong> {}</li>", html_escape(w))?;
+            }
+            writeln!(writer, "</ul>")?;
+            writeln!(writer, "</details>")?;
+        }
+
+        writeln!(writer, "<h3>Summary</h3>")?;
+        writeln!(writer, "<table>")?;
+        writeln!(writer, "<tr><th>Metric</th><th>Count</th></tr>")?;
+        writeln!(
+            writer,
+            "<tr><td>Old total</td><td>{}</td></tr>",
+            diff.old_total
+        )?;
+        writeln!(
+            writer,
+            "<tr><td>New total</td><td>{}</td></tr>",
+            diff.new_total
+        )?;
+        writeln!(
+            writer,
+            "<tr><td>Unchanged</td><td>{}</td></tr>",
+            diff.unchanged
+        )?;
+        writeln!(
+            writer,
+            "<tr><td class=\"added\">Added</td><td>{}</td></tr>",
+            diff.added.len()
+        )?;
+        writeln!(
+            writer,
+            "<tr><td class=\"removed\">Removed</td><td>{}</td></tr>",
+            diff.removed.len()
+        )?;
+        writeln!(
+            writer,
+            "<tr><td class=\"changed\">Changed</td><td>{}</td></tr>",
+            diff.changed.len()
+        )?;
+        writeln!(writer, "</table>")?;
+
+        if opts.group_by_ecosystem {
+            let grouped = diff.group_by_ecosystem();
+            let breakdown = grouped.ecosystem_breakdown();
+
+            writeln!(writer, "<h3>By Ecosystem</h3>")?;
+            writeln!(writer, "<table>")?;
+            writeln!(
+                writer,
+                "<tr><th>Ecosystem</th><th>Added</th><th>Removed</th><th>Changed</th></tr>"
+            )?;
+            for (eco, counts) in &breakdown {
+                writeln!(
+                    writer,
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    html_escape(eco),
+                    counts.added,
+                    counts.removed,
+                    counts.changed
+                )?;
+            }
+            writeln!(writer, "</table>")?;
+
+            for (eco, eco_diff) in &grouped.by_ecosystem {
+                writeln!(writer, "<h3>{}</h3>", html_escape(eco))?;
+                if !eco_diff.added.is_empty() {
+                    writeln!(writer, "<details class=\"section\" open>")?;
+                    writeln!(
+                        writer,
+                        "<summary class=\"added\">Added ({})</summary>",
+                        eco_diff.added.len()
+                    )?;
+                    write_html_component_list(writer, &eco_diff.added, "added")?;
+                    writeln!(writer, "</details>")?;
+                }
+                if !eco_diff.removed.is_empty() {
+                    writeln!(writer, "<details class=\"section\" open>")?;
+                    writeln!(
+                        writer,
+                        "<summary class=\"removed\">Removed ({})</summary>",
+                        eco_diff.removed.len()
+                    )?;
+                    write_html_component_list(writer, &eco_diff.removed, "removed")?;
+                    writeln!(writer, "</details>")?;
+                }
+                if !eco_diff.changed.is_empty() {
+                    writeln!(writer, "<details class=\"section\" open>")?;
+                    writeln!(
+                        writer,
+                        "<summary class=\"changed\">Changed ({})</summary>",
+                        eco_diff.changed.len()
+                    )?;
+                    write_changed(self, writer, &eco_diff.changed)?;
+                    writeln!(writer, "</details>")?;
+                }
+            }
+        } else {
+            if !diff.added.is_empty() {
+                writeln!(writer, "<details class=\"section\" open>")?;
+                writeln!(
+                    writer,
+                    "<summary class=\"added\">Added ({})</summary>",
+                    diff.added.len()
+                )?;
+                write_html_component_list(writer, &diff.added, "added")?;
+                writeln!(writer, "</details>")?;
+            }
+
+            if !diff.removed.is_empty() {
+                writeln!(writer, "<details class=\"section\" open>")?;
+                writeln!(
+                    writer,
+                    "<summary class=\"removed\">Removed ({})</summary>",
+                    diff.removed.len()
+                )?;
+                write_html_component_list(writer, &diff.removed, "removed")?;
+                writeln!(writer, "</details>")?;
+            }
+
+            if !diff.changed.is_empty() {
+                writeln!(writer, "<details class=\"section\" open>")?;
+                writeln!(
+                    writer,
+                    "<summary class=\"changed\">Changed ({})</summary>",
+                    diff.changed.len()
+                )?;
+                write_changed(self, writer, &diff.changed)?;
+                writeln!(writer, "</details>")?;
+            }
+        }
+
+        if !diff.edge_diffs.is_empty() {
+            writeln!(writer, "<details class=\"section\" open>")?;
+            writeln!(
+                writer,
+                "<summary class=\"changed\">Edge Changes ({})</summary>",
+                diff.edge_diffs.len()
+            )?;
+            for edge in &diff.edge_diffs {
+                writeln!(
+                    writer,
+                    "<h4 class=\"component-id\"><code>{}</code></h4>",
+                    html_escape(diff.display_name(&edge.parent))
+                )?;
+                if !edge.removed.is_empty() {
+                    writeln!(writer, "<div><strong>Removed dependencies:</strong></div>")?;
+                    writeln!(writer, "<ul class=\"removed\">")?;
+                    for removed in &edge.removed {
+                        writeln!(
+                            writer,
+                            "<li><code>{}</code></li>",
+                            html_escape(diff.display_name(removed))
+                        )?;
+                    }
+                    writeln!(writer, "</ul>")?;
+                }
+                if !edge.added.is_empty() {
+                    writeln!(writer, "<div><strong>Added dependencies:</strong></div>")?;
+                    writeln!(writer, "<ul class=\"added\">")?;
+                    for added in &edge.added {
+                        writeln!(
+                            writer,
+                            "<li><code>{}</code></li>",
+                            html_escape(diff.display_name(added))
+                        )?;
+                    }
+                    writeln!(writer, "</ul>")?;
+                }
+            }
+            writeln!(writer, "</details>")?;
+        }
+
+        writeln!(writer, "</body></html>")?;
+        Ok(())
+    }
+}
+
 // --- Summary rendering helpers ---
 
 /// Format-specific building blocks for summary output.
@@ -775,6 +1121,104 @@ impl SummaryRenderer for JsonRenderer {
 
         serde_json::to_writer_pretty(writer, &summary)
             .map_err(|e| anyhow::anyhow!("json summary: {}", e))
+    }
+}
+
+impl SummaryFormatter for HtmlRenderer {
+    fn write_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()> {
+        writeln!(w, "<details class=\"section\">")?;
+        writeln!(
+            w,
+            "<summary class=\"warning\">Warnings ({})</summary>",
+            opts.warning_count()
+        )?;
+        writeln!(w, "<ul>")?;
+        for warning in &opts.old_warnings {
+            writeln!(w, "<li><strong>old:</strong> {}</li>", html_escape(warning))?;
+        }
+        for warning in &opts.new_warnings {
+            writeln!(w, "<li><strong>new:</strong> {}</li>", html_escape(warning))?;
+        }
+        writeln!(w, "</ul>")?;
+        writeln!(w, "</details>")
+    }
+
+    fn write_counts<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()> {
+        writeln!(w, "<h3>Summary</h3>")?;
+        writeln!(w, "<table>")?;
+        writeln!(w, "<tr><th>Metric</th><th>Count</th></tr>")?;
+        writeln!(w, "<tr><td>Old total</td><td>{}</td></tr>", diff.old_total)?;
+        writeln!(w, "<tr><td>New total</td><td>{}</td></tr>", diff.new_total)?;
+        writeln!(w, "<tr><td>Unchanged</td><td>{}</td></tr>", diff.unchanged)?;
+        writeln!(
+            w,
+            "<tr><td class=\"added\">Added</td><td>{}</td></tr>",
+            diff.added.len()
+        )?;
+        writeln!(
+            w,
+            "<tr><td class=\"removed\">Removed</td><td>{}</td></tr>",
+            diff.removed.len()
+        )?;
+        writeln!(
+            w,
+            "<tr><td class=\"changed\">Changed</td><td>{}</td></tr>",
+            diff.changed.len()
+        )?;
+        writeln!(
+            w,
+            "<tr><td>Edge changes</td><td>{}</td></tr>",
+            diff.edge_diffs.len()
+        )?;
+        writeln!(w, "</table>")
+    }
+
+    fn write_ecosystem_breakdown<W: Write>(
+        &self,
+        w: &mut W,
+        breakdown: &BTreeMap<String, EcosystemCounts>,
+    ) -> std::io::Result<()> {
+        writeln!(w, "<h4>By Ecosystem</h4>")?;
+        writeln!(w, "<table>")?;
+        writeln!(
+            w,
+            "<tr><th>Ecosystem</th><th>Added</th><th>Removed</th><th>Changed</th></tr>"
+        )?;
+        for (eco, counts) in breakdown {
+            writeln!(
+                w,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(eco),
+                counts.added,
+                counts.removed,
+                counts.changed
+            )?;
+        }
+        writeln!(w, "</table>")
+    }
+}
+
+impl SummaryRenderer for HtmlRenderer {
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        writeln!(writer, "<!DOCTYPE html>")?;
+        writeln!(writer, "<html lang=\"en\"><head>")?;
+        writeln!(writer, "<meta charset=\"utf-8\">")?;
+        writeln!(
+            writer,
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        )?;
+        writeln!(writer, "<title>SBOM Diff Summary</title>")?;
+        writeln!(writer, "{}", HTML_CSS)?;
+        writeln!(writer, "</head><body>")?;
+        writeln!(writer, "<h1>SBOM Diff Summary</h1>")?;
+        write_summary(self, diff, opts, writer)?;
+        writeln!(writer, "</body></html>")?;
+        Ok(())
     }
 }
 
@@ -1347,5 +1791,236 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert!(val.get("component_names").is_none());
+    }
+
+    // --- HTML renderer tests ---
+
+    #[test]
+    fn test_html_renderer_basic() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.starts_with("<!DOCTYPE html>"));
+        assert!(out.contains("</html>"));
+        assert!(out.contains("<h1>SBOM Diff Report</h1>"));
+        assert!(out.contains("<style>"));
+        assert!(out.contains("Added (1)"));
+        assert!(out.contains("Removed (1)"));
+        assert!(out.contains("Changed (1)"));
+    }
+
+    #[test]
+    fn test_html_renderer_all_field_changes() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("<strong>Version</strong>"));
+        assert!(out.contains("<strong>License</strong>"));
+        assert!(out.contains("<strong>Supplier</strong>"));
+        assert!(out.contains("<strong>Purl</strong>"));
+        assert!(out.contains("<strong>Description</strong>"));
+        assert!(out.contains("<strong>Hashes</strong>"));
+        assert!(out.contains("Edge Changes"));
+    }
+
+    #[test]
+    fn test_html_renderer_empty_diff() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("<td>0</td>"));
+        assert!(!out.contains("Added ("));
+        assert!(!out.contains("Removed ("));
+        assert!(!out.contains("Changed ("));
+    }
+
+    #[test]
+    fn test_html_renderer_group_by_ecosystem() {
+        let diff = mock_diff_with_ecosystems();
+        let opts = RenderOptions {
+            group_by_ecosystem: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        HtmlRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("By Ecosystem"));
+        assert!(out.contains("<td>cargo</td>"));
+        assert!(out.contains("<td>npm</td>"));
+    }
+
+    #[test]
+    fn test_html_renderer_shows_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        HtmlRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Warnings (2)"));
+        assert!(out.contains("<strong>old:</strong>"));
+        assert!(out.contains("<strong>new:</strong>"));
+        assert!(out.contains("orphaned ref &#x27;SPDXRef-foo&#x27;"));
+    }
+
+    #[test]
+    fn test_html_renderer_hides_warnings_by_default() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("Warnings"));
+    }
+
+    #[test]
+    fn test_html_renderer_resolves_edge_diff_names() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("my-app@1.0"));
+        assert!(out.contains("old-dep@0.1"));
+        assert!(out.contains("new-dep@0.2"));
+        // Verify no raw hash IDs leak into the rendered component names.
+        // We can't check `!out.contains("h:")` because CSS properties like
+        // `max-width:` naturally contain that substring.
+        for edge in &diff.edge_diffs {
+            let parent_raw = edge.parent.as_str();
+            if parent_raw.starts_with("h:") {
+                assert!(
+                    !out.contains(parent_raw),
+                    "raw hash ID should not appear in output"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_html_escaping() {
+        use sbom_model::ComponentId;
+
+        // Create components with purls containing HTML special chars,
+        // since purl is what gets rendered (hash-based IDs won't contain them).
+        let mut c_added = Component::new("xss-pkg".into(), Some("1.0".into()));
+        c_added.purl = Some("pkg:npm/<b>xss</b>@1.0".into());
+        c_added.id = ComponentId::new(c_added.purl.as_deref(), &[]);
+
+        let mut c1 = Component::new("vuln-pkg".into(), Some("1.0".into()));
+        c1.purl = Some("pkg:npm/<script>alert(1)</script>@1.0".into());
+        c1.id = ComponentId::new(c1.purl.as_deref(), &[]);
+        let mut c2 = c1.clone();
+        c2.version = Some("1.1".into());
+
+        let diff = Diff {
+            added: vec![c_added],
+            removed: vec![],
+            changed: vec![ComponentChange {
+                id: c2.id.clone(),
+                old: c1,
+                new: c2,
+                changes: vec![FieldChange::Version("1.0".into(), "1.1".into())],
+            }],
+            edge_diffs: vec![],
+            ..Diff::default()
+        };
+
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // Raw HTML tags must not appear unescaped
+        assert!(!out.contains("<script>"));
+        assert!(!out.contains("<b>xss</b>"));
+        // Escaped versions should be present
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(out.contains("&lt;b&gt;xss&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn test_html_summary() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        HtmlRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.starts_with("<!DOCTYPE html>"));
+        assert!(out.contains("<h1>SBOM Diff Summary</h1>"));
+        assert!(out.contains("<table>"));
+        assert!(out.contains("Edge changes"));
+        assert!(!out.contains("Added ("));
+    }
+
+    #[test]
+    fn test_html_summary_with_ecosystems() {
+        let diff = mock_diff_with_ecosystems();
+        let opts = RenderOptions {
+            group_by_ecosystem: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        HtmlRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("By Ecosystem"));
+        assert!(out.contains("<td>cargo</td>"));
+        assert!(out.contains("<td>npm</td>"));
+    }
+
+    #[test]
+    fn test_html_summary_with_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        HtmlRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Warnings (2)"));
+        assert!(out.contains("<strong>old:</strong>"));
+    }
+
+    #[test]
+    fn test_html_summary_no_warnings_without_flag() {
+        let diff = mock_diff();
+        let opts = RenderOptions {
+            show_warnings: false,
+            old_warnings: vec!["some warning".into()],
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        HtmlRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("Warnings"));
+    }
+
+    #[test]
+    fn test_html_escape_function() {
+        assert_eq!(html_escape("hello"), "hello");
+        assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#x27;");
+        assert_eq!(html_escape("a<b>c"), "a&lt;b&gt;c");
+        assert_eq!(html_escape(""), "");
     }
 }
