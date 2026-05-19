@@ -337,7 +337,11 @@ impl SpdxReader {
             spdx_version: Option<String>,
         }
 
-        let probe: VersionProbe = serde_json::from_slice(data)?;
+        let probe: VersionProbe = match serde_json::from_slice(data) {
+            Ok(p) => p,
+            // Not valid JSON — let the full parser produce a proper error.
+            Err(_) => return Ok(()),
+        };
 
         match probe.spdx_version.as_deref() {
             Some(v) if v.starts_with("SPDX-2.") => Ok(()),
@@ -1118,6 +1122,22 @@ mod tests {
         }"#;
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 1);
+    }
+
+    #[test]
+    fn test_non_json_input_does_not_produce_serde_error() {
+        // Non-JSON input (e.g. XML or tag-value) should fail with a parse
+        // error from the full parser, not a cryptic serde error from the
+        // version pre-check.
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?><bom/>"#;
+        let err = SpdxReader::read_json(&xml[..]).unwrap_err();
+        let msg = err.to_string();
+        // Should be a parse error from the full JSON parser, not an
+        // "unsupported SPDX version" error.
+        assert!(
+            msg.contains("parse error"),
+            "expected parse error, got: {msg}"
+        );
     }
 
     #[test]
