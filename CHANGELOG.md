@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix `check_spdx_version` propagating a cryptic serde parse error on non-JSON input (e.g. XML or tag-value) instead of returning `Ok(())` and letting the full parser produce a proper format-detection error; now matches the CycloneDX pre-check behavior
 - extend `--fail-on missing-hashes` to also flag changed components that dropped all their checksums (previously only added components were checked, silently ignoring a supply-chain regression where a component that previously had SHA-256 hashes loses them)
 - add SPDX tag-value format support: new `--format spdx-tv` flag and auto-detection; `SpdxReader::read_tag_value` parses the original SPDX tag-value format (`.spdx` files) emitted by tools like Fossology, reuse, and the SPDX Java tools, using the existing `spdx-rs` tag-value parser with workarounds for two known quirks (phantom default creators and dropped last ExternalRef)
 - fix CycloneDX XML `read_xml()` reporting only the last spec-version error: when parsing fails for all versions (1.5, 1.4, 1.3), the error now includes diagnostics from every attempted version instead of only the v1.3 attempt
