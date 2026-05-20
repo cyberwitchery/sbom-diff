@@ -138,6 +138,9 @@ fn write_field_changes<F: FieldChangeFormatter, W: Write>(
                     }
                 }
             }
+            FieldChange::Ecosystem(old, new) => {
+                fmt.field_change(writer, "Ecosystem", format_option(old), format_option(new))?;
+            }
         }
     }
     Ok(())
@@ -838,6 +841,7 @@ mod tests {
                         BTreeMap::from([("sha256".into(), "aaa".into())]),
                         BTreeMap::from([("sha256".into(), "bbb".into())]),
                     ),
+                    FieldChange::Ecosystem(Some("npm".into()), Some("cargo".into())),
                 ],
             }],
             edge_diffs: vec![crate::EdgeDiff {
@@ -895,6 +899,7 @@ mod tests {
         assert!(out.contains("New description"));
         assert!(out.contains("Hashes:"));
         assert!(out.contains("~ sha256: aaa -> bbb"));
+        assert!(out.contains("Ecosystem: npm -> cargo"));
         assert!(out.contains("[~] Edge Changes"));
     }
 
@@ -946,6 +951,7 @@ mod tests {
         assert!(out.contains("**Description**"));
         assert!(out.contains("**Hashes**:"));
         assert!(out.contains("`sha256`: `aaa` &rarr; `bbb`"));
+        assert!(out.contains("**Ecosystem**"));
         assert!(out.contains("Edge Changes"));
         assert!(out.contains("**Removed dependencies:**"));
         assert!(out.contains("**Added dependencies:**"));
@@ -984,7 +990,7 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert_eq!(val["changed"].as_array().unwrap().len(), 1);
-        assert_eq!(val["changed"][0]["changes"].as_array().unwrap().len(), 6);
+        assert_eq!(val["changed"][0]["changes"].as_array().unwrap().len(), 7);
         assert_eq!(val["edge_diffs"].as_array().unwrap().len(), 1);
     }
 
