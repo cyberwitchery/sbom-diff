@@ -1247,4 +1247,64 @@ mod tests {
         let diff = Diff::default();
         assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
     }
+
+    #[test]
+    fn test_check_fail_on_license_changed_license_dropped() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let new = Component::new("pkg".into(), Some("1.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::new(),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_combined_with_other_conditions() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            added: vec![Component::new("new-pkg".into(), Some("1.0".into()))],
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        // Both conditions should be checked
+        assert!(check_fail_on(
+            &diff,
+            &[FailOn::AddedComponents, FailOn::LicenseChanged]
+        ));
+        // LicenseChanged alone should fire (changed license)
+        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        // AddedComponents alone should fire (new-pkg)
+        assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
+    }
 }
