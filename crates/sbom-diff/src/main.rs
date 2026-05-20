@@ -88,6 +88,7 @@ pub enum Field {
     Purl,
     Description,
     Hashes,
+    Ecosystem,
     Deps,
 }
 
@@ -127,6 +128,7 @@ fn main() -> anyhow::Result<()> {
             Field::Purl => sbom_diff::Field::Purl,
             Field::Description => sbom_diff::Field::Description,
             Field::Hashes => sbom_diff::Field::Hashes,
+            Field::Ecosystem => sbom_diff::Field::Ecosystem,
             Field::Deps => sbom_diff::Field::Deps,
         })
         .collect();

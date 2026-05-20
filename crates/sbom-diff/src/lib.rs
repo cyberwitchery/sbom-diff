@@ -223,6 +223,8 @@ pub enum FieldChange {
     Description(Option<String>, Option<String>),
     /// Hashes changed: (old, new).
     Hashes(BTreeMap<String, String>, BTreeMap<String, String>),
+    /// Ecosystem changed: (old, new).
+    Ecosystem(Option<String>, Option<String>),
 }
 
 /// Fields that can be compared and filtered.
@@ -242,6 +244,8 @@ pub enum Field {
     Description,
     /// Checksums.
     Hashes,
+    /// Package ecosystem.
+    Ecosystem,
     /// Dependency edges.
     Deps,
 }
@@ -573,6 +577,13 @@ impl Differ {
             changes.push(FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()));
         }
 
+        if should_include(Field::Ecosystem) && old.ecosystem != new.ecosystem {
+            changes.push(FieldChange::Ecosystem(
+                old.ecosystem.clone(),
+                new.ecosystem.clone(),
+            ));
+        }
+
         if changes.is_empty() {
             None
         } else {
@@ -817,6 +828,103 @@ mod tests {
             diff.changed[0].changes[0],
             FieldChange::Version(_, _)
         ));
+    }
+
+    #[test]
+    fn test_diff_ecosystem_change() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.ecosystem = Some("npm".to_string());
+        let mut c2 = c1.clone();
+        c2.ecosystem = Some("cargo".to_string());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 1);
+        assert!(matches!(
+            diff.changed[0].changes[0],
+            FieldChange::Ecosystem(_, _)
+        ));
+
+        if let FieldChange::Ecosystem(ref o, ref n) = diff.changed[0].changes[0] {
+            assert_eq!(o.as_deref(), Some("npm"));
+            assert_eq!(n.as_deref(), Some("cargo"));
+        }
+    }
+
+    #[test]
+    fn test_diff_ecosystem_change_from_none() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        let mut c2 = c1.clone();
+        c2.ecosystem = Some("npm".to_string());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 1);
+        assert!(matches!(
+            diff.changed[0].changes[0],
+            FieldChange::Ecosystem(None, Some(_))
+        ));
+    }
+
+    #[test]
+    fn test_diff_ecosystem_filtering() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.ecosystem = Some("npm".to_string());
+        let mut c2 = c1.clone();
+        c2.version = Some("2.0".into());
+        c2.ecosystem = Some("cargo".to_string());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        // Only ecosystem: should see ecosystem change but not version
+        let diff = Differ::diff(&old, &new, Some(&[Field::Ecosystem]));
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 1);
+        assert!(matches!(
+            diff.changed[0].changes[0],
+            FieldChange::Ecosystem(_, _)
+        ));
+
+        // Only version: should see version change but not ecosystem
+        let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes.len(), 1);
+        assert!(matches!(
+            diff.changed[0].changes[0],
+            FieldChange::Version(_, _)
+        ));
+    }
+
+    #[test]
+    fn test_diff_ecosystem_no_change() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+        c1.ecosystem = Some("npm".to_string());
+        let c2 = c1.clone();
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.changed.is_empty());
     }
 
     #[test]
