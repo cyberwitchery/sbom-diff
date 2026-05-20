@@ -1,7 +1,8 @@
 #![doc = include_str!("../readme.md")]
 
 use sbom_model::{
-    canonical_algorithm_name, parse_license_expression, Component, ComponentId, Sbom,
+    canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
+    Sbom,
 };
 use spdx_rs::models::RelationshipType;
 use spdx_rs::parsers::spdx_from_tag_value;
@@ -37,35 +38,39 @@ enum Direction {
     Inverse,
 }
 
-/// Classifies an SPDX relationship type into a dependency edge direction.
+/// Classifies an SPDX relationship type into a dependency edge direction
+/// and semantic kind.
 ///
-/// Returns `Some(Direction::Forward)` for types where `spdx_element_id`
-/// depends on `related_spdx_element` (e.g. DEPENDS_ON, CONTAINS).
-///
-/// Returns `Some(Direction::Inverse)` for types where `related_spdx_element`
-/// depends on `spdx_element_id` (e.g. DEPENDENCY_OF, CONTAINED_BY).
-///
-/// Returns `None` for relationship types that don't represent dependency edges
+/// Returns `Some((Direction, DependencyKind))` for relationship types that
+/// represent dependency edges, or `None` for non-dependency relationships
 /// (e.g. BUILD_TOOL_OF, GENERATED_FROM).
-fn dependency_direction(rel_type: &RelationshipType) -> Option<Direction> {
+fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, DependencyKind)> {
     match rel_type {
         // Forward: A {verb} B means A depends on / contains B.
         RelationshipType::DependsOn
         | RelationshipType::Contains
         | RelationshipType::Describes
-        | RelationshipType::HasPrerequisite => Some(Direction::Forward),
+        | RelationshipType::HasPrerequisite => Some((Direction::Forward, DependencyKind::Runtime)),
 
         // Inverse: A {verb} B means B depends on / contains A.
         RelationshipType::DependencyOf
         | RelationshipType::ContainedBy
         | RelationshipType::DescribedBy
-        | RelationshipType::PrerequisiteFor
-        | RelationshipType::RuntimeDependencyOf
-        | RelationshipType::DevDependencyOf
-        | RelationshipType::BuildDependencyOf
-        | RelationshipType::OptionalDependencyOf
-        | RelationshipType::ProvidedDependencyOf
-        | RelationshipType::TestDependencyOf => Some(Direction::Inverse),
+        | RelationshipType::PrerequisiteFor => Some((Direction::Inverse, DependencyKind::Runtime)),
+
+        // Scoped inverse types — carry their dependency kind.
+        RelationshipType::RuntimeDependencyOf => {
+            Some((Direction::Inverse, DependencyKind::Runtime))
+        }
+        RelationshipType::DevDependencyOf => Some((Direction::Inverse, DependencyKind::Dev)),
+        RelationshipType::BuildDependencyOf => Some((Direction::Inverse, DependencyKind::Build)),
+        RelationshipType::TestDependencyOf => Some((Direction::Inverse, DependencyKind::Test)),
+        RelationshipType::OptionalDependencyOf => {
+            Some((Direction::Inverse, DependencyKind::Optional))
+        }
+        RelationshipType::ProvidedDependencyOf => {
+            Some((Direction::Inverse, DependencyKind::Provided))
+        }
 
         // Not a dependency relationship — ignore.
         _ => None,
@@ -281,12 +286,13 @@ impl SpdxReader {
             let right_spdx = rel.related_spdx_element;
             let rel_type = rel.relationship_type;
 
-            // Determine the edge direction for this relationship type.
+            // Determine the edge direction and semantic kind for this
+            // relationship type.
             // Forward: left depends on right (left → right edge).
             // Inverse: right depends on left (right → left edge).
-            let (parent_spdx, child_spdx) = match dependency_direction(&rel_type) {
-                Some(Direction::Forward) => (&left_spdx, &right_spdx),
-                Some(Direction::Inverse) => (&right_spdx, &left_spdx),
+            let (parent_spdx, child_spdx, kind) = match dependency_direction(&rel_type) {
+                Some((Direction::Forward, kind)) => (&left_spdx, &right_spdx, kind),
+                Some((Direction::Inverse, kind)) => (&right_spdx, &left_spdx, kind),
                 None => continue,
             };
 
@@ -306,7 +312,7 @@ impl SpdxReader {
                     sbom.dependencies
                         .entry(pid.clone())
                         .or_default()
-                        .insert(cid.clone());
+                        .insert(cid.clone(), kind);
                 }
                 (None, _) => {
                     sbom.warnings.push(format!(
@@ -861,7 +867,7 @@ mod tests {
         assert_eq!(deps.len(), 2);
 
         let dep_names: BTreeSet<_> = deps
-            .iter()
+            .keys()
             .map(|id| sbom.components[id].name.as_str())
             .collect();
         assert!(dep_names.contains("contained"));
@@ -1213,7 +1219,7 @@ mod tests {
             .clone();
 
         let deps = &sbom.dependencies[&app_id];
-        assert!(deps.contains(&lib_id));
+        assert!(deps.contains_key(&lib_id));
         // lib-a should NOT have app-b as a dependency.
         assert!(!sbom.dependencies.contains_key(&lib_id));
     }
@@ -1270,7 +1276,7 @@ mod tests {
             .clone();
 
         let deps = &sbom.dependencies[&parent_id];
-        assert!(deps.contains(&child_id));
+        assert!(deps.contains_key(&child_id));
     }
 
     #[test]
@@ -1332,11 +1338,115 @@ mod tests {
         assert_eq!(deps.len(), 2);
 
         let dep_names: BTreeSet<_> = deps
-            .iter()
+            .keys()
             .map(|id| sbom.components[id].name.as_str())
             .collect();
         assert!(dep_names.contains("runtime-lib"));
         assert!(dep_names.contains("dev-lib"));
+
+        // Verify dependency kinds are preserved
+        let runtime_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "runtime-lib")
+            .unwrap()
+            .id
+            .clone();
+        let dev_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "dev-lib")
+            .unwrap()
+            .id
+            .clone();
+
+        assert_eq!(
+            deps[&runtime_id],
+            sbom_model::DependencyKind::Runtime,
+            "RUNTIME_DEPENDENCY_OF should produce Runtime kind"
+        );
+        assert_eq!(
+            deps[&dev_id],
+            sbom_model::DependencyKind::Dev,
+            "DEV_DEPENDENCY_OF should produce Dev kind"
+        );
+    }
+
+    #[test]
+    fn test_all_scoped_dependency_kinds() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {"name": "app", "SPDXID": "SPDXRef-app", "downloadLocation": "NONE"},
+                {"name": "build-dep", "SPDXID": "SPDXRef-build", "downloadLocation": "NONE"},
+                {"name": "test-dep", "SPDXID": "SPDXRef-test", "downloadLocation": "NONE"},
+                {"name": "optional-dep", "SPDXID": "SPDXRef-optional", "downloadLocation": "NONE"},
+                {"name": "provided-dep", "SPDXID": "SPDXRef-provided", "downloadLocation": "NONE"}
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-build",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "BUILD_DEPENDENCY_OF"
+                },
+                {
+                    "spdxElementId": "SPDXRef-test",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "TEST_DEPENDENCY_OF"
+                },
+                {
+                    "spdxElementId": "SPDXRef-optional",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "OPTIONAL_DEPENDENCY_OF"
+                },
+                {
+                    "spdxElementId": "SPDXRef-provided",
+                    "relatedSpdxElement": "SPDXRef-app",
+                    "relationshipType": "PROVIDED_DEPENDENCY_OF"
+                }
+            ]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+
+        let app_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "app")
+            .unwrap()
+            .id
+            .clone();
+        let deps = &sbom.dependencies[&app_id];
+        assert_eq!(deps.len(), 4);
+
+        let find_kind = |name: &str| -> sbom_model::DependencyKind {
+            let id = sbom
+                .components
+                .values()
+                .find(|c| c.name == name)
+                .unwrap()
+                .id
+                .clone();
+            deps[&id]
+        };
+
+        assert_eq!(find_kind("build-dep"), sbom_model::DependencyKind::Build);
+        assert_eq!(find_kind("test-dep"), sbom_model::DependencyKind::Test);
+        assert_eq!(
+            find_kind("optional-dep"),
+            sbom_model::DependencyKind::Optional
+        );
+        assert_eq!(
+            find_kind("provided-dep"),
+            sbom_model::DependencyKind::Provided
+        );
     }
 
     #[test]
@@ -1507,7 +1617,7 @@ Relationship: SPDXRef-app DEPENDS_ON SPDXRef-lib
         assert!(lib.licenses.contains("MIT"));
 
         let deps = &sbom.dependencies[&app.id];
-        assert!(deps.contains(&lib.id));
+        assert!(deps.contains_key(&lib.id));
     }
 
     #[test]

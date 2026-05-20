@@ -1,7 +1,8 @@
 #![doc = include_str!("../readme.md")]
 
 use sbom_model::{
-    canonical_algorithm_name, parse_license_expression, Component, ComponentId, Sbom,
+    canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
+    Sbom,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -248,10 +249,10 @@ impl CycloneDxReader {
             for dep in dependencies.0 {
                 let parent_ref = dep.dependency_ref;
                 if let Some(parent_id) = ref_map.get(&parent_ref.to_string()) {
-                    let mut children = BTreeSet::new();
+                    let mut children = BTreeMap::new();
                     for child_ref in dep.dependencies {
                         if let Some(child_id) = ref_map.get(&child_ref.to_string()) {
-                            children.insert(child_id.clone());
+                            children.insert(child_id.clone(), DependencyKind::Runtime);
                         } else {
                             sbom.warnings.push(format!(
                                 "CycloneDX: dependency bom-ref '{}' (child of '{}') does not match any component",
@@ -823,9 +824,9 @@ mod tests {
             .clone();
 
         // image -> inner-a dependency
-        assert!(sbom.dependencies[&image_id].contains(&inner_a_id));
+        assert!(sbom.dependencies[&image_id].contains_key(&inner_a_id));
         // inner-a -> inner-b dependency
-        assert!(sbom.dependencies[&inner_a_id].contains(&inner_b_id));
+        assert!(sbom.dependencies[&inner_a_id].contains_key(&inner_b_id));
     }
 
     #[test]

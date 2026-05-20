@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- thread SPDX relationship types through the dependency model as `DependencyKind` (Runtime, Dev, Build, Test, Optional, Provided): the SPDX parser now maps `DEV_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, and `PROVIDED_DEPENDENCY_OF` to their corresponding kind instead of discarding scope at parse time; `EdgeDiff` tracks kind on added/removed edges and detects `kind_changed` when an edge's scope changes between SBOMs (e.g. dev→runtime); renderers show a `(dev)`, `(build)`, etc. suffix for non-runtime edges
 - track ecosystem field changes in `compute_change`: new `FieldChange::Ecosystem` variant detects when a component's ecosystem changes between SBOMs (e.g. tool migration or ecosystem reclassification), rendered across all output formats and filterable via `--only ecosystem`
 - add `--fail-on license-changed` CI gate that detects license regressions incrementally: flags changed components whose license set differs and added components that introduce new licenses, using `FieldChange::License` from the diff result instead of scanning the full new SBOM (unlike `--deny-license` / `--allow-license`, this works as an incremental gate when pre-existing deps already carry denied licenses)
 - fix `check_spdx_version` propagating a cryptic serde parse error on non-JSON input (e.g. XML or tag-value) instead of returning `Ok(())` and letting the full parser produce a proper format-detection error; now matches the CycloneDX pre-check behavior

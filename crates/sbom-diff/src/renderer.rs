@@ -7,7 +7,7 @@
 //! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
 
 use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange, GroupedDiff};
-use sbom_model::Component;
+use sbom_model::{Component, DependencyKind};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -34,6 +34,19 @@ impl RenderOptions {
     /// Total number of warnings across both SBOMs.
     pub fn warning_count(&self) -> usize {
         self.old_warnings.len() + self.new_warnings.len()
+    }
+}
+
+/// Returns a display suffix for a dependency kind.
+/// Runtime dependencies get no suffix (they are the default/common case).
+fn kind_suffix(kind: &DependencyKind) -> &'static str {
+    match kind {
+        DependencyKind::Runtime => "",
+        DependencyKind::Dev => " (dev)",
+        DependencyKind::Build => " (build)",
+        DependencyKind::Test => " (test)",
+        DependencyKind::Optional => " (optional)",
+        DependencyKind::Provided => " (provided)",
     }
 }
 
@@ -302,11 +315,30 @@ impl Renderer for TextRenderer {
             writeln!(writer, "----------------")?;
             for edge in &diff.edge_diffs {
                 writeln!(writer, "{}", diff.display_name(&edge.parent))?;
-                for removed in &edge.removed {
-                    writeln!(writer, "  - {}", diff.display_name(removed))?;
+                for (removed, kind) in &edge.removed {
+                    writeln!(
+                        writer,
+                        "  - {}{}",
+                        diff.display_name(removed),
+                        kind_suffix(kind)
+                    )?;
                 }
-                for added in &edge.added {
-                    writeln!(writer, "  + {}", diff.display_name(added))?;
+                for (added, kind) in &edge.added {
+                    writeln!(
+                        writer,
+                        "  + {}{}",
+                        diff.display_name(added),
+                        kind_suffix(kind)
+                    )?;
+                }
+                for (changed, (old_kind, new_kind)) in &edge.kind_changed {
+                    writeln!(
+                        writer,
+                        "  ~ {} ({} -> {})",
+                        diff.display_name(changed),
+                        old_kind,
+                        new_kind
+                    )?;
                 }
             }
         }
@@ -506,14 +538,36 @@ impl Renderer for MarkdownRenderer {
                 writeln!(writer, "#### `{}`", diff.display_name(&edge.parent))?;
                 if !edge.removed.is_empty() {
                     writeln!(writer, "**Removed dependencies:**")?;
-                    for removed in &edge.removed {
-                        writeln!(writer, "- `{}`", diff.display_name(removed))?;
+                    for (removed, kind) in &edge.removed {
+                        writeln!(
+                            writer,
+                            "- `{}`{}",
+                            diff.display_name(removed),
+                            kind_suffix(kind)
+                        )?;
                     }
                 }
                 if !edge.added.is_empty() {
                     writeln!(writer, "**Added dependencies:**")?;
-                    for added in &edge.added {
-                        writeln!(writer, "- `{}`", diff.display_name(added))?;
+                    for (added, kind) in &edge.added {
+                        writeln!(
+                            writer,
+                            "- `{}`{}",
+                            diff.display_name(added),
+                            kind_suffix(kind)
+                        )?;
+                    }
+                }
+                if !edge.kind_changed.is_empty() {
+                    writeln!(writer, "**Kind changed:**")?;
+                    for (changed, (old_kind, new_kind)) in &edge.kind_changed {
+                        writeln!(
+                            writer,
+                            "- `{}`: {} &rarr; {}",
+                            diff.display_name(changed),
+                            old_kind,
+                            new_kind
+                        )?;
                     }
                 }
                 writeln!(writer)?;
@@ -808,8 +862,7 @@ mod tests {
     }
 
     fn mock_diff_all_field_changes() -> Diff {
-        use sbom_model::ComponentId;
-        use std::collections::BTreeSet;
+        use sbom_model::{ComponentId, DependencyKind};
 
         let c1 = Component::new("pkg-a".into(), Some("1.0".into()));
         let mut c2 = c1.clone();
@@ -846,8 +899,15 @@ mod tests {
             }],
             edge_diffs: vec![crate::EdgeDiff {
                 parent: ComponentId::new(None, &[("name", "parent")]),
-                added: BTreeSet::from([ComponentId::new(None, &[("name", "child-b")])]),
-                removed: BTreeSet::from([ComponentId::new(None, &[("name", "child-a")])]),
+                added: BTreeMap::from([(
+                    ComponentId::new(None, &[("name", "child-b")]),
+                    DependencyKind::Runtime,
+                )]),
+                removed: BTreeMap::from([(
+                    ComponentId::new(None, &[("name", "child-a")]),
+                    DependencyKind::Runtime,
+                )]),
+                kind_changed: BTreeMap::new(),
             }],
             ..Diff::default()
         }
@@ -1226,8 +1286,7 @@ mod tests {
     }
 
     fn mock_diff_with_hash_edge_diffs() -> Diff {
-        use sbom_model::ComponentId;
-        use std::collections::BTreeSet;
+        use sbom_model::{ComponentId, DependencyKind};
 
         let parent_id = ComponentId::new(None, &[("name", "parent")]);
         let child_a_id = ComponentId::new(None, &[("name", "child-a")]);
@@ -1241,8 +1300,9 @@ mod tests {
         Diff {
             edge_diffs: vec![crate::EdgeDiff {
                 parent: parent_id,
-                added: BTreeSet::from([child_b_id]),
-                removed: BTreeSet::from([child_a_id]),
+                added: BTreeMap::from([(child_b_id, DependencyKind::Runtime)]),
+                removed: BTreeMap::from([(child_a_id, DependencyKind::Runtime)]),
+                kind_changed: BTreeMap::new(),
             }],
             old_total: 10,
             new_total: 12,
