@@ -76,6 +76,8 @@ enum FailOn {
     ChangedComponents,
     /// Fail if any dependency edges changed.
     Deps,
+    /// Fail if any changed component's license changed or any added component introduces licenses.
+    LicenseChanged,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -295,6 +297,36 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                         }
                     }
                     violation = true;
+                }
+            }
+            FailOn::LicenseChanged => {
+                for change in &diff.changed {
+                    for fc in &change.changes {
+                        if let sbom_diff::FieldChange::License(old, new) = fc {
+                            let format_set = |s: &std::collections::BTreeSet<String>| {
+                                if s.is_empty() {
+                                    "<none>".to_string()
+                                } else {
+                                    s.iter().cloned().collect::<Vec<_>>().join(", ")
+                                }
+                            };
+                            eprintln!(
+                                "error: license changed on component {}: {} -> {} (--fail-on license-changed)",
+                                change.id, format_set(old), format_set(new)
+                            );
+                            violation = true;
+                        }
+                    }
+                }
+                for comp in &diff.added {
+                    if !comp.licenses.is_empty() {
+                        let licenses: Vec<_> = comp.licenses.iter().cloned().collect();
+                        eprintln!(
+                            "error: added component {} introduces license(s): {} (--fail-on license-changed)",
+                            comp.id, licenses.join(", ")
+                        );
+                        violation = true;
+                    }
                 }
             }
         }
@@ -829,6 +861,7 @@ mod tests {
                 FailOn::RemovedComponents,
                 FailOn::MissingHashes,
                 FailOn::Deps,
+                FailOn::LicenseChanged,
             ]
         ));
         // But ChangedComponents *should* trigger on description changes
@@ -1130,5 +1163,148 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert!(val.get("warnings").is_none());
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_on_changed_component() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_no_license_change() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Version("1.0".into(), "2.0".into())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_added_component_with_license() {
+        use sbom_diff::Diff;
+
+        let mut added = Component::new("new-pkg".into(), Some("1.0".into()));
+        added.licenses.insert("AGPL-3.0-only".into());
+
+        let diff = Diff {
+            added: vec![added],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_added_component_without_license() {
+        use sbom_diff::Diff;
+
+        let added = Component::new("new-pkg".into(), Some("1.0".into()));
+
+        let diff = Diff {
+            added: vec![added],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_empty_diff() {
+        use sbom_diff::Diff;
+
+        let diff = Diff::default();
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_license_dropped() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let new = Component::new("pkg".into(), Some("1.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::new(),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_license_changed_combined_with_other_conditions() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            added: vec![Component::new("new-pkg".into(), Some("1.0".into()))],
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        // Both conditions should be checked
+        assert!(check_fail_on(
+            &diff,
+            &[FailOn::AddedComponents, FailOn::LicenseChanged]
+        ));
+        // LicenseChanged alone should fire (changed license)
+        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        // AddedComponents alone should fire (new-pkg)
+        assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
     }
 }

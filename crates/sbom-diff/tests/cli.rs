@@ -106,6 +106,8 @@ fn fail_on_no_violation_exits_0() {
         .arg("changed-components")
         .arg("--fail-on")
         .arg("deps")
+        .arg("--fail-on")
+        .arg("license-changed")
         .output()
         .unwrap();
 
@@ -134,6 +136,69 @@ fn fail_on_multiple_conditions_all_checked() {
         stderr.contains("--fail-on removed-components"),
         "should report removed-components violation"
     );
+}
+
+// ---------------------------------------------------------------------------
+// --fail-on license-changed (exit 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_on_license_changed_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("license-changed-old.json"))
+        .arg(fixture("license-changed-new.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on license-changed"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    // Should mention the changed license
+    assert!(
+        stderr.contains("license changed on component"),
+        "stderr should report the changed component, got: {}",
+        stderr
+    );
+    // Should mention the added component introducing licenses
+    assert!(
+        stderr.contains("introduces license(s)"),
+        "stderr should report the added component's licenses, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_license_changed_no_change_exits_0() {
+    // Same file as both old and new — no license changes
+    let out = sbom_diff()
+        .arg(fixture("cli-license.json"))
+        .arg(fixture("cli-license.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_license_changed_no_violation_exits_0() {
+    // golden fixtures have no licenses, so no license changes
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-old.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
 }
 
 // ---------------------------------------------------------------------------
