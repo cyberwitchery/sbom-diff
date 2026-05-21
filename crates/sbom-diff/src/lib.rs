@@ -1577,10 +1577,10 @@ mod tests {
 
         // component_names should resolve all hash IDs to readable names
         assert_eq!(diff.display_name(&diff.edge_diffs[0].parent), "my-app@1.0");
-        for (added, _) in &diff.edge_diffs[0].added {
+        for added in diff.edge_diffs[0].added.keys() {
             assert!(!diff.display_name(added).starts_with("h:"));
         }
-        for (removed, _) in &diff.edge_diffs[0].removed {
+        for removed in diff.edge_diffs[0].removed.keys() {
             assert!(!diff.display_name(removed).starts_with("h:"));
         }
     }
