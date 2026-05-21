@@ -285,13 +285,13 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
             FailOn::Deps => {
                 if !diff.edge_diffs.is_empty() {
                     for edge in &diff.edge_diffs {
-                        for added in &edge.added {
+                        for added in edge.added.keys() {
                             eprintln!(
                                 "error: added dependency edge {} -> {} (--fail-on deps)",
                                 edge.parent, added
                             );
                         }
-                        for removed in &edge.removed {
+                        for removed in edge.removed.keys() {
                             eprintln!(
                                 "error: removed dependency edge {} -> {} (--fail-on deps)",
                                 edge.parent, removed
@@ -524,8 +524,8 @@ mod tests {
     #[test]
     fn test_render_summary_with_edge_diffs() {
         use sbom_diff::{Diff, EdgeDiff};
-        use sbom_model::ComponentId;
-        use std::collections::BTreeSet;
+        use sbom_model::{ComponentId, DependencyKind};
+        use std::collections::BTreeMap;
 
         let diff = Diff {
             added: vec![],
@@ -534,13 +534,21 @@ mod tests {
             edge_diffs: vec![
                 EdgeDiff {
                     parent: ComponentId::new(None, &[("name", "pkg-a")]),
-                    added: BTreeSet::from([ComponentId::new(None, &[("name", "pkg-b")])]),
-                    removed: BTreeSet::new(),
+                    added: BTreeMap::from([(
+                        ComponentId::new(None, &[("name", "pkg-b")]),
+                        DependencyKind::Runtime,
+                    )]),
+                    removed: BTreeMap::new(),
+                    kind_changed: BTreeMap::new(),
                 },
                 EdgeDiff {
                     parent: ComponentId::new(None, &[("name", "pkg-c")]),
-                    added: BTreeSet::new(),
-                    removed: BTreeSet::from([ComponentId::new(None, &[("name", "pkg-d")])]),
+                    added: BTreeMap::new(),
+                    removed: BTreeMap::from([(
+                        ComponentId::new(None, &[("name", "pkg-d")]),
+                        DependencyKind::Runtime,
+                    )]),
+                    kind_changed: BTreeMap::new(),
                 },
             ],
             ..Diff::default()
@@ -558,8 +566,8 @@ mod tests {
     #[test]
     fn test_check_fail_on_deps_with_removed_edges() {
         use sbom_diff::{Diff, EdgeDiff};
-        use sbom_model::ComponentId;
-        use std::collections::BTreeSet;
+        use sbom_model::{ComponentId, DependencyKind};
+        use std::collections::BTreeMap;
 
         let diff = Diff {
             added: vec![],
@@ -567,8 +575,12 @@ mod tests {
             changed: vec![],
             edge_diffs: vec![EdgeDiff {
                 parent: ComponentId::new(None, &[("name", "parent")]),
-                added: BTreeSet::new(),
-                removed: BTreeSet::from([ComponentId::new(None, &[("name", "child")])]),
+                added: BTreeMap::new(),
+                removed: BTreeMap::from([(
+                    ComponentId::new(None, &[("name", "child")]),
+                    DependencyKind::Runtime,
+                )]),
+                kind_changed: BTreeMap::new(),
             }],
             ..Diff::default()
         };
@@ -761,8 +773,8 @@ mod tests {
     #[test]
     fn test_check_fail_on_deps() {
         use sbom_diff::{Diff, EdgeDiff};
-        use sbom_model::ComponentId;
-        use std::collections::BTreeSet;
+        use sbom_model::{ComponentId, DependencyKind};
+        use std::collections::BTreeMap;
 
         let mut diff = Diff {
             added: vec![],
@@ -778,8 +790,12 @@ mod tests {
         // With edge changes - violation
         diff.edge_diffs.push(EdgeDiff {
             parent: ComponentId::new(None, &[("name", "parent")]),
-            added: BTreeSet::from([ComponentId::new(None, &[("name", "child")])]),
-            removed: BTreeSet::new(),
+            added: BTreeMap::from([(
+                ComponentId::new(None, &[("name", "child")]),
+                DependencyKind::Runtime,
+            )]),
+            removed: BTreeMap::new(),
+            kind_changed: BTreeMap::new(),
         });
         assert!(check_fail_on(&diff, &[FailOn::Deps]));
     }

@@ -1,6 +1,6 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::{Component, ComponentId, Sbom};
+use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -202,10 +202,13 @@ pub struct ComponentChange {
 pub struct EdgeDiff {
     /// The parent component whose dependencies changed.
     pub parent: ComponentId,
-    /// Dependencies added in the new SBOM.
-    pub added: BTreeSet<ComponentId>,
-    /// Dependencies removed from the old SBOM.
-    pub removed: BTreeSet<ComponentId>,
+    /// Dependencies added in the new SBOM, with their dependency kind.
+    pub added: BTreeMap<ComponentId, DependencyKind>,
+    /// Dependencies removed from the old SBOM, with their dependency kind.
+    pub removed: BTreeMap<ComponentId, DependencyKind>,
+    /// Dependencies whose kind changed between old and new (old_kind, new_kind).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kind_changed: BTreeMap<ComponentId, (DependencyKind, DependencyKind)>,
 }
 
 /// A specific field that changed between two versions of a component.
@@ -422,6 +425,8 @@ impl Differ {
     ///
     /// Uses the id_mapping to translate old component IDs to new IDs when
     /// components were matched by identity rather than exact ID match.
+    /// Tracks dependency kind for added/removed edges and detects kind changes
+    /// (e.g. a dependency moving from dev to runtime).
     fn compute_edge_diffs(
         old: &Sbom,
         new: &Sbom,
@@ -455,8 +460,8 @@ impl Differ {
         }
 
         for parent_id in all_parents {
-            // Get new dependencies for this parent
-            let new_children: BTreeSet<ComponentId> = new
+            // Get new dependencies for this parent (child -> kind)
+            let new_children: BTreeMap<ComponentId, DependencyKind> = new
                 .dependencies
                 .get(&parent_id)
                 .cloned()
@@ -469,23 +474,50 @@ impl Differ {
                 .cloned()
                 .unwrap_or_else(|| parent_id.clone());
 
-            let old_children: BTreeSet<ComponentId> = old
+            let old_children: BTreeMap<ComponentId, DependencyKind> = old
                 .dependencies
                 .get(&old_parent_id)
-                .map(|children| children.iter().map(&translate_id).collect())
+                .map(|children| {
+                    children
+                        .iter()
+                        .map(|(id, kind)| (translate_id(id), *kind))
+                        .collect()
+                })
                 .unwrap_or_default();
 
-            // Compute added and removed edges
-            let added: BTreeSet<ComponentId> =
-                new_children.difference(&old_children).cloned().collect();
-            let removed: BTreeSet<ComponentId> =
-                old_children.difference(&new_children).cloned().collect();
+            let new_keys: BTreeSet<&ComponentId> = new_children.keys().collect();
+            let old_keys: BTreeSet<&ComponentId> = old_children.keys().collect();
 
-            if !added.is_empty() || !removed.is_empty() {
+            // Compute added and removed edges with their kinds
+            let added: BTreeMap<ComponentId, DependencyKind> = new_keys
+                .difference(&old_keys)
+                .map(|&id| (id.clone(), new_children[id]))
+                .collect();
+            let removed: BTreeMap<ComponentId, DependencyKind> = old_keys
+                .difference(&new_keys)
+                .map(|&id| (id.clone(), old_children[id]))
+                .collect();
+
+            // Detect kind changes for edges that exist in both
+            let kind_changed: BTreeMap<ComponentId, (DependencyKind, DependencyKind)> = new_keys
+                .intersection(&old_keys)
+                .filter_map(|&id| {
+                    let old_kind = old_children[id];
+                    let new_kind = new_children[id];
+                    if old_kind != new_kind {
+                        Some((id.clone(), (old_kind, new_kind)))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !added.is_empty() || !removed.is_empty() || !kind_changed.is_empty() {
                 edge_diffs.push(EdgeDiff {
                     parent: parent_id,
                     added,
                     removed,
+                    kind_changed,
                 });
             }
         }
@@ -508,8 +540,9 @@ impl Differ {
         let mut ids = BTreeSet::new();
         for edge in edge_diffs {
             ids.insert(&edge.parent);
-            ids.extend(&edge.added);
-            ids.extend(&edge.removed);
+            ids.extend(edge.added.keys());
+            ids.extend(edge.removed.keys());
+            ids.extend(edge.kind_changed.keys());
         }
 
         // Only resolve hash-based IDs — purls are already readable
@@ -1229,20 +1262,20 @@ mod tests {
         old.dependencies
             .entry(parent_id.clone())
             .or_default()
-            .insert(child_a_id.clone());
+            .insert(child_a_id.clone(), DependencyKind::Runtime);
 
         // New: parent -> child-b (removed child-a, added child-b)
         new.dependencies
             .entry(parent_id.clone())
             .or_default()
-            .insert(child_b_id.clone());
+            .insert(child_b_id.clone(), DependencyKind::Runtime);
 
         let diff = Differ::diff(&old, &new, None);
 
         assert_eq!(diff.edge_diffs.len(), 1);
         assert_eq!(diff.edge_diffs[0].parent, parent_id);
-        assert!(diff.edge_diffs[0].added.contains(&child_b_id));
-        assert!(diff.edge_diffs[0].removed.contains(&child_a_id));
+        assert!(diff.edge_diffs[0].added.contains_key(&child_b_id));
+        assert!(diff.edge_diffs[0].removed.contains_key(&child_a_id));
     }
 
     #[test]
@@ -1279,13 +1312,13 @@ mod tests {
         old.dependencies
             .entry(parent_old.id.clone())
             .or_default()
-            .insert(child.id.clone());
+            .insert(child.id.clone(), DependencyKind::Runtime);
 
         // New: parent -> child (same edge, but parent has different ID)
         new.dependencies
             .entry(parent_new.id.clone())
             .or_default()
-            .insert(child.id.clone());
+            .insert(child.id.clone(), DependencyKind::Runtime);
 
         let diff = Differ::diff(&old, &new, None);
 
@@ -1320,7 +1353,7 @@ mod tests {
         new.dependencies
             .entry(parent_id.clone())
             .or_default()
-            .insert(child_id);
+            .insert(child_id, DependencyKind::Runtime);
 
         // Without filtering - should have edge diff
         let diff = Differ::diff(&old, &new, None);
@@ -1528,10 +1561,14 @@ mod tests {
         new.components.insert(child_b.id.clone(), child_b.clone());
 
         // Set up edges: old parent -> child_a, new parent -> child_b
-        old.dependencies
-            .insert(parent.id.clone(), BTreeSet::from([child_a.id.clone()]));
-        new.dependencies
-            .insert(parent.id.clone(), BTreeSet::from([child_b.id.clone()]));
+        old.dependencies.insert(
+            parent.id.clone(),
+            BTreeMap::from([(child_a.id.clone(), DependencyKind::Runtime)]),
+        );
+        new.dependencies.insert(
+            parent.id.clone(),
+            BTreeMap::from([(child_b.id.clone(), DependencyKind::Runtime)]),
+        );
 
         let diff = Differ::diff(&old, &new, None);
 
@@ -1540,10 +1577,10 @@ mod tests {
 
         // component_names should resolve all hash IDs to readable names
         assert_eq!(diff.display_name(&diff.edge_diffs[0].parent), "my-app@1.0");
-        for added in &diff.edge_diffs[0].added {
+        for added in diff.edge_diffs[0].added.keys() {
             assert!(!diff.display_name(added).starts_with("h:"));
         }
-        for removed in &diff.edge_diffs[0].removed {
+        for removed in diff.edge_diffs[0].removed.keys() {
             assert!(!diff.display_name(removed).starts_with("h:"));
         }
     }
@@ -1570,10 +1607,14 @@ mod tests {
         new.components.insert(parent.id.clone(), parent.clone());
         new.components.insert(child_b.id.clone(), child_b.clone());
 
-        old.dependencies
-            .insert(parent.id.clone(), BTreeSet::from([child_a.id.clone()]));
-        new.dependencies
-            .insert(parent.id.clone(), BTreeSet::from([child_b.id.clone()]));
+        old.dependencies.insert(
+            parent.id.clone(),
+            BTreeMap::from([(child_a.id.clone(), DependencyKind::Runtime)]),
+        );
+        new.dependencies.insert(
+            parent.id.clone(),
+            BTreeMap::from([(child_b.id.clone(), DependencyKind::Runtime)]),
+        );
 
         let diff = Differ::diff(&old, &new, None);
 

@@ -5,6 +5,7 @@ use packageurl::PackageUrl;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::str::FromStr;
 
 /// Format-agnostic SBOM (Software Bill of Materials) representation.
@@ -27,8 +28,8 @@ pub struct Sbom {
     pub metadata: Metadata,
     /// All components indexed by their stable identifier.
     pub components: IndexMap<ComponentId, Component>,
-    /// Dependency graph as adjacency list: parent -> set of children.
-    pub dependencies: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
+    /// Dependency graph as adjacency list: parent -> (child -> kind).
+    pub dependencies: BTreeMap<ComponentId, BTreeMap<ComponentId, DependencyKind>>,
     /// Non-fatal warnings produced during parsing (e.g. orphaned dependency refs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -58,6 +59,47 @@ pub struct Metadata {
     pub tools: Vec<String>,
     /// Document authors or organizations.
     pub authors: Vec<String>,
+}
+
+/// The semantic type of a dependency relationship.
+///
+/// SPDX distinguishes between runtime, dev, build, test, optional, and
+/// provided dependencies. CycloneDX does not encode scope in its
+/// dependency graph, so all CycloneDX edges use [`Runtime`](DependencyKind::Runtime).
+///
+/// The default is `Runtime`, which also covers generic relationships
+/// like `DEPENDS_ON` or `CONTAINS` that don't specify a scope.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum DependencyKind {
+    /// Runtime or unspecified dependency (the default).
+    #[default]
+    Runtime,
+    /// Development-only dependency.
+    Dev,
+    /// Build-time dependency.
+    Build,
+    /// Test-only dependency.
+    Test,
+    /// Optional dependency.
+    Optional,
+    /// Provided by the runtime environment.
+    Provided,
+}
+
+impl fmt::Display for DependencyKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Runtime => write!(f, "runtime"),
+            Self::Dev => write!(f, "dev"),
+            Self::Build => write!(f, "build"),
+            Self::Test => write!(f, "test"),
+            Self::Optional => write!(f, "optional"),
+            Self::Provided => write!(f, "provided"),
+        }
+    }
 }
 
 /// Stable identifier for a component.
@@ -205,7 +247,11 @@ impl Sbom {
     ///
     /// These are typically the top-level packages or applications in the SBOM.
     pub fn roots(&self) -> Vec<ComponentId> {
-        let targets: BTreeSet<_> = self.dependencies.values().flatten().collect();
+        let targets: BTreeSet<_> = self
+            .dependencies
+            .values()
+            .flat_map(|children| children.keys())
+            .collect();
         self.components
             .keys()
             .filter(|id| !targets.contains(id))
@@ -217,7 +263,7 @@ impl Sbom {
     pub fn deps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.dependencies
             .get(id)
-            .map(|d| d.iter().cloned().collect())
+            .map(|d| d.keys().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -225,7 +271,7 @@ impl Sbom {
     pub fn rdeps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.dependencies
             .iter()
-            .filter(|(_, children)| children.contains(id))
+            .filter(|(_, children)| children.contains_key(id))
             .map(|(parent, _)| parent.clone())
             .collect()
     }
@@ -238,7 +284,7 @@ impl Sbom {
         let mut stack = vec![id.clone()];
         while let Some(current) = stack.pop() {
             if let Some(children) = self.dependencies.get(&current) {
-                for child in children {
+                for child in children.keys() {
                     if visited.insert(child.clone()) {
                         stack.push(child.clone());
                     }
@@ -484,11 +530,11 @@ mod tests {
         sbom.dependencies
             .entry(id1.clone())
             .or_default()
-            .insert(id2.clone());
+            .insert(id2.clone(), DependencyKind::Runtime);
         sbom.dependencies
             .entry(id2.clone())
             .or_default()
-            .insert(id3.clone());
+            .insert(id3.clone(), DependencyKind::Runtime);
 
         assert_eq!(sbom.roots(), vec![id1.clone()]);
         assert_eq!(sbom.deps(&id1), vec![id2.clone()]);

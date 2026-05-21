@@ -2,8 +2,8 @@
 //! Run with: cargo test -p sbom-diff --test bench_edge_diff -- --nocapture --ignored
 
 use sbom_diff::Differ;
-use sbom_model::{Component, ComponentId, Sbom};
-use std::collections::BTreeSet;
+use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 /// Build two SBOMs where every component has a *different* ID in old vs new
@@ -45,12 +45,12 @@ fn make_sboms(n: usize) -> (Sbom, Sbom) {
 
         old.dependencies
             .entry(old_id)
-            .or_insert_with(BTreeSet::new)
-            .insert(old_dep_id);
+            .or_insert_with(BTreeMap::new)
+            .insert(old_dep_id, DependencyKind::Runtime);
         new.dependencies
             .entry(new_id)
-            .or_insert_with(BTreeSet::new)
-            .insert(new_dep_id);
+            .or_insert_with(BTreeMap::new)
+            .insert(new_dep_id, DependencyKind::Runtime);
     }
 
     (old, new)
