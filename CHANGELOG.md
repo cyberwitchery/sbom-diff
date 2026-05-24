@@ -3,6 +3,7 @@
 ## Unreleased
 
 - replace `metadata_changed: bool` with structured `MetadataChange` tracking that records exactly which metadata fields differ (timestamp, tools, authors) with old/new values; rendered as a new `[~] Metadata Changes` section in text output, a collapsible `<details>` block in markdown, and a structured `metadata_changed` object in JSON; summaries show a `Metadata changed: yes/no` line; add `--fail-on metadata-changed` CI gate that fails when any document metadata differs, reporting which specific fields changed
+- fix `--fail-on deps` not reporting `kind_changed` edges in error messages: when a dependency changed kind (e.g. dev→runtime), the violation exit code fired but no error message explained which edges changed; now prints `error: dependency edge ... changed kind: dev -> runtime (--fail-on deps)` for each affected edge
 
 ## [0.3.0] - 2026-05-21
 

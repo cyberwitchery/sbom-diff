@@ -1,0 +1,51 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "Kind Change Test",
+  "documentNamespace": "http://spdx.org/spdxdocs/kind-change-test-old",
+  "creationInfo": {
+    "creators": ["Tool: manual"],
+    "created": "2023-01-01T00:00:00Z"
+  },
+  "packages": [
+    {
+      "name": "parent",
+      "SPDXID": "SPDXRef-parent",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/parent@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "child",
+      "SPDXID": "SPDXRef-child",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/child@1.0.0"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-parent",
+      "relationshipType": "DESCRIBES"
+    },
+    {
+      "spdxElementId": "SPDXRef-child",
+      "relatedSpdxElement": "SPDXRef-parent",
+      "relationshipType": "DEV_DEPENDENCY_OF"
+    }
+  ]
+}
