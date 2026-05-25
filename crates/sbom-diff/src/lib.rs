@@ -6,6 +6,31 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub mod renderer;
 
+/// Structured tracking of document metadata changes between two SBOMs.
+///
+/// Instead of a simple boolean, this captures exactly which metadata fields
+/// differ, making it possible to render meaningful output and gate CI on
+/// specific metadata changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetadataChange {
+    /// Timestamp changed: (old, new).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<(Option<String>, Option<String>)>,
+    /// Tools changed: (old, new).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<(Vec<String>, Vec<String>)>,
+    /// Authors changed: (old, new).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authors: Option<(Vec<String>, Vec<String>)>,
+}
+
+impl MetadataChange {
+    /// Returns true if no metadata fields actually differ.
+    pub fn is_empty(&self) -> bool {
+        self.timestamp.is_none() && self.tools.is_none() && self.authors.is_none()
+    }
+}
+
 /// Per-ecosystem counts of added, removed, and changed components.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EcosystemCounts {
@@ -28,8 +53,9 @@ pub struct Diff {
     pub changed: Vec<ComponentChange>,
     /// Dependency edge changes between components.
     pub edge_diffs: Vec<EdgeDiff>,
-    /// Whether document metadata differs (usually ignored).
-    pub metadata_changed: bool,
+    /// Structured metadata change details, or `None` if metadata is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_changed: Option<MetadataChange>,
     /// Total number of components in the old SBOM.
     pub old_total: usize,
     /// Total number of components in the new SBOM.
@@ -51,7 +77,7 @@ impl Diff {
             && self.removed.is_empty()
             && self.changed.is_empty()
             && self.edge_diffs.is_empty()
-            && !self.metadata_changed
+            && self.metadata_changed.is_none()
     }
 
     /// Returns a human-readable display name for a component ID.
@@ -115,7 +141,7 @@ impl Diff {
         GroupedDiff {
             by_ecosystem: ecosystems,
             edge_diffs: self.edge_diffs.clone(),
-            metadata_changed: self.metadata_changed,
+            metadata_changed: self.metadata_changed.clone(),
         }
     }
 
@@ -150,7 +176,8 @@ impl Diff {
 pub struct GroupedDiff {
     pub by_ecosystem: BTreeMap<String, EcosystemDiff>,
     pub edge_diffs: Vec<EdgeDiff>,
-    pub metadata_changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_changed: Option<MetadataChange>,
 }
 
 impl GroupedDiff {
@@ -291,7 +318,30 @@ impl Differ {
         let mut new = new.clone();
 
         // Compare metadata before normalize() strips volatile fields
-        let metadata_changed = old.metadata != new.metadata;
+        let metadata_changed = {
+            let mut mc = MetadataChange {
+                timestamp: None,
+                tools: None,
+                authors: None,
+            };
+            if old.metadata.timestamp != new.metadata.timestamp {
+                mc.timestamp = Some((
+                    old.metadata.timestamp.clone(),
+                    new.metadata.timestamp.clone(),
+                ));
+            }
+            if old.metadata.tools != new.metadata.tools {
+                mc.tools = Some((old.metadata.tools.clone(), new.metadata.tools.clone()));
+            }
+            if old.metadata.authors != new.metadata.authors {
+                mc.authors = Some((old.metadata.authors.clone(), new.metadata.authors.clone()));
+            }
+            if mc.is_empty() {
+                None
+            } else {
+                Some(mc)
+            }
+        };
 
         old.normalize();
         new.normalize();
@@ -1009,7 +1059,13 @@ mod tests {
         new.metadata.timestamp = Some("2024-01-02".into());
 
         let diff = Differ::diff(&old, &new, None);
-        assert!(diff.metadata_changed);
+        let mc = diff.metadata_changed.as_ref().unwrap();
+        assert_eq!(
+            mc.timestamp,
+            Some((Some("2024-01-01".into()), Some("2024-01-02".into())))
+        );
+        assert!(mc.tools.is_none());
+        assert!(mc.authors.is_none());
         assert!(!diff.is_empty());
     }
 
@@ -1022,7 +1078,10 @@ mod tests {
         new.metadata.tools = vec!["trivy".into()];
 
         let diff = Differ::diff(&old, &new, None);
-        assert!(diff.metadata_changed);
+        let mc = diff.metadata_changed.as_ref().unwrap();
+        assert!(mc.timestamp.is_none());
+        assert_eq!(mc.tools, Some((vec!["syft".into()], vec!["trivy".into()])));
+        assert!(mc.authors.is_none());
     }
 
     #[test]
@@ -1034,7 +1093,10 @@ mod tests {
         new.metadata.authors = vec!["bob".into()];
 
         let diff = Differ::diff(&old, &new, None);
-        assert!(diff.metadata_changed);
+        let mc = diff.metadata_changed.as_ref().unwrap();
+        assert!(mc.timestamp.is_none());
+        assert!(mc.tools.is_none());
+        assert_eq!(mc.authors, Some((vec!["alice".into()], vec!["bob".into()])));
     }
 
     #[test]
@@ -1048,7 +1110,26 @@ mod tests {
         new.metadata.tools = vec!["syft".into()];
 
         let diff = Differ::diff(&old, &new, None);
-        assert!(!diff.metadata_changed);
+        assert!(diff.metadata_changed.is_none());
+    }
+
+    #[test]
+    fn test_diff_metadata_changed_multiple_fields() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        old.metadata.timestamp = Some("2024-01-01".into());
+        new.metadata.timestamp = Some("2024-01-02".into());
+        old.metadata.tools = vec!["syft".into()];
+        new.metadata.tools = vec!["trivy".into()];
+        old.metadata.authors = vec!["alice".into()];
+        new.metadata.authors = vec!["bob".into()];
+
+        let diff = Differ::diff(&old, &new, None);
+        let mc = diff.metadata_changed.as_ref().unwrap();
+        assert!(mc.timestamp.is_some());
+        assert!(mc.tools.is_some());
+        assert!(mc.authors.is_some());
     }
 
     #[test]
@@ -1438,7 +1519,7 @@ mod tests {
         let grouped = diff.group_by_ecosystem();
         assert!(grouped.by_ecosystem.is_empty());
         assert!(grouped.edge_diffs.is_empty());
-        assert!(!grouped.metadata_changed);
+        assert!(grouped.metadata_changed.is_none());
         assert!(grouped.ecosystem_breakdown().is_empty());
     }
 
