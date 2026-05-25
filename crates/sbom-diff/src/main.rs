@@ -78,6 +78,8 @@ enum FailOn {
     Deps,
     /// Fail if any changed component's license changed or any added component introduces licenses.
     LicenseChanged,
+    /// Fail if document metadata changed (timestamp, tools, or authors).
+    MetadataChanged,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -331,6 +333,26 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                     }
                 }
             }
+            FailOn::MetadataChanged => {
+                if let Some(mc) = &diff.metadata_changed {
+                    if mc.timestamp.is_some() {
+                        eprintln!(
+                            "error: document metadata timestamp changed (--fail-on metadata-changed)"
+                        );
+                    }
+                    if mc.tools.is_some() {
+                        eprintln!(
+                            "error: document metadata tools changed (--fail-on metadata-changed)"
+                        );
+                    }
+                    if mc.authors.is_some() {
+                        eprintln!(
+                            "error: document metadata authors changed (--fail-on metadata-changed)"
+                        );
+                    }
+                    violation = true;
+                }
+            }
         }
     }
 
@@ -515,10 +537,10 @@ mod tests {
             .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(out.contains("Added:        2"));
-        assert!(out.contains("Removed:      1"));
-        assert!(out.contains("Changed:      0"));
-        assert!(out.contains("Edge changes: 0"));
+        assert!(out.contains("Added:            2"));
+        assert!(out.contains("Removed:          1"));
+        assert!(out.contains("Changed:          0"));
+        assert!(out.contains("Edge changes:     0"));
     }
 
     #[test]
@@ -560,7 +582,7 @@ mod tests {
             .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(out.contains("Edge changes: 2"));
+        assert!(out.contains("Edge changes:     2"));
     }
 
     #[test]
@@ -1064,7 +1086,7 @@ mod tests {
         assert!(out.contains("Warnings:     2"));
         assert!(out.contains("[old] old sbom missing supplier"));
         assert!(out.contains("[new] new sbom missing license"));
-        assert!(out.contains("Added:        1"));
+        assert!(out.contains("Added:            1"));
     }
 
     #[test]
@@ -1324,5 +1346,89 @@ mod tests {
         assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
         // AddedComponents alone should fire (new-pkg)
         assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
+    }
+
+    #[test]
+    fn test_check_fail_on_metadata_changed() {
+        use sbom_diff::{Diff, MetadataChange};
+
+        let diff = Diff {
+            metadata_changed: Some(MetadataChange {
+                timestamp: Some((Some("2024-01-01".into()), Some("2024-01-02".into()))),
+                tools: None,
+                authors: None,
+            }),
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::MetadataChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_metadata_changed_no_change() {
+        use sbom_diff::Diff;
+
+        let diff = Diff::default();
+        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_metadata_changed_tools_only() {
+        use sbom_diff::{Diff, MetadataChange};
+
+        let diff = Diff {
+            metadata_changed: Some(MetadataChange {
+                timestamp: None,
+                tools: Some((vec!["syft".into()], vec!["trivy".into()])),
+                authors: None,
+            }),
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::MetadataChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_metadata_changed_does_not_trigger_other_gates() {
+        use sbom_diff::{Diff, MetadataChange};
+
+        let diff = Diff {
+            metadata_changed: Some(MetadataChange {
+                timestamp: Some((Some("2024-01-01".into()), Some("2024-01-02".into()))),
+                tools: Some((vec!["syft".into()], vec!["trivy".into()])),
+                authors: Some((vec!["alice".into()], vec!["bob".into()])),
+            }),
+            ..Diff::default()
+        };
+
+        // Only MetadataChanged should trigger, not other gates
+        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(check_fail_on(&diff, &[FailOn::MetadataChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_metadata_changed_combined() {
+        use sbom_diff::{Diff, MetadataChange};
+
+        let diff = Diff {
+            added: vec![Component::new("new-pkg".into(), Some("1.0".into()))],
+            metadata_changed: Some(MetadataChange {
+                timestamp: Some((Some("2024-01-01".into()), Some("2024-01-02".into()))),
+                tools: None,
+                authors: None,
+            }),
+            ..Diff::default()
+        };
+
+        // Both should fire
+        assert!(check_fail_on(
+            &diff,
+            &[FailOn::AddedComponents, FailOn::MetadataChanged]
+        ));
     }
 }

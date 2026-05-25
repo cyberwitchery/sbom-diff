@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- replace `metadata_changed: bool` with structured `MetadataChange` tracking that records exactly which metadata fields differ (timestamp, tools, authors) with old/new values; rendered as a new `[~] Metadata Changes` section in text output, a collapsible `<details>` block in markdown, and a structured `metadata_changed` object in JSON; summaries show a `Metadata changed: yes/no` line; add `--fail-on metadata-changed` CI gate that fails when any document metadata differs, reporting which specific fields changed
+
 ## [0.3.0] - 2026-05-21
 
 - thread SPDX relationship types through the dependency model as `DependencyKind` (Runtime, Dev, Build, Test, Optional, Provided): the SPDX parser now maps `DEV_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, and `PROVIDED_DEPENDENCY_OF` to their corresponding kind instead of discarding scope at parse time; `EdgeDiff` tracks kind on added/removed edges and detects `kind_changed` when an edge's scope changes between SBOMs (e.g. dev→runtime); renderers show a `(dev)`, `(build)`, etc. suffix for non-runtime edges

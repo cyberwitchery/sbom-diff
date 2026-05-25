@@ -6,7 +6,7 @@
 //! - [`MarkdownRenderer`] - GitHub-flavored markdown for PR comments
 //! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
 
-use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange, GroupedDiff};
+use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange, GroupedDiff, MetadataChange};
 use sbom_model::{Component, DependencyKind};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -343,7 +343,50 @@ impl Renderer for TextRenderer {
             }
         }
 
+        if let Some(mc) = &diff.metadata_changed {
+            writeln!(writer)?;
+            write_text_metadata(writer, mc)?;
+        }
+
         Ok(())
+    }
+}
+
+fn write_text_metadata<W: Write>(writer: &mut W, mc: &MetadataChange) -> std::io::Result<()> {
+    writeln!(writer, "[~] Metadata Changes")?;
+    writeln!(writer, "--------------------")?;
+    if let Some((ref old, ref new)) = mc.timestamp {
+        writeln!(
+            writer,
+            "  Timestamp: {} -> {}",
+            old.as_deref().unwrap_or("<none>"),
+            new.as_deref().unwrap_or("<none>")
+        )?;
+    }
+    if let Some((ref old, ref new)) = mc.tools {
+        writeln!(
+            writer,
+            "  Tools: {} -> {}",
+            format_vec_or_none(old),
+            format_vec_or_none(new)
+        )?;
+    }
+    if let Some((ref old, ref new)) = mc.authors {
+        writeln!(
+            writer,
+            "  Authors: {} -> {}",
+            format_vec_or_none(old),
+            format_vec_or_none(new)
+        )?;
+    }
+    Ok(())
+}
+
+fn format_vec_or_none(v: &[String]) -> String {
+    if v.is_empty() {
+        "<none>".to_string()
+    } else {
+        v.join(", ")
     }
 }
 
@@ -575,8 +618,47 @@ impl Renderer for MarkdownRenderer {
             writeln!(writer, "</details>")?;
         }
 
+        if let Some(mc) = &diff.metadata_changed {
+            writeln!(writer)?;
+            write_md_metadata(writer, mc)?;
+        }
+
         Ok(())
     }
+}
+
+fn write_md_metadata<W: Write>(writer: &mut W, mc: &MetadataChange) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        "<details><summary><b>Metadata Changes</b></summary>"
+    )?;
+    writeln!(writer)?;
+    if let Some((ref old, ref new)) = mc.timestamp {
+        writeln!(
+            writer,
+            "- **Timestamp**: `{}` &rarr; `{}`",
+            old.as_deref().unwrap_or("<none>"),
+            new.as_deref().unwrap_or("<none>")
+        )?;
+    }
+    if let Some((ref old, ref new)) = mc.tools {
+        writeln!(
+            writer,
+            "- **Tools**: `{}` &rarr; `{}`",
+            format_vec_or_none(old),
+            format_vec_or_none(new)
+        )?;
+    }
+    if let Some((ref old, ref new)) = mc.authors {
+        writeln!(
+            writer,
+            "- **Authors**: `{}` &rarr; `{}`",
+            format_vec_or_none(old),
+            format_vec_or_none(new)
+        )?;
+    }
+    writeln!(writer, "</details>")?;
+    Ok(())
 }
 
 /// JSON renderer for machine consumption.
@@ -694,13 +776,22 @@ impl SummaryFormatter for TextRenderer {
     }
 
     fn write_counts<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()> {
-        writeln!(w, "Old total:    {} components", diff.old_total)?;
-        writeln!(w, "New total:    {} components", diff.new_total)?;
-        writeln!(w, "Unchanged:    {}", diff.unchanged)?;
-        writeln!(w, "Added:        {}", diff.added.len())?;
-        writeln!(w, "Removed:      {}", diff.removed.len())?;
-        writeln!(w, "Changed:      {}", diff.changed.len())?;
-        writeln!(w, "Edge changes: {}", diff.edge_diffs.len())
+        writeln!(w, "Old total:        {} components", diff.old_total)?;
+        writeln!(w, "New total:        {} components", diff.new_total)?;
+        writeln!(w, "Unchanged:        {}", diff.unchanged)?;
+        writeln!(w, "Added:            {}", diff.added.len())?;
+        writeln!(w, "Removed:          {}", diff.removed.len())?;
+        writeln!(w, "Changed:          {}", diff.changed.len())?;
+        writeln!(w, "Edge changes:     {}", diff.edge_diffs.len())?;
+        writeln!(
+            w,
+            "Metadata changed: {}",
+            if diff.metadata_changed.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        )
     }
 
     fn write_ecosystem_breakdown<W: Write>(
@@ -762,7 +853,16 @@ impl SummaryFormatter for MarkdownRenderer {
         writeln!(w, "| Added | {} |", diff.added.len())?;
         writeln!(w, "| Removed | {} |", diff.removed.len())?;
         writeln!(w, "| Changed | {} |", diff.changed.len())?;
-        writeln!(w, "| Edge changes | {} |", diff.edge_diffs.len())
+        writeln!(w, "| Edge changes | {} |", diff.edge_diffs.len())?;
+        writeln!(
+            w,
+            "| Metadata changed | {} |",
+            if diff.metadata_changed.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        )
     }
 
     fn write_ecosystem_breakdown<W: Write>(
@@ -813,7 +913,13 @@ impl SummaryRenderer for JsonRenderer {
             "removed": diff.removed.len(),
             "changed": diff.changed.len(),
             "edge_changes": diff.edge_diffs.len(),
+            "metadata_changed": diff.metadata_changed.is_some(),
         });
+
+        if let Some(mc) = &diff.metadata_changed {
+            summary["metadata_changes"] =
+                serde_json::to_value(mc).expect("serializable metadata change");
+        }
 
         if opts.has_warnings() {
             summary["warnings"] = serde_json::json!({
@@ -1413,5 +1519,183 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert!(val.get("component_names").is_none());
+    }
+
+    fn mock_diff_with_metadata_change() -> Diff {
+        Diff {
+            metadata_changed: Some(crate::MetadataChange {
+                timestamp: Some((Some("2024-01-01".into()), Some("2024-01-02".into()))),
+                tools: Some((vec!["syft".into()], vec!["trivy".into()])),
+                authors: None,
+            }),
+            ..Diff::default()
+        }
+    }
+
+    #[test]
+    fn test_text_renderer_metadata_change() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("[~] Metadata Changes"));
+        assert!(out.contains("Timestamp: 2024-01-01 -> 2024-01-02"));
+        assert!(out.contains("Tools: syft -> trivy"));
+        // Authors not changed, should not appear
+        assert!(!out.contains("Authors:"));
+    }
+
+    #[test]
+    fn test_text_renderer_no_metadata_section_when_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("Metadata Changes"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_metadata_change() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("<details><summary><b>Metadata Changes</b></summary>"));
+        assert!(out.contains("**Timestamp**"));
+        assert!(out.contains("`2024-01-01` &rarr; `2024-01-02`"));
+        assert!(out.contains("**Tools**"));
+        assert!(out.contains("`syft` &rarr; `trivy`"));
+        assert!(!out.contains("**Authors**"));
+        assert!(out.contains("</details>"));
+    }
+
+    #[test]
+    fn test_markdown_renderer_no_metadata_section_when_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("Metadata Changes"));
+    }
+
+    #[test]
+    fn test_json_renderer_metadata_change() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        let mc = &val["metadata_changed"];
+        assert!(mc.is_object());
+        let ts = mc["timestamp"].as_array().unwrap();
+        assert_eq!(ts[0], "2024-01-01");
+        assert_eq!(ts[1], "2024-01-02");
+        let tools = mc["tools"].as_array().unwrap();
+        assert_eq!(tools[0], serde_json::json!(["syft"]));
+        assert_eq!(tools[1], serde_json::json!(["trivy"]));
+        // authors should be absent (skip_serializing_if)
+        assert!(mc.get("authors").is_none());
+    }
+
+    #[test]
+    fn test_json_renderer_no_metadata_when_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert!(val.get("metadata_changed").is_none());
+    }
+
+    #[test]
+    fn test_text_summary_metadata_changed() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Metadata changed: yes"));
+    }
+
+    #[test]
+    fn test_text_summary_metadata_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        TextRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Metadata changed: no"));
+    }
+
+    #[test]
+    fn test_markdown_summary_metadata_changed() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("| Metadata changed | yes |"));
+    }
+
+    #[test]
+    fn test_markdown_summary_metadata_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        MarkdownRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("| Metadata changed | no |"));
+    }
+
+    #[test]
+    fn test_json_summary_metadata_changed() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["metadata_changed"], true);
+        let mc = &val["metadata_changes"];
+        assert!(mc.is_object());
+        assert!(mc["timestamp"].is_array());
+    }
+
+    #[test]
+    fn test_json_summary_metadata_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        JsonRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+        assert_eq!(val["metadata_changed"], false);
+        assert!(val.get("metadata_changes").is_none());
     }
 }

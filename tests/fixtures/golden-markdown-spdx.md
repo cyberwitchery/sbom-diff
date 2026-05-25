@@ -41,5 +41,5 @@
 
 <details><summary><b>Metadata Changes</b></summary>
 
-- **Timestamp**: `2023-01-01T00:00:00Z` &rarr; `2023-01-02T00:00:00Z`
+- **Timestamp**: `2023-01-01 00:00:00 UTC` &rarr; `2023-01-02 00:00:00 UTC`
 </details>

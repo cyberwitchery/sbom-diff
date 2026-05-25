@@ -150,7 +150,7 @@ fn spdx_text_renderer_golden_output_matches_fixture() {
         .expect("text renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
-    let expected = fs::read_to_string(fixture_path("golden-text.txt"))
+    let expected = fs::read_to_string(fixture_path("golden-text-spdx.txt"))
         .expect("golden text snapshot should exist");
 
     assert_eq!(actual, expected);
@@ -169,7 +169,7 @@ fn spdx_markdown_renderer_golden_output_matches_fixture() {
         .expect("markdown renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
-    let expected = fs::read_to_string(fixture_path("golden-markdown.md"))
+    let expected = fs::read_to_string(fixture_path("golden-markdown-spdx.md"))
         .expect("golden markdown snapshot should exist");
 
     assert_eq!(actual, expected);
@@ -267,7 +267,7 @@ fn spdx_tv_text_renderer_golden_output_matches_fixture() {
         .expect("text renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
-    let expected = fs::read_to_string(fixture_path("golden-text.txt"))
+    let expected = fs::read_to_string(fixture_path("golden-text-spdx.txt"))
         .expect("golden text snapshot should exist");
 
     assert_eq!(actual, expected);
@@ -286,7 +286,7 @@ fn spdx_tv_markdown_renderer_golden_output_matches_fixture() {
         .expect("markdown renderer should succeed");
 
     let actual = String::from_utf8(out).expect("renderer should emit utf-8");
-    let expected = fs::read_to_string(fixture_path("golden-markdown.md"))
+    let expected = fs::read_to_string(fixture_path("golden-markdown-spdx.md"))
         .expect("golden markdown snapshot should exist");
 
     assert_eq!(actual, expected);
