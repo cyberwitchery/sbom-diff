@@ -79,6 +79,30 @@ fn fail_on_deps_exits_3() {
 }
 
 #[test]
+fn fail_on_deps_kind_changed_reports_error() {
+    let out = sbom_diff()
+        .arg(fixture("kind-change-old.spdx.json"))
+        .arg(fixture("kind-change-new.spdx.json"))
+        .arg("--fail-on")
+        .arg("deps")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("changed kind"),
+        "stderr should mention a kind change, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("dev -> runtime"),
+        "stderr should report old and new kind, got: {}",
+        stderr
+    );
+}
+
+#[test]
 fn fail_on_missing_hashes_exits_3() {
     let out = sbom_diff()
         .arg(fixture("missing-hashes-old.json"))

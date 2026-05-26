@@ -299,6 +299,12 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                                 edge.parent, removed
                             );
                         }
+                        for (child, (old_kind, new_kind)) in &edge.kind_changed {
+                            eprintln!(
+                                "error: dependency edge {} -> {} changed kind: {} -> {} (--fail-on deps)",
+                                edge.parent, child, old_kind, new_kind
+                            );
+                        }
                     }
                     violation = true;
                 }
