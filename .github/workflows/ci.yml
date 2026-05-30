@@ -32,7 +32,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-key-prefix: kache-clippy
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
@@ -41,7 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-key-prefix: kache-test
       - name: all features
         run: cargo test --workspace --all-features
       - name: no features
@@ -53,7 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-key-prefix: kache-doc
       - run: cargo doc --workspace --all-features --no-deps
 
   deny:
@@ -74,7 +80,9 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-key-prefix: kache-coverage
       - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info --fail-under-lines 80
 
   sbom-diff:
@@ -85,7 +93,9 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          cache-key-prefix: kache-sbom-diff
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-cyclonedx,sbom-diff
