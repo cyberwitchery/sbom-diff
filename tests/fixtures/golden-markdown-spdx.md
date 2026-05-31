@@ -8,6 +8,8 @@
 | Added | 1 |
 | Removed | 1 |
 | Changed | 2 |
+| Edge changes | 1 |
+| Metadata changed | yes |
 
 <details><summary><b>Added (1)</b></summary>
 

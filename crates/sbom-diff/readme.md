@@ -61,7 +61,9 @@ fn compare(old: &Sbom, new: &Sbom) -> Diff {
         for field in &change.changes {
             match field {
                 FieldChange::Version(old, new) => {
-                    println!("  version: {} -> {}", old, new);
+                    println!("  version: {} -> {}",
+                        old.as_deref().unwrap_or("<none>"),
+                        new.as_deref().unwrap_or("<none>"));
                 }
                 FieldChange::License(old, new) => {
                     println!("  license: {:?} -> {:?}", old, new);

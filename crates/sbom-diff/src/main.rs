@@ -741,7 +741,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![
-                    FieldChange::Version("1.0".into(), "1.1".into()),
+                    FieldChange::Version(Some("1.0".into()), Some("1.1".into())),
                     FieldChange::Hashes(old.hashes.clone(), BTreeMap::new()),
                 ],
             }],
@@ -767,7 +767,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![
-                    FieldChange::Version("1.0".into(), "1.1".into()),
+                    FieldChange::Version(Some("1.0".into()), Some("1.1".into())),
                     FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()),
                 ],
             }],
@@ -790,7 +790,7 @@ mod tests {
                 id: old.id.clone(),
                 old: old.clone(),
                 new: new.clone(),
-                changes: vec![FieldChange::Version("1.0".into(), "1.1".into())],
+                changes: vec![FieldChange::Version(Some("1.0".into()), Some("1.1".into()))],
             }],
             ..Diff::default()
         };
@@ -871,7 +871,7 @@ mod tests {
             id: old.id.clone(),
             old: old.clone(),
             new,
-            changes: vec![FieldChange::Version("1.0".into(), "2.0".into())],
+            changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
         });
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
     }
@@ -1249,7 +1249,7 @@ mod tests {
                 id: old.id.clone(),
                 old,
                 new,
-                changes: vec![FieldChange::Version("1.0".into(), "2.0".into())],
+                changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
             }],
             ..Diff::default()
         };

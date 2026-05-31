@@ -117,7 +117,7 @@ fn write_field_changes<F: FieldChangeFormatter, W: Write>(
     for change in changes {
         match change {
             FieldChange::Version(old, new) => {
-                fmt.field_change(writer, "Version", old, new)?;
+                fmt.field_change(writer, "Version", format_option(old), format_option(new))?;
             }
             FieldChange::License(old, new) => {
                 fmt.field_change(writer, "License", &format_set(old), &format_set(new))?;
@@ -242,12 +242,22 @@ impl Renderer for TextRenderer {
 
         writeln!(writer, "Diff Summary")?;
         writeln!(writer, "============")?;
-        writeln!(writer, "Old total:   {} components", diff.old_total)?;
-        writeln!(writer, "New total:   {} components", diff.new_total)?;
-        writeln!(writer, "Unchanged:   {}", diff.unchanged)?;
-        writeln!(writer, "Added:       {}", diff.added.len())?;
-        writeln!(writer, "Removed:     {}", diff.removed.len())?;
-        writeln!(writer, "Changed:     {}", diff.changed.len())?;
+        writeln!(writer, "Old total:        {} components", diff.old_total)?;
+        writeln!(writer, "New total:        {} components", diff.new_total)?;
+        writeln!(writer, "Unchanged:        {}", diff.unchanged)?;
+        writeln!(writer, "Added:            {}", diff.added.len())?;
+        writeln!(writer, "Removed:          {}", diff.removed.len())?;
+        writeln!(writer, "Changed:          {}", diff.changed.len())?;
+        writeln!(writer, "Edge changes:     {}", diff.edge_diffs.len())?;
+        writeln!(
+            writer,
+            "Metadata changed: {}",
+            if diff.metadata_changed.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        )?;
         writeln!(writer)?;
 
         if opts.group_by_ecosystem {
@@ -476,6 +486,16 @@ impl Renderer for MarkdownRenderer {
         writeln!(writer, "| Added | {} |", diff.added.len())?;
         writeln!(writer, "| Removed | {} |", diff.removed.len())?;
         writeln!(writer, "| Changed | {} |", diff.changed.len())?;
+        writeln!(writer, "| Edge changes | {} |", diff.edge_diffs.len())?;
+        writeln!(
+            writer,
+            "| Metadata changed | {} |",
+            if diff.metadata_changed.is_some() {
+                "yes"
+            } else {
+                "no"
+            }
+        )?;
         writeln!(writer)?;
 
         if opts.group_by_ecosystem {
@@ -917,8 +937,7 @@ impl SummaryRenderer for JsonRenderer {
         });
 
         if let Some(mc) = &diff.metadata_changed {
-            summary["metadata_changes"] =
-                serde_json::to_value(mc).expect("serializable metadata change");
+            summary["metadata_changes"] = serde_json::to_value(mc)?;
         }
 
         if opts.has_warnings() {
@@ -931,8 +950,7 @@ impl SummaryRenderer for JsonRenderer {
         if opts.group_by_ecosystem {
             let breakdown = diff.ecosystem_breakdown();
             if !breakdown.is_empty() {
-                summary["ecosystem_breakdown"] =
-                    serde_json::to_value(&breakdown).expect("serializable breakdown");
+                summary["ecosystem_breakdown"] = serde_json::to_value(&breakdown)?;
             }
         }
 
@@ -960,7 +978,7 @@ mod tests {
                 id: c2.id.clone(),
                 old: c1,
                 new: c2,
-                changes: vec![FieldChange::Version("1.0".into(), "1.1".into())],
+                changes: vec![FieldChange::Version(Some("1.0".into()), Some("1.1".into()))],
             }],
             edge_diffs: vec![],
             ..Diff::default()
@@ -982,7 +1000,7 @@ mod tests {
                 old: c1,
                 new: c2,
                 changes: vec![
-                    FieldChange::Version("1.0".into(), "1.1".into()),
+                    FieldChange::Version(Some("1.0".into()), Some("1.1".into())),
                     FieldChange::License(
                         BTreeSet::from(["MIT".into()]),
                         BTreeSet::from(["Apache-2.0".into()]),
@@ -1078,12 +1096,14 @@ mod tests {
             .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(out.contains("Old total:   0 components"));
-        assert!(out.contains("New total:   0 components"));
-        assert!(out.contains("Unchanged:   0"));
-        assert!(out.contains("Added:       0"));
-        assert!(out.contains("Removed:     0"));
-        assert!(out.contains("Changed:     0"));
+        assert!(out.contains("Old total:        0 components"));
+        assert!(out.contains("New total:        0 components"));
+        assert!(out.contains("Unchanged:        0"));
+        assert!(out.contains("Added:            0"));
+        assert!(out.contains("Removed:          0"));
+        assert!(out.contains("Changed:          0"));
+        assert!(out.contains("Edge changes:     0"));
+        assert!(out.contains("Metadata changed: no"));
         assert!(!out.contains("[+] Added"));
         assert!(!out.contains("[-] Removed"));
         assert!(!out.contains("[~] Changed"));
@@ -1195,7 +1215,10 @@ mod tests {
                 id: new.id.clone(),
                 old,
                 new,
-                changes: vec![FieldChange::Version("17.0.0".into(), "18.0.0".into())],
+                changes: vec![FieldChange::Version(
+                    Some("17.0.0".into()),
+                    Some("18.0.0".into()),
+                )],
             }],
             edge_diffs: vec![],
             ..Diff::default()
@@ -1443,9 +1466,9 @@ mod tests {
             .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
-        assert!(out.contains("Old total:   10 components"));
-        assert!(out.contains("New total:   12 components"));
-        assert!(out.contains("Unchanged:   5"));
+        assert!(out.contains("Old total:        10 components"));
+        assert!(out.contains("New total:        12 components"));
+        assert!(out.contains("Unchanged:        5"));
     }
 
     #[test]

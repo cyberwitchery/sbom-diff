@@ -1,11 +1,13 @@
 Diff Summary
 ============
-Old total:   5 components
-New total:   5 components
-Unchanged:   2
-Added:       1
-Removed:     1
-Changed:     2
+Old total:        5 components
+New total:        5 components
+Unchanged:        2
+Added:            1
+Removed:          1
+Changed:          2
+Edge changes:     1
+Metadata changed: yes
 
 [+] Added
 ---------
