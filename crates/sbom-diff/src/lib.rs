@@ -242,7 +242,7 @@ pub struct EdgeDiff {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FieldChange {
     /// Version changed: (old, new).
-    Version(String, String),
+    Version(Option<String>, Option<String>),
     /// Licenses changed: (old, new).
     License(BTreeSet<String>, BTreeSet<String>),
     /// Supplier changed: (old, new).
@@ -626,8 +626,8 @@ impl Differ {
 
         if should_include(Field::Version) && old.version != new.version {
             changes.push(FieldChange::Version(
-                old.version.clone().unwrap_or_default(),
-                new.version.clone().unwrap_or_default(),
+                old.version.clone(),
+                new.version.clone(),
             ));
         }
 
