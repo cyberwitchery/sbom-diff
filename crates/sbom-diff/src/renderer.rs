@@ -854,11 +854,25 @@ struct SarifResultEntry {
     rule_index: usize,
     level: &'static str,
     message: SarifTextMessage,
+    locations: Vec<SarifLocation>,
 }
 
 #[derive(Serialize)]
 struct SarifTextMessage {
     text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SarifLocation {
+    logical_locations: Vec<SarifLogicalLocation>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SarifLogicalLocation {
+    fully_qualified_name: String,
+    kind: &'static str,
 }
 
 /// SARIF 2.1.0 renderer for GitHub Code Scanning integration.
@@ -883,6 +897,15 @@ impl SarifRenderer {
 
     fn component_display(comp: &Component) -> &str {
         comp.purl.as_deref().unwrap_or(comp.id.as_str())
+    }
+
+    fn component_location(comp: &Component) -> Vec<SarifLocation> {
+        vec![SarifLocation {
+            logical_locations: vec![SarifLogicalLocation {
+                fully_qualified_name: Self::component_display(comp).to_string(),
+                kind: "package",
+            }],
+        }]
     }
 
     fn format_field_change(fc: &FieldChange) -> String {
@@ -928,6 +951,7 @@ impl SarifRenderer {
                 message: SarifTextMessage {
                     text: format!("Component added: {}", Self::component_display(comp)),
                 },
+                locations: Self::component_location(comp),
             });
         }
 
@@ -939,11 +963,12 @@ impl SarifRenderer {
                 message: SarifTextMessage {
                     text: format!("Component removed: {}", Self::component_display(comp)),
                 },
+                locations: Self::component_location(comp),
             });
         }
 
         for change in &diff.changed {
-            let display = change.new.purl.as_deref().unwrap_or(change.id.as_str());
+            let display = Self::component_display(&change.new);
             let field_changes: Vec<String> = change
                 .changes
                 .iter()
@@ -961,6 +986,7 @@ impl SarifRenderer {
                         field_changes.join("; "),
                     ),
                 },
+                locations: Self::component_location(&change.new),
             });
         }
 
@@ -1002,6 +1028,12 @@ impl SarifRenderer {
                     message: SarifTextMessage {
                         text: format!("Dependency changed: {}", parts.join("; ")),
                     },
+                    locations: vec![SarifLocation {
+                        logical_locations: vec![SarifLogicalLocation {
+                            fully_qualified_name: parent.to_string(),
+                            kind: "package",
+                        }],
+                    }],
                 });
             }
         }
@@ -1030,14 +1062,22 @@ impl SarifRenderer {
                 ));
             }
 
-            results.push(SarifResultEntry {
-                rule_id: SARIF_RULES[RULE_METADATA_CHANGED].id,
-                rule_index: RULE_METADATA_CHANGED,
-                level: SARIF_RULES[RULE_METADATA_CHANGED].level,
-                message: SarifTextMessage {
-                    text: format!("Metadata changed: {}", parts.join("; ")),
-                },
-            });
+            if !parts.is_empty() {
+                results.push(SarifResultEntry {
+                    rule_id: SARIF_RULES[RULE_METADATA_CHANGED].id,
+                    rule_index: RULE_METADATA_CHANGED,
+                    level: SARIF_RULES[RULE_METADATA_CHANGED].level,
+                    message: SarifTextMessage {
+                        text: format!("Metadata changed: {}", parts.join("; ")),
+                    },
+                    locations: vec![SarifLocation {
+                        logical_locations: vec![SarifLogicalLocation {
+                            fully_qualified_name: "metadata".to_string(),
+                            kind: "module",
+                        }],
+                    }],
+                });
+            }
         }
 
         results
