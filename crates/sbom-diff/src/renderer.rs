@@ -2358,4 +2358,97 @@ mod tests {
         assert!(msg.contains("old-dep@0.1"));
         assert!(msg.contains("new-dep@0.2"));
     }
+
+    #[test]
+    fn test_sarif_renderer_locations_present_and_well_formed() {
+        // Component results: added, removed, changed all get "package" locations
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+        let results = val["runs"][0]["results"].as_array().unwrap();
+
+        for rule_id in ["component-added", "component-removed", "component-changed"] {
+            let result = results
+                .iter()
+                .find(|r| r["ruleId"] == rule_id)
+                .unwrap_or_else(|| panic!("missing result for {rule_id}"));
+            let locs = result["locations"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{rule_id}: locations missing"));
+            assert_eq!(locs.len(), 1, "{rule_id}: expected 1 location");
+            let ll = locs[0]["logicalLocations"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{rule_id}: logicalLocations missing"));
+            assert_eq!(ll.len(), 1, "{rule_id}: expected 1 logicalLocation");
+            assert!(
+                ll[0]["fullyQualifiedName"].as_str().unwrap().len() > 0,
+                "{rule_id}: fullyQualifiedName should be non-empty"
+            );
+            assert_eq!(ll[0]["kind"], "package", "{rule_id}: kind should be package");
+        }
+
+        // Dependency result: uses parent display name
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+        let results = val["runs"][0]["results"].as_array().unwrap();
+
+        let dep = results
+            .iter()
+            .find(|r| r["ruleId"] == "dependency-changed")
+            .unwrap();
+        let locs = dep["locations"].as_array().unwrap();
+        assert_eq!(locs.len(), 1);
+        let ll = locs[0]["logicalLocations"].as_array().unwrap();
+        assert_eq!(ll[0]["fullyQualifiedName"], "my-app@1.0");
+        assert_eq!(ll[0]["kind"], "package");
+
+        // Metadata result: uses "metadata" with kind "module"
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+        let results = val["runs"][0]["results"].as_array().unwrap();
+
+        let meta = results
+            .iter()
+            .find(|r| r["ruleId"] == "metadata-changed")
+            .unwrap();
+        let locs = meta["locations"].as_array().unwrap();
+        assert_eq!(locs.len(), 1);
+        let ll = locs[0]["logicalLocations"].as_array().unwrap();
+        assert_eq!(ll[0]["fullyQualifiedName"], "metadata");
+        assert_eq!(ll[0]["kind"], "module");
+    }
+
+    #[test]
+    fn test_sarif_renderer_no_metadata_when_all_none_subfields() {
+        let diff = Diff {
+            metadata_changed: Some(crate::MetadataChange {
+                timestamp: None,
+                tools: None,
+                authors: None,
+            }),
+            ..Diff::default()
+        };
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        assert!(
+            !results.iter().any(|r| r["ruleId"] == "metadata-changed"),
+            "MetadataChange with all-None subfields should not emit a result"
+        );
+    }
 }
