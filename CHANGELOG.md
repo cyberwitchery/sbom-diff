@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add `--output sarif` (SARIF 2.1.0) output format for GitHub Code Scanning and Azure DevOps integration: maps component additions, removals, and field-level changes to SARIF results with five rules (`component-added`, `component-removed`, `component-changed`, `dependency-changed`, `metadata-changed`); no new dependencies — SARIF JSON is built with the existing `serde`/`serde_json` types
 - replace `metadata_changed: bool` with structured `MetadataChange` tracking that records exactly which metadata fields differ (timestamp, tools, authors) with old/new values; rendered as a new `[~] Metadata Changes` section in text output, a collapsible `<details>` block in markdown, and a structured `metadata_changed` object in JSON; summaries show a `Metadata changed: yes/no` line; add `--fail-on metadata-changed` CI gate that fails when any document metadata differs, reporting which specific fields changed
 - fix `--fail-on deps` not reporting `kind_changed` edges in error messages: when a dependency changed kind (e.g. dev→runtime), the violation exit code fired but no error message explained which edges changed; now prints `error: dependency edge ... changed kind: dev -> runtime (--fail-on deps)` for each affected edge
 - fix `FieldChange::Version` collapsing absent versions to empty strings: version now uses `Option<String>` to preserve the distinction between a version being absent (`None`) and being empty, so a component going from no version to `1.0` renders as `<none> -> 1.0` instead of ` -> 1.0`

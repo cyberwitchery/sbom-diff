@@ -5,6 +5,7 @@
 //! - [`TextRenderer`] - Plain text for terminal output
 //! - [`MarkdownRenderer`] - GitHub-flavored markdown for PR comments
 //! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
+//! - [`SarifRenderer`] - SARIF 2.1.0 for GitHub Code Scanning / Azure DevOps
 
 use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange, GroupedDiff, MetadataChange};
 use sbom_model::{Component, DependencyKind};
@@ -743,6 +744,341 @@ impl Renderer for JsonRenderer {
             serde_json::to_writer_pretty(writer, &output)?;
         }
         Ok(())
+    }
+}
+
+// --- SARIF 2.1.0 output ---
+
+const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
+const SARIF_VERSION: &str = "2.1.0";
+
+// Rule indices (must match order in SARIF_RULES)
+const RULE_COMPONENT_ADDED: usize = 0;
+const RULE_COMPONENT_REMOVED: usize = 1;
+const RULE_COMPONENT_CHANGED: usize = 2;
+const RULE_DEPENDENCY_CHANGED: usize = 3;
+const RULE_METADATA_CHANGED: usize = 4;
+
+#[derive(Clone, Copy)]
+struct RuleInfo {
+    id: &'static str,
+    short_desc: &'static str,
+    full_desc: &'static str,
+    level: &'static str,
+}
+
+const SARIF_RULES: &[RuleInfo] = &[
+    RuleInfo {
+        id: "component-added",
+        short_desc: "Component added",
+        full_desc: "A new component was added to the SBOM",
+        level: "note",
+    },
+    RuleInfo {
+        id: "component-removed",
+        short_desc: "Component removed",
+        full_desc: "A component was removed from the SBOM",
+        level: "warning",
+    },
+    RuleInfo {
+        id: "component-changed",
+        short_desc: "Component changed",
+        full_desc: "A component's metadata changed between SBOMs",
+        level: "warning",
+    },
+    RuleInfo {
+        id: "dependency-changed",
+        short_desc: "Dependency changed",
+        full_desc: "A dependency edge was added, removed, or changed kind",
+        level: "note",
+    },
+    RuleInfo {
+        id: "metadata-changed",
+        short_desc: "Metadata changed",
+        full_desc: "Document metadata (timestamp, tools, or authors) changed between SBOMs",
+        level: "note",
+    },
+];
+
+#[derive(Serialize)]
+struct SarifLog {
+    #[serde(rename = "$schema")]
+    schema: &'static str,
+    version: &'static str,
+    runs: Vec<SarifRun>,
+}
+
+#[derive(Serialize)]
+struct SarifRun {
+    tool: SarifTool,
+    results: Vec<SarifResultEntry>,
+}
+
+#[derive(Serialize)]
+struct SarifTool {
+    driver: SarifDriverInfo,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SarifDriverInfo {
+    name: &'static str,
+    version: &'static str,
+    information_uri: &'static str,
+    rules: Vec<SarifRuleDescriptor>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SarifRuleDescriptor {
+    id: &'static str,
+    short_description: SarifMultiformatMessage,
+    full_description: SarifMultiformatMessage,
+    default_configuration: SarifDefaultConfiguration,
+}
+
+#[derive(Serialize)]
+struct SarifDefaultConfiguration {
+    level: &'static str,
+}
+
+#[derive(Serialize)]
+struct SarifMultiformatMessage {
+    text: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SarifResultEntry {
+    rule_id: &'static str,
+    rule_index: usize,
+    level: &'static str,
+    message: SarifTextMessage,
+}
+
+#[derive(Serialize)]
+struct SarifTextMessage {
+    text: String,
+}
+
+/// SARIF 2.1.0 renderer for GitHub Code Scanning integration.
+///
+/// Produces a SARIF log with one run containing rules for each change type
+/// (component added/removed/changed, dependency changed, metadata changed)
+/// and a result entry per finding.
+pub struct SarifRenderer;
+
+impl SarifRenderer {
+    fn build_rules() -> Vec<SarifRuleDescriptor> {
+        SARIF_RULES
+            .iter()
+            .map(|r| SarifRuleDescriptor {
+                id: r.id,
+                short_description: SarifMultiformatMessage { text: r.short_desc },
+                full_description: SarifMultiformatMessage { text: r.full_desc },
+                default_configuration: SarifDefaultConfiguration { level: r.level },
+            })
+            .collect()
+    }
+
+    fn component_display(comp: &Component) -> &str {
+        comp.purl.as_deref().unwrap_or(comp.id.as_str())
+    }
+
+    fn format_field_change(fc: &FieldChange) -> String {
+        match fc {
+            FieldChange::Version(old, new) => {
+                format!("version: {} -> {}", format_option(old), format_option(new))
+            }
+            FieldChange::License(old, new) => {
+                format!("license: {} -> {}", format_set(old), format_set(new))
+            }
+            FieldChange::Supplier(old, new) => {
+                format!("supplier: {} -> {}", format_option(old), format_option(new))
+            }
+            FieldChange::Purl(old, new) => {
+                format!("purl: {} -> {}", format_option(old), format_option(new))
+            }
+            FieldChange::Description(old, new) => {
+                format!(
+                    "description: {} -> {}",
+                    format_option(old),
+                    format_option(new)
+                )
+            }
+            FieldChange::Hashes(_, _) => "hashes changed".to_string(),
+            FieldChange::Ecosystem(old, new) => {
+                format!(
+                    "ecosystem: {} -> {}",
+                    format_option(old),
+                    format_option(new)
+                )
+            }
+        }
+    }
+
+    fn build_results(diff: &Diff) -> Vec<SarifResultEntry> {
+        let mut results = Vec::new();
+
+        for comp in &diff.added {
+            results.push(SarifResultEntry {
+                rule_id: SARIF_RULES[RULE_COMPONENT_ADDED].id,
+                rule_index: RULE_COMPONENT_ADDED,
+                level: SARIF_RULES[RULE_COMPONENT_ADDED].level,
+                message: SarifTextMessage {
+                    text: format!("Component added: {}", Self::component_display(comp)),
+                },
+            });
+        }
+
+        for comp in &diff.removed {
+            results.push(SarifResultEntry {
+                rule_id: SARIF_RULES[RULE_COMPONENT_REMOVED].id,
+                rule_index: RULE_COMPONENT_REMOVED,
+                level: SARIF_RULES[RULE_COMPONENT_REMOVED].level,
+                message: SarifTextMessage {
+                    text: format!("Component removed: {}", Self::component_display(comp)),
+                },
+            });
+        }
+
+        for change in &diff.changed {
+            let display = change.new.purl.as_deref().unwrap_or(change.id.as_str());
+            let field_changes: Vec<String> = change
+                .changes
+                .iter()
+                .map(Self::format_field_change)
+                .collect();
+
+            results.push(SarifResultEntry {
+                rule_id: SARIF_RULES[RULE_COMPONENT_CHANGED].id,
+                rule_index: RULE_COMPONENT_CHANGED,
+                level: SARIF_RULES[RULE_COMPONENT_CHANGED].level,
+                message: SarifTextMessage {
+                    text: format!(
+                        "Component changed: {} ({})",
+                        display,
+                        field_changes.join("; "),
+                    ),
+                },
+            });
+        }
+
+        for edge in &diff.edge_diffs {
+            let parent = diff.display_name(&edge.parent);
+            let mut parts = Vec::new();
+
+            for (child, kind) in &edge.added {
+                parts.push(format!(
+                    "added {} -> {}{}",
+                    parent,
+                    diff.display_name(child),
+                    kind_suffix(kind)
+                ));
+            }
+            for (child, kind) in &edge.removed {
+                parts.push(format!(
+                    "removed {} -> {}{}",
+                    parent,
+                    diff.display_name(child),
+                    kind_suffix(kind)
+                ));
+            }
+            for (child, (old_kind, new_kind)) in &edge.kind_changed {
+                parts.push(format!(
+                    "{} -> {} kind: {} -> {}",
+                    parent,
+                    diff.display_name(child),
+                    old_kind,
+                    new_kind
+                ));
+            }
+
+            if !parts.is_empty() {
+                results.push(SarifResultEntry {
+                    rule_id: SARIF_RULES[RULE_DEPENDENCY_CHANGED].id,
+                    rule_index: RULE_DEPENDENCY_CHANGED,
+                    level: SARIF_RULES[RULE_DEPENDENCY_CHANGED].level,
+                    message: SarifTextMessage {
+                        text: format!("Dependency changed: {}", parts.join("; ")),
+                    },
+                });
+            }
+        }
+
+        if let Some(mc) = &diff.metadata_changed {
+            let mut parts = Vec::new();
+            if let Some((ref old, ref new)) = mc.timestamp {
+                parts.push(format!(
+                    "timestamp: {} -> {}",
+                    old.as_deref().unwrap_or("<none>"),
+                    new.as_deref().unwrap_or("<none>")
+                ));
+            }
+            if let Some((ref old, ref new)) = mc.tools {
+                parts.push(format!(
+                    "tools: {} -> {}",
+                    format_vec_or_none(old),
+                    format_vec_or_none(new)
+                ));
+            }
+            if let Some((ref old, ref new)) = mc.authors {
+                parts.push(format!(
+                    "authors: {} -> {}",
+                    format_vec_or_none(old),
+                    format_vec_or_none(new)
+                ));
+            }
+
+            results.push(SarifResultEntry {
+                rule_id: SARIF_RULES[RULE_METADATA_CHANGED].id,
+                rule_index: RULE_METADATA_CHANGED,
+                level: SARIF_RULES[RULE_METADATA_CHANGED].level,
+                message: SarifTextMessage {
+                    text: format!("Metadata changed: {}", parts.join("; ")),
+                },
+            });
+        }
+
+        results
+    }
+}
+
+impl Renderer for SarifRenderer {
+    fn render<W: Write>(
+        &self,
+        diff: &Diff,
+        _opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        let log = SarifLog {
+            schema: SARIF_SCHEMA,
+            version: SARIF_VERSION,
+            runs: vec![SarifRun {
+                tool: SarifTool {
+                    driver: SarifDriverInfo {
+                        name: "sbom-diff",
+                        version: env!("CARGO_PKG_VERSION"),
+                        information_uri: "https://github.com/cyberwitchery/sbom-diff",
+                        rules: Self::build_rules(),
+                    },
+                },
+                results: Self::build_results(diff),
+            }],
+        };
+        serde_json::to_writer_pretty(writer, &log)?;
+        Ok(())
+    }
+}
+
+impl SummaryRenderer for SarifRenderer {
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        self.render(diff, opts, writer)
     }
 }
 
@@ -1720,5 +2056,266 @@ mod tests {
 
         assert_eq!(val["metadata_changed"], false);
         assert!(val.get("metadata_changes").is_none());
+    }
+
+    // --- SARIF renderer tests ---
+
+    fn sarif_parse(buf: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(buf).unwrap()
+    }
+
+    #[test]
+    fn test_sarif_renderer_schema_and_version() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        assert_eq!(
+            val["$schema"],
+            "https://json.schemastore.org/sarif-2.1.0.json"
+        );
+        assert_eq!(val["version"], "2.1.0");
+        assert!(val["runs"].is_array());
+        assert_eq!(val["runs"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_sarif_renderer_tool_driver() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let driver = &val["runs"][0]["tool"]["driver"];
+        assert_eq!(driver["name"], "sbom-diff");
+        assert!(driver["version"].is_string());
+        assert_eq!(
+            driver["informationUri"],
+            "https://github.com/cyberwitchery/sbom-diff"
+        );
+    }
+
+    #[test]
+    fn test_sarif_renderer_rules() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let rules = val["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rules.len(), 5);
+
+        let rule_ids: Vec<&str> = rules.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert_eq!(
+            rule_ids,
+            vec![
+                "component-added",
+                "component-removed",
+                "component-changed",
+                "dependency-changed",
+                "metadata-changed",
+            ]
+        );
+
+        // Check that each rule has required fields
+        for rule in rules {
+            assert!(rule["shortDescription"]["text"].is_string());
+            assert!(rule["fullDescription"]["text"].is_string());
+            assert!(rule["defaultConfiguration"]["level"].is_string());
+        }
+    }
+
+    #[test]
+    fn test_sarif_renderer_empty_diff() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_sarif_renderer_added_removed_changed() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3); // 1 added + 1 removed + 1 changed
+
+        // Check rule IDs
+        let rule_ids: Vec<&str> = results
+            .iter()
+            .map(|r| r["ruleId"].as_str().unwrap())
+            .collect();
+        assert!(rule_ids.contains(&"component-added"));
+        assert!(rule_ids.contains(&"component-removed"));
+        assert!(rule_ids.contains(&"component-changed"));
+
+        // Added component is note level
+        let added = results
+            .iter()
+            .find(|r| r["ruleId"] == "component-added")
+            .unwrap();
+        assert_eq!(added["level"], "note");
+        assert!(added["message"]["text"].as_str().unwrap().contains("added"));
+
+        // Removed component is warning level
+        let removed = results
+            .iter()
+            .find(|r| r["ruleId"] == "component-removed")
+            .unwrap();
+        assert_eq!(removed["level"], "warning");
+
+        // Changed component is warning level
+        let changed = results
+            .iter()
+            .find(|r| r["ruleId"] == "component-changed")
+            .unwrap();
+        assert_eq!(changed["level"], "warning");
+        let msg = changed["message"]["text"].as_str().unwrap();
+        assert!(msg.contains("version:"));
+    }
+
+    #[test]
+    fn test_sarif_renderer_all_field_changes() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+
+        // 1 changed component + 1 dependency-changed edge diff
+        let changed = results
+            .iter()
+            .find(|r| r["ruleId"] == "component-changed")
+            .unwrap();
+        let msg = changed["message"]["text"].as_str().unwrap();
+        assert!(msg.contains("version:"));
+        assert!(msg.contains("license:"));
+        assert!(msg.contains("supplier:"));
+        assert!(msg.contains("purl:"));
+        assert!(msg.contains("description:"));
+        assert!(msg.contains("hashes changed"));
+        assert!(msg.contains("ecosystem:"));
+
+        let dep = results
+            .iter()
+            .find(|r| r["ruleId"] == "dependency-changed")
+            .unwrap();
+        assert_eq!(dep["level"], "note");
+        let dep_msg = dep["message"]["text"].as_str().unwrap();
+        assert!(dep_msg.contains("Dependency changed:"));
+    }
+
+    #[test]
+    fn test_sarif_renderer_rule_index() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+
+        // Each result's ruleIndex should match its ruleId position in rules array
+        for result in results {
+            let rule_id = result["ruleId"].as_str().unwrap();
+            let rule_index = result["ruleIndex"].as_u64().unwrap() as usize;
+            let rules = val["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap();
+            assert_eq!(rules[rule_index]["id"].as_str().unwrap(), rule_id);
+        }
+    }
+
+    #[test]
+    fn test_sarif_renderer_metadata_change() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        let meta = results
+            .iter()
+            .find(|r| r["ruleId"] == "metadata-changed")
+            .unwrap();
+        assert_eq!(meta["level"], "note");
+        let msg = meta["message"]["text"].as_str().unwrap();
+        assert!(msg.contains("timestamp:"));
+        assert!(msg.contains("tools:"));
+    }
+
+    #[test]
+    fn test_sarif_renderer_no_metadata_when_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        assert!(!results.iter().any(|r| r["ruleId"] == "metadata-changed"));
+    }
+
+    #[test]
+    fn test_sarif_renderer_summary_same_as_full() {
+        let diff = mock_diff();
+        let opts = RenderOptions::default();
+
+        let mut buf_full = Vec::new();
+        SarifRenderer.render(&diff, &opts, &mut buf_full).unwrap();
+
+        let mut buf_summary = Vec::new();
+        SarifRenderer
+            .render_summary(&diff, &opts, &mut buf_summary)
+            .unwrap();
+
+        assert_eq!(buf_full, buf_summary);
+    }
+
+    #[test]
+    fn test_sarif_renderer_edge_diffs_with_names() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        let dep = results
+            .iter()
+            .find(|r| r["ruleId"] == "dependency-changed")
+            .unwrap();
+        let msg = dep["message"]["text"].as_str().unwrap();
+        // Should use resolved display names, not raw hash IDs
+        assert!(msg.contains("my-app@1.0"));
+        assert!(msg.contains("old-dep@0.1"));
+        assert!(msg.contains("new-dep@0.2"));
     }
 }
