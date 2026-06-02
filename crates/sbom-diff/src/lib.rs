@@ -122,52 +122,61 @@ impl Diff {
     /// Groups the full diff by ecosystem, returning per-ecosystem slices.
     ///
     /// Components without an ecosystem are grouped under `"unknown"`.
+    /// This clones components out of the diff; use
+    /// [`into_group_by_ecosystem`](Self::into_group_by_ecosystem) to move
+    /// them instead when you own the diff.
     pub fn group_by_ecosystem(&self) -> GroupedDiff {
-        let mut ecosystems: BTreeMap<String, EcosystemDiff> = BTreeMap::new();
-
-        for c in &self.added {
-            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
-            ecosystems.entry(eco).or_default().added.push(c.clone());
-        }
-        for c in &self.removed {
-            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
-            ecosystems.entry(eco).or_default().removed.push(c.clone());
-        }
-        for c in &self.changed {
-            let eco = c.new.ecosystem.as_deref().unwrap_or("unknown").to_string();
-            ecosystems.entry(eco).or_default().changed.push(c.clone());
-        }
-
-        GroupedDiff {
-            by_ecosystem: ecosystems,
-            edge_diffs: self.edge_diffs.clone(),
-            metadata_changed: self.metadata_changed.clone(),
-        }
+        group_components_by_ecosystem(
+            self.added.iter().cloned(),
+            self.removed.iter().cloned(),
+            self.changed.iter().cloned(),
+            self.edge_diffs.clone(),
+            self.metadata_changed.clone(),
+        )
     }
 
     /// Consuming variant of [`group_by_ecosystem`](Self::group_by_ecosystem)
     /// that moves components instead of cloning them.
     pub fn into_group_by_ecosystem(self) -> GroupedDiff {
-        let mut ecosystems: BTreeMap<String, EcosystemDiff> = BTreeMap::new();
+        group_components_by_ecosystem(
+            self.added,
+            self.removed,
+            self.changed,
+            self.edge_diffs,
+            self.metadata_changed,
+        )
+    }
+}
 
-        for c in self.added {
-            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
-            ecosystems.entry(eco).or_default().added.push(c);
-        }
-        for c in self.removed {
-            let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
-            ecosystems.entry(eco).or_default().removed.push(c);
-        }
-        for c in self.changed {
-            let eco = c.new.ecosystem.as_deref().unwrap_or("unknown").to_string();
-            ecosystems.entry(eco).or_default().changed.push(c);
-        }
+/// Shared implementation for [`Diff::group_by_ecosystem`] and
+/// [`Diff::into_group_by_ecosystem`]. Accepts owned iterators so both the
+/// cloning and consuming callers can share the same loop logic.
+fn group_components_by_ecosystem(
+    added: impl IntoIterator<Item = Component>,
+    removed: impl IntoIterator<Item = Component>,
+    changed: impl IntoIterator<Item = ComponentChange>,
+    edge_diffs: Vec<EdgeDiff>,
+    metadata_changed: Option<MetadataChange>,
+) -> GroupedDiff {
+    let mut ecosystems: BTreeMap<String, EcosystemDiff> = BTreeMap::new();
 
-        GroupedDiff {
-            by_ecosystem: ecosystems,
-            edge_diffs: self.edge_diffs,
-            metadata_changed: self.metadata_changed,
-        }
+    for c in added {
+        let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
+        ecosystems.entry(eco).or_default().added.push(c);
+    }
+    for c in removed {
+        let eco = c.ecosystem.as_deref().unwrap_or("unknown").to_string();
+        ecosystems.entry(eco).or_default().removed.push(c);
+    }
+    for c in changed {
+        let eco = c.new.ecosystem.as_deref().unwrap_or("unknown").to_string();
+        ecosystems.entry(eco).or_default().changed.push(c);
+    }
+
+    GroupedDiff {
+        by_ecosystem: ecosystems,
+        edge_diffs,
+        metadata_changed,
     }
 }
 
@@ -290,7 +299,9 @@ impl Differ {
     /// Compares two SBOMs and returns the differences.
     ///
     /// Both SBOMs are normalized before comparison to ignore irrelevant differences
-    /// like ordering or metadata timestamps.
+    /// like ordering or metadata timestamps. This method clones both SBOMs
+    /// internally; use [`diff_owned`](Self::diff_owned) to avoid cloning when
+    /// you already own the SBOMs.
     ///
     /// # Arguments
     ///
@@ -314,9 +325,12 @@ impl Differ {
     /// let diff = Differ::diff(&old, &new, Some(&[Field::Version, Field::License]));
     /// ```
     pub fn diff(old: &Sbom, new: &Sbom, only: Option<&[Field]>) -> Diff {
-        let mut old = old.clone();
-        let mut new = new.clone();
+        Self::diff_owned(old.clone(), new.clone(), only)
+    }
 
+    /// Consuming variant of [`diff`](Self::diff) that normalizes in place,
+    /// avoiding two full SBOM clones.
+    pub fn diff_owned(mut old: Sbom, mut new: Sbom, only: Option<&[Field]>) -> Diff {
         // Compare metadata before normalize() strips volatile fields
         let metadata_changed = {
             let mut mc = MetadataChange {

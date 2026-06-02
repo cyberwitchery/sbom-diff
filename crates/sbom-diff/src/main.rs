@@ -122,6 +122,17 @@ fn main() -> anyhow::Result<()> {
         eprintln!("warning: {}", w);
     }
 
+    // Build render options and run license checks before diff_owned consumes
+    // the SBOMs — this avoids cloning both SBOMs inside the differ.
+    let render_opts = RenderOptions {
+        group_by_ecosystem: args.group_by_ecosystem,
+        show_warnings: args.show_warnings,
+        old_warnings: old_sbom.warnings.clone(),
+        new_warnings: new_sbom.warnings.clone(),
+    };
+
+    let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
+
     let only_fields: Vec<sbom_diff::Field> = args
         .only
         .iter()
@@ -137,9 +148,9 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    let diff = Differ::diff(
-        &old_sbom,
-        &new_sbom,
+    let diff = Differ::diff_owned(
+        old_sbom,
+        new_sbom,
         if only_fields.is_empty() {
             None
         } else {
@@ -147,19 +158,11 @@ fn main() -> anyhow::Result<()> {
         },
     );
 
-    let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
     let fail_on_violation = check_fail_on(&diff, &args.fail_on);
 
     if !args.quiet {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
-
-        let render_opts = RenderOptions {
-            group_by_ecosystem: args.group_by_ecosystem,
-            show_warnings: args.show_warnings,
-            old_warnings: old_sbom.warnings.clone(),
-            new_warnings: new_sbom.warnings.clone(),
-        };
 
         if args.summary {
             match args.output {
