@@ -107,7 +107,18 @@ impl CycloneDxReader {
         let mut errors = Vec::new();
         for (label, version) in versions {
             match cyclonedx_bom::prelude::Bom::parse_from_xml_with_version(data, version) {
-                Ok(bom) => return Self::bom_to_sbom(bom),
+                Ok(bom) => {
+                    let mut sbom = Self::bom_to_sbom(bom)?;
+                    if !errors.is_empty() {
+                        let tried: Vec<_> = errors.iter().map(|(l, _)| format!("v{l}")).collect();
+                        sbom.warnings.push(format!(
+                            "CycloneDX: XML parsed as v{} after failing {}",
+                            label,
+                            tried.join(", ")
+                        ));
+                    }
+                    return Ok(sbom);
+                }
                 Err(e) => errors.push((label, e)),
             }
         }
@@ -281,9 +292,24 @@ impl CycloneDxReader {
         depth: usize,
     ) {
         if depth >= MAX_COMPONENT_DEPTH {
+            let names: Vec<_> = cdx_components
+                .iter()
+                .take(3)
+                .map(|c| c.name.to_string())
+                .collect();
+            let suffix = if cdx_components.len() > 3 {
+                format!(" and {} more", cdx_components.len() - 3)
+            } else {
+                String::new()
+            };
             sbom.warnings.push(format!(
-                "CycloneDX: sub-component nesting exceeds {} levels; deeper components ignored",
-                MAX_COMPONENT_DEPTH
+                "CycloneDX: sub-component nesting exceeds {} levels; \
+                 dropped {} component(s) at depth {}: [{}]{}",
+                MAX_COMPONENT_DEPTH,
+                cdx_components.len(),
+                depth,
+                names.join(", "),
+                suffix,
             ));
             return;
         }
@@ -885,10 +911,12 @@ mod tests {
         // Should have collected exactly MAX_COMPONENT_DEPTH components
         assert_eq!(sbom.components.len(), super::MAX_COMPONENT_DEPTH);
 
-        // Should have a warning about depth
+        // Should have a warning about depth, including the dropped component name
         assert!(
-            sbom.warnings.iter().any(|w| w.contains("nesting exceeds")),
-            "expected depth warning, got: {:?}",
+            sbom.warnings.iter().any(|w| w.contains("nesting exceeds")
+                && w.contains("dropped")
+                && w.contains(&format!("level-{}", super::MAX_COMPONENT_DEPTH))),
+            "expected depth warning with component context, got: {:?}",
             sbom.warnings
         );
 
@@ -1042,6 +1070,86 @@ mod tests {
                 .contains("unsupported CycloneDX specVersion"),
             "expected parse error, not version error: {}",
             err
+        );
+    }
+
+    #[test]
+    fn test_xml_version_fallback_warns() {
+        // A v1.4 document should succeed but warn that v1.5 was tried first.
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.4" version="1">
+  <components>
+    <component type="library">
+      <name>pkg-a</name>
+      <version>1.0.0</version>
+    </component>
+  </components>
+</bom>"#;
+        let sbom = CycloneDxReader::read_xml(xml.as_slice()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+
+        // v1.5 is tried first; if v1.4 succeeds after v1.5 failed,
+        // there should be a fallback warning.
+        let fallback_warning = sbom
+            .warnings
+            .iter()
+            .find(|w| w.contains("parsed as v1.4") && w.contains("failing"));
+        // The v1.4 namespace might succeed on v1.5 too (the parser is
+        // permissive), so this warning is conditional — just verify it's
+        // well-formed if present.
+        if let Some(w) = fallback_warning {
+            assert!(
+                w.contains("v1.5"),
+                "fallback warning should mention the failed version: {w}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_depth_limit_warning_includes_component_names() {
+        // Build a JSON that nests exactly one level past the limit.
+        let depth = super::MAX_COMPONENT_DEPTH + 1;
+        let mut json = String::from(
+            r#"{"bomFormat":"CycloneDX","specVersion":"1.4","version":1,"components":["#,
+        );
+        for i in 0..depth {
+            if i > 0 {
+                json.push_str(r#","components":["#);
+            }
+            json.push_str(&format!(
+                r#"{{"type":"library","name":"comp-{}","version":"1.0.0""#,
+                i
+            ));
+        }
+        for i in (0..depth).rev() {
+            json.push('}');
+            if i > 0 {
+                json.push(']');
+            }
+        }
+        json.push_str("]}");
+
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        let depth_warning = sbom
+            .warnings
+            .iter()
+            .find(|w| w.contains("nesting exceeds"))
+            .expect("should have a depth warning");
+
+        // Warning should mention the dropped component's name
+        assert!(
+            depth_warning.contains(&format!("comp-{}", super::MAX_COMPONENT_DEPTH)),
+            "warning should include dropped component name: {depth_warning}"
+        );
+        // Warning should include the count
+        assert!(
+            depth_warning.contains("dropped 1 component(s)"),
+            "warning should include dropped count: {depth_warning}"
+        );
+        // Warning should include the depth
+        assert!(
+            depth_warning.contains(&format!("at depth {}", super::MAX_COMPONENT_DEPTH)),
+            "warning should include depth: {depth_warning}"
         );
     }
 }

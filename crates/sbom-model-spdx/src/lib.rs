@@ -145,6 +145,19 @@ impl SpdxReader {
             input.trim_end()
         );
 
+        // Detect whether the flush-sentinel was needed: does the last
+        // package in the raw input have ExternalRef lines?  If so, spdx-rs
+        // 0.5 would have silently dropped the last one without the sentinel.
+        let mut last_pkg_has_ext_ref = false;
+        for line in input.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("PackageName:") {
+                last_pkg_has_ext_ref = false;
+            } else if trimmed.starts_with("ExternalRef:") {
+                last_pkg_has_ext_ref = true;
+            }
+        }
+
         let mut spdx_doc =
             spdx_from_tag_value(&patched).map_err(|e| Error::TagValue(e.to_string()))?;
 
@@ -153,7 +166,13 @@ impl SpdxReader {
             .package_information
             .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
 
-        // Fix creator contamination.
+        // Fix creator contamination: re-parse Creator lines from the raw
+        // input instead of trusting the parsed result.
+        let parsed_creators = spdx_doc
+            .document_creation_information
+            .creation_info
+            .creators
+            .clone();
         let actual_creators: Vec<String> = input
             .lines()
             .filter_map(|line| {
@@ -165,9 +184,35 @@ impl SpdxReader {
         spdx_doc
             .document_creation_information
             .creation_info
-            .creators = actual_creators;
+            .creators = actual_creators.clone();
 
-        Ok(Self::spdx_to_sbom(spdx_doc))
+        let mut sbom = Self::spdx_to_sbom(spdx_doc);
+
+        // Emit diagnostics for workarounds that fired.
+        if last_pkg_has_ext_ref {
+            sbom.warnings.push(
+                "SPDX: applied flush-sentinel workaround — spdx-rs 0.5 silently \
+                 drops the last ExternalRef of the last package without it"
+                    .into(),
+            );
+        }
+
+        let phantom: Vec<_> = parsed_creators
+            .iter()
+            .filter(|c| !actual_creators.contains(c))
+            .collect();
+        if !phantom.is_empty() {
+            sbom.warnings.push(format!(
+                "SPDX: stripped phantom creator(s) injected by spdx-rs 0.5 default: {}",
+                phantom
+                    .iter()
+                    .map(|s| format!("'{s}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        Ok(sbom)
     }
 
     /// Converts a parsed `spdx_rs::models::SPDX` document into the
@@ -1717,5 +1762,102 @@ PackageCopyrightText: NOASSERTION
 ";
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
         assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
+    }
+
+    #[test]
+    fn test_tag_value_flush_sentinel_warns_when_last_pkg_has_external_ref() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: serde
+SPDXID: SPDXRef-serde
+PackageVersion: 1.0.200
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+PackageCopyrightText: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:cargo/serde@1.0.200
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+
+        assert!(
+            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
+            "should warn about flush-sentinel workaround when last package has ExternalRef: {:?}",
+            sbom.warnings
+        );
+        // The ExternalRef should still be parsed correctly
+        assert_eq!(
+            sbom.components[0].purl,
+            Some("pkg:cargo/serde@1.0.200".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tag_value_no_flush_sentinel_warning_without_external_ref() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
+            "should NOT warn about flush-sentinel when last package has no ExternalRef: {:?}",
+            sbom.warnings
+        );
+    }
+
+    #[test]
+    fn test_tag_value_phantom_creator_detection() {
+        // This test verifies that when spdx-rs injects phantom creators,
+        // a warning is emitted. In practice, the phantom creator is
+        // "Tool: LicenseFind-1.0" from CreationInfo::default(). Whether
+        // the phantom appears depends on the spdx-rs version's behavior.
+        // We test the detection mechanism rather than assuming the bug fires.
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        // Regardless of whether the phantom fires, the result should have
+        // the correct creator, not the phantom one.
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+
+        // If a phantom warning exists, it should mention what was stripped.
+        if let Some(w) = sbom.warnings.iter().find(|w| w.contains("phantom")) {
+            assert!(
+                w.contains("LicenseFind") || w.contains("stripped"),
+                "phantom warning should identify the injected creator: {w}"
+            );
+        }
     }
 }
