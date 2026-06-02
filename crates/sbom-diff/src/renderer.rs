@@ -2384,10 +2384,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("{rule_id}: logicalLocations missing"));
             assert_eq!(ll.len(), 1, "{rule_id}: expected 1 logicalLocation");
             assert!(
-                ll[0]["fullyQualifiedName"].as_str().unwrap().len() > 0,
+                !ll[0]["fullyQualifiedName"].as_str().unwrap().is_empty(),
                 "{rule_id}: fullyQualifiedName should be non-empty"
             );
-            assert_eq!(ll[0]["kind"], "package", "{rule_id}: kind should be package");
+            assert_eq!(
+                ll[0]["kind"], "package",
+                "{rule_id}: kind should be package"
+            );
         }
 
         // Dependency result: uses parent display name
