@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- add `Differ::diff_owned()` consuming variant that normalizes SBOMs in place, avoiding two full SBOM clones when the caller owns the inputs; the CLI now uses this path, and `Differ::diff()` delegates to it
+- deduplicate `Diff::group_by_ecosystem()` / `into_group_by_ecosystem()` via a shared `group_components_by_ecosystem` helper that accepts owned iterators
 - surface silent parser failures with structured diagnostic context: CycloneDX depth-truncation warning now names the dropped component(s) and depth level; CycloneDX XML multi-version retry emits a warning when it falls back to an older spec version; SPDX tag-value parser warns when the flush-sentinel workaround fires (last package has ExternalRefs) and when phantom creators from spdx-rs 0.5 defaults are stripped
 - add `--output sarif` (SARIF 2.1.0) output format for GitHub Code Scanning and Azure DevOps integration: maps component additions, removals, and field-level changes to SARIF results with five rules (`component-added`, `component-removed`, `component-changed`, `dependency-changed`, `metadata-changed`); each result includes a `locations` array with `logicalLocations` (package identifier for component rules, parent identifier for dependency rules, `metadata` for metadata rules) so results appear in GitHub Advanced Security and CodeQL; no new dependencies — SARIF JSON is built with the existing `serde`/`serde_json` types
 - fix SARIF renderer emitting an empty `"Metadata changed: "` result when `MetadataChange` has no populated subfields; the result is now skipped when all subfields are `None`
