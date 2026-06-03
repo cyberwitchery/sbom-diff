@@ -1096,7 +1096,9 @@ mod tests {
         assert!(find("both-noassertion").licenses.is_empty());
 
         // Valid concluded -> uses concluded, ignores declared
-        assert!(find("concluded-present").licenses.contains("GPL-3.0"));
+        // spdx 0.13 preserves the canonical SPDX id (GPL-3.0-only) rather than
+        // collapsing it to the deprecated short form (GPL-3.0) as 0.10 did.
+        assert!(find("concluded-present").licenses.contains("GPL-3.0-only"));
         assert!(!find("concluded-present").licenses.contains("MIT"));
 
         // No license fields at all -> empty
