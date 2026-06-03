@@ -212,7 +212,7 @@ impl CycloneDxReader {
                         }
                     }
                     cyclonedx_bom::models::tool::Tools::Object { components, .. } => {
-                        for component in components.0 {
+                        for component in components.into_iter().flat_map(|c| c.0) {
                             let mut s = component.name.to_string();
                             if let Some(v) = &component.version {
                                 s.push(' ');
