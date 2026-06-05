@@ -2,95 +2,81 @@
 
 ## Unreleased
 
-- replace `metadata_changed: bool` with structured `MetadataChange` tracking that records exactly which metadata fields differ (timestamp, tools, authors) with old/new values; rendered as a new `[~] Metadata Changes` section in text output, a collapsible `<details>` block in markdown, and a structured `metadata_changed` object in JSON; summaries show a `Metadata changed: yes/no` line; add `--fail-on metadata-changed` CI gate that fails when any document metadata differs, reporting which specific fields changed
-- fix `--fail-on deps` not reporting `kind_changed` edges in error messages: when a dependency changed kind (e.g. dev→runtime), the violation exit code fired but no error message explained which edges changed; now prints `error: dependency edge ... changed kind: dev -> runtime (--fail-on deps)` for each affected edge
+- track SBOM metadata changes: instead of a single `metadata_changed: bool`, the diff now records exactly which document-metadata fields differ (timestamp, tools, authors) with their old and new values. Rendered as a `[~] Metadata Changes` section in text, a collapsible block in markdown, and a `metadata_changed` object in JSON; summaries gain a `Metadata changed: yes/no` line. New `--fail-on metadata-changed` CI gate fails when any metadata field differs and reports which ones.
+- fix: `--fail-on deps` now explains which dependency edges changed kind (e.g. `dependency edge ... changed kind: dev -> runtime`); previously it set the violation exit code without printing any reason.
 
 ## [0.3.0] - 2026-05-21
 
-- thread SPDX relationship types through the dependency model as `DependencyKind` (Runtime, Dev, Build, Test, Optional, Provided): the SPDX parser now maps `DEV_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, and `PROVIDED_DEPENDENCY_OF` to their corresponding kind instead of discarding scope at parse time; `EdgeDiff` tracks kind on added/removed edges and detects `kind_changed` when an edge's scope changes between SBOMs (e.g. dev→runtime); renderers show a `(dev)`, `(build)`, etc. suffix for non-runtime edges
-- track ecosystem field changes in `compute_change`: new `FieldChange::Ecosystem` variant detects when a component's ecosystem changes between SBOMs (e.g. tool migration or ecosystem reclassification), rendered across all output formats and filterable via `--only ecosystem`
-- add `--fail-on license-changed` CI gate that detects license regressions incrementally: flags changed components whose license set differs and added components that introduce new licenses, using `FieldChange::License` from the diff result instead of scanning the full new SBOM (unlike `--deny-license` / `--allow-license`, this works as an incremental gate when pre-existing deps already carry denied licenses)
-- fix `check_spdx_version` propagating a cryptic serde parse error on non-JSON input (e.g. XML or tag-value) instead of returning `Ok(())` and letting the full parser produce a proper format-detection error; now matches the CycloneDX pre-check behavior
-- extend `--fail-on missing-hashes` to also flag changed components that dropped all their checksums (previously only added components were checked, silently ignoring a supply-chain regression where a component that previously had SHA-256 hashes loses them)
-- add SPDX tag-value format support: new `--format spdx-tv` flag and auto-detection; `SpdxReader::read_tag_value` parses the original SPDX tag-value format (`.spdx` files) emitted by tools like Fossology, reuse, and the SPDX Java tools, using the existing `spdx-rs` tag-value parser with workarounds for two known quirks (phantom default creators and dropped last ExternalRef)
-- fix CycloneDX XML `read_xml()` reporting only the last spec-version error: when parsing fails for all versions (1.5, 1.4, 1.3), the error now includes diagnostics from every attempted version instead of only the v1.3 attempt
-- consolidate `render_summary_text`/`render_summary_markdown`/`render_summary_json` into a `SummaryRenderer` trait (mirrors the existing `Renderer` trait); all summary rendering logic now lives in the `renderer` module, making new output formats trivial to add
+- track SPDX dependency relationship types as a `DependencyKind` (Runtime, Dev, Build, Test, Optional, Provided): the SPDX parser maps `DEV_DEPENDENCY_OF`, `BUILD_DEPENDENCY_OF`, `TEST_DEPENDENCY_OF`, `OPTIONAL_DEPENDENCY_OF`, and `PROVIDED_DEPENDENCY_OF` instead of discarding scope, the diff detects when an edge's kind changes (e.g. dev to runtime), and renderers show a `(dev)`/`(build)`/etc. suffix on non-runtime edges.
+- detect changes to a component's ecosystem (e.g. after a tool migration); reported in all output formats and filterable with `--only ecosystem`.
+- add `--fail-on license-changed`: an incremental CI gate that flags changed components whose license set differs and added components that introduce new licenses (unlike `--deny-license`/`--allow-license`, it doesn't fire on pre-existing dependencies).
+- extend `--fail-on missing-hashes` to also flag changed components that dropped all their checksums, not just added components.
+- add SPDX tag-value support: `--format spdx-tv` (with auto-detection) parses `.spdx` tag-value files emitted by tools like Fossology and the SPDX Java tools.
+- fix: on non-JSON input (XML or tag-value), the SPDX version pre-check now returns a clear format-detection error instead of a cryptic serde parse error.
+- fix: when CycloneDX XML fails to parse against every supported spec version (1.5, 1.4, 1.3), the error now includes diagnostics from each attempt instead of only the 1.3 attempt.
 
 ## [0.2.1] - 2026-05-06
 
-- handle SPDX inverse and scoped relationship types (DEPENDENCY_OF, CONTAINED_BY, DESCRIBED_BY, RUNTIME_DEPENDENCY_OF, DEV_DEPENDENCY_OF, BUILD_DEPENDENCY_OF, OPTIONAL_DEPENDENCY_OF, PROVIDED_DEPENDENCY_OF, TEST_DEPENDENCY_OF, PREREQUISITE_FOR, HAS_PREREQUISITE) in the dependency graph builder, fixing false-positive edge diffs when comparing SBOMs from tools that use different relationship orientations
-- fix `render_summary_json` panic: replace `.expect()` on ecosystem breakdown serialization with proper error propagation, preventing a potential panic on malformed `EcosystemCounts` data
-- add recursion depth limit (32 levels) to CycloneDX sub-component collection, emitting a warning instead of stack-overflowing on adversarial or malformed input
-- add SPDX document version detection: `SpdxReader::read_json` now pre-checks the `spdxVersion` field and returns a clear `UnsupportedVersion` error for SPDX 3.x or other unsupported spec versions, instead of producing garbled output or cryptic deserialization errors
-- fix `Diff::metadata_changed` always being false: the field was computed after `normalize()` cleared timestamps, tools, and authors, making the comparison a no-op; it is now computed before normalization
-- fix `--summary --show-warnings` silently dropping warnings in markdown (`-o markdown`) and JSON (`-o json`) summary output; `render_summary_markdown` and `render_summary_json` now check `opts.has_warnings()` and emit warnings in the same format as their full-output counterparts
-- fix CycloneDX supplier element with no name (or empty name) producing `Some("")` instead of `None`, which caused spurious supplier-change diffs
-- optimize identity reconciliation for ecosystem-less components from O(n²) to O(n log n) by restructuring the identity map to index by name then ecosystem, eliminating a linear scan of the entire map when matching components without an ecosystem
-- add `Diff::into_group_by_ecosystem()` consuming variant that moves components instead of cloning, avoiding allocations when the caller owns the diff
+- handle SPDX inverse and scoped relationship types (`DEPENDENCY_OF`, `CONTAINED_BY`, `DESCRIBED_BY`, `RUNTIME_DEPENDENCY_OF`, `DEV_DEPENDENCY_OF`, etc.) in the dependency graph, fixing false-positive edge diffs between tools that orient relationships differently.
+- add SPDX document version detection: SPDX 3.x and other unsupported spec versions now produce a clear `UnsupportedVersion` error instead of garbled output.
+- add a recursion-depth limit (32 levels) to CycloneDX sub-component collection, warning instead of stack-overflowing on adversarial or malformed input.
+- fix: `Diff::metadata_changed` was always false (it was computed after normalization had cleared the metadata); it is now computed before normalizing.
+- fix: `--summary --show-warnings` no longer drops warnings in markdown and JSON output.
+- fix: a CycloneDX supplier with no name no longer produces a spurious supplier-change diff.
+- fix: `render_summary_json` no longer panics on malformed ecosystem-breakdown data.
+- faster identity reconciliation for components without an ecosystem (O(n log n) instead of O(n²)), plus a new allocation-free `Diff::into_group_by_ecosystem()`.
 
 ## [0.2.0] - 2026-04-26
 
-- add `--show-warnings` flag to surface parser warnings (orphaned deps, format quirks) in rendered output instead of only printing them to stderr; each warning is labeled with its source SBOM (`[old]`/`[new]` in text/summary, `old`/`new` keys in JSON) across all output formats
-- `--summary` now respects the `--output` flag: markdown output produces a compact table (overall counts plus per-ecosystem breakdown when `--group-by-ecosystem` is set), and JSON output produces a summary object with counts; previously `--summary` always rendered plain text regardless of the output format
-- eliminate redundant component traversal when `--group-by-ecosystem` is set: renderers now derive per-ecosystem counts from the already-grouped data instead of walking all components a second time
-- fix false-positive orphan warnings for `SPDXRef-DOCUMENT` DESCRIBES relationships (fires on every real SPDX file because the document element is not a package)
-- fall back to `licenseDeclared` when SPDX `licenseConcluded` is NOASSERTION or NONE, so tools like syft and trivy that leave `licenseConcluded` unset no longer produce components with empty license data
-- warn on orphaned dependency references: both SPDX and CycloneDX parsers now emit warnings to stderr when a dependency relationship references a component ID (bom-ref or SPDXID) that doesn't exist in the document, instead of silently dropping the edge
-- add `--group-by-ecosystem` flag: breaks down added/removed/changed counts by package ecosystem (npm, cargo, pypi, etc.) and groups detail sections per ecosystem in all three output formats; JSON additionally includes `by_ecosystem` with full per-ecosystem component data
-- parse nested CycloneDX sub-components recursively: components with child `components` arrays (common in container images and monorepos) are now flattened into the SBOM instead of being silently dropped
-- add `--fail-on removed-components` and `--fail-on changed-components` CI gate variants: supply-chain policies can now flag component removals and field-level changes alongside additions
-- show per-parser rejection reasons when `--format auto` fails to detect the SBOM format, instead of the generic "could not detect sbom format automatically" message
-- strip SPDX supplier prefixes (`Organization: `, `Person: `) during parsing so cross-format diffs no longer produce false positives
-- add `Diff::is_empty()` convenience method
-- optimize `by_purl()` from O(n) linear scan to O(1) via direct `ComponentId` lookup
-- show per-algorithm hash diffs (algorithm, old digest, new digest) instead of the generic "Hashes: changed" message in all output formats (text, markdown, JSON)
-- fix text and markdown renderers showing Rust debug format (`Some("MIT")`, `None`, `{"MIT"}`) for License, Supplier, Purl, and Description fields; these now display as plain strings with `<none>` for absent values
-- optimize edge diff computation from O(n²) to O(n) by building a reverse ID map upfront instead of linear-scanning per parent
-- add description field change tracking to the diff engine: the `description` field is now compared between SBOM versions and reported in all output formats; supports `--only description` filtering
-- fix case-insensitive license matching in `--deny-license` and `--allow-license`: SPDX license IDs are case-insensitive by spec, but were compared with exact string equality, so `--deny-license GPL-3.0-only` would miss `gpl-3.0-only`
-- map SPDX package description fields (`packageDetailedDescription` / `packageSummaryDescription`) into `Component.description`, fixing a data loss gap vs CycloneDX
-- fix SPDX hash algorithm names to use canonical format (e.g. `SHA-256` instead of `SHA256`), so cross-format comparisons with CycloneDX no longer silently miss matching hashes
-- move hash algorithm name normalization (`canonical_algorithm_name`) to the shared `sbom-model` crate and apply it in both SPDX and CycloneDX parsers, ensuring algorithm names always match regardless of source format
-- flag unlicensed components as violations when `--allow-license` is active
+- add `--group-by-ecosystem` to break down added/removed/changed counts by package ecosystem (npm, cargo, pypi, etc.) in all output formats; JSON gains a `by_ecosystem` section.
+- add `--show-warnings` to surface parser warnings (orphaned deps, format quirks) in rendered output, each labeled with its source SBOM (`[old]`/`[new]`), instead of only on stderr.
+- `--summary` now respects `--output`: markdown produces a compact table (with a per-ecosystem breakdown under `--group-by-ecosystem`) and JSON produces a counts object, instead of always plain text.
+- add `--fail-on removed-components` and `--fail-on changed-components` CI gates.
+- track component description changes (mapped from SPDX `packageDetailedDescription`/`packageSummaryDescription`, closing a data-loss gap versus CycloneDX); reported in all formats and filterable with `--only description`.
+- parse nested CycloneDX sub-components recursively (common in container images and monorepos) instead of silently dropping them.
+- show per-algorithm hash diffs (algorithm, old digest, new digest) instead of a generic "Hashes: changed".
+- warn (on both parsers) when a dependency references a component ID that doesn't exist, instead of silently dropping the edge.
+- show per-parser rejection reasons when `--format auto` can't detect the format.
+- fall back to SPDX `licenseDeclared` when `licenseConcluded` is `NOASSERTION`/`NONE`, so SBOMs from syft and trivy no longer come through with empty license data.
+- flag unlicensed components as violations when `--allow-license` is active.
+- fix: SPDX license matching in `--deny-license`/`--allow-license` is now case-insensitive (per spec), so `--deny-license GPL-3.0-only` also matches `gpl-3.0-only`.
+- fix: SPDX hash algorithm names are canonicalized (`SHA-256`, not `SHA256`), so hashes match in cross-format comparisons with CycloneDX.
+- fix: text and markdown output now shows plain strings (with `<none>` for absent values) instead of Rust debug output (`Some("MIT")`, `None`, `{"MIT"}`) for License, Supplier, Purl, and Description.
+- fix: no more false-positive orphan warnings for SPDX `SPDXRef-DOCUMENT` `DESCRIBES` relationships.
+- strip SPDX supplier prefixes (`Organization: `, `Person: `) so they don't cause false-positive cross-format diffs.
+- add `Diff::is_empty()`.
 
 ## [0.1.0] - 2026-04-08
 
-- add CycloneDX XML support (1.3, 1.4, 1.5); new `--format cyclonedx-xml` flag and auto-detection
-- add `CycloneDxReader::read_xml` to the `sbom-model-cyclonedx` crate
+- add CycloneDX XML support (1.3, 1.4, 1.5): new `--format cyclonedx-xml` flag with auto-detection.
 
 ## [0.0.6] - 2026-02-19
 
-- fix CycloneDX tool metadata parsing, which was silently dropped since `cyclonedx-bom` 0.6 changed `Tools` from a newtype to an enum; both the legacy 1.4 list format and the 1.5+ object format are now handled
-- add release SBOM generation and upload (CycloneDX)
+- fix: CycloneDX tool metadata is parsed again (it was silently dropped after `cyclonedx-bom` 0.6 changed `Tools` from a newtype to an enum); both the 1.4 list and 1.5+ object forms are handled.
+- releases now ship a CycloneDX SBOM.
 
 ## [0.0.5] - 2026-01-27
 
-- improved purl reconciliation: components are now matched by ecosystem + name when purls differ or are absent, reporting version/purl changes instead of spurious add/remove pairs
-- added dependency edge diffing: diffs now include added/removed dependency edges between components
-- added `--only deps` to filter output to only dependency edge changes
-- added `--fail-on deps` to fail when any dependency edges change
+- match components by ecosystem + name when purls differ or are absent, reporting version/purl changes instead of spurious add/remove pairs.
+- diff dependency edges between components; `--only deps` filters to edge changes and `--fail-on deps` fails when any change.
 
 ## [0.0.4] - 2026-01-27
 
-- license lists are now canonicalized (order-independent comparison)
-- added `--fail-on missing-hashes` and `--fail-on added-components` flags
-- added `--summary` flag to print only counts
-- added `--quiet` / `-q` flag to suppress output except errors
+- canonicalize license lists for order-independent comparison.
+- add `--fail-on missing-hashes` and `--fail-on added-components`.
+- add `--summary` to print only counts, and `--quiet`/`-q` to suppress output except errors.
 
 ## [0.0.3] - 2026-01-26
 
-- crate readmes now display on docs.rs landing pages
-- added comprehensive doc comments to all public types and methods
+- documentation: crate READMEs now render on docs.rs, and all public types and methods are documented.
 
 ## [0.0.2] - 2026-01-26
 
-- expanded crate documentation with usage examples
-- added use cases and limitations to readme
-- documented stdin support and exit codes
+- documentation: expanded crate docs with usage examples, use cases, limitations, stdin support, and exit codes.
 
 ## [0.0.1] - 2026-01-25
 
-initial release
+- initial release.
 
 [0.2.0]: https://github.com/cyberwitchery/sbom-diff/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/cyberwitchery/sbom-diff/compare/v0.0.6...v0.1.0
