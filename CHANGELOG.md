@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix SARIF renderer ignoring `--show-warnings`: parser warnings are now emitted as note-level `parser-warning` results with source-labeled locations (`old-sbom`/`new-sbom`), making them visible in GitHub Code Scanning and other SARIF consumers; previously the SARIF renderer prefixed its `opts` parameter with underscore and discarded it
 - add `--fail-on version-downgrade` CI gate: detects when a changed component's version goes from a higher to a lower value, using lenient semver parsing (handles `v` prefixes, two-part versions, pre-release tags) with a dot-separated numeric fallback for non-semver strings like date-based versions (`2024.01.15`) or four-part versions (`1.2.3.4`); returns `false` (no downgrade) when version ordering cannot be determined
 - add `Differ::diff_owned()` consuming variant that normalizes SBOMs in place, avoiding two full SBOM clones when the caller owns the inputs; the CLI now uses this path, and `Differ::diff()` delegates to it
 - deduplicate `Diff::group_by_ecosystem()` / `into_group_by_ecosystem()` via a shared `group_components_by_ecosystem` helper that accepts owned iterators
