@@ -81,6 +81,8 @@ enum FailOn {
     LicenseChanged,
     /// Fail if document metadata changed (timestamp, tools, or authors).
     MetadataChanged,
+    /// Fail if any changed component's version went from a higher to a lower value.
+    VersionDowngrade,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -366,10 +368,89 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                     violation = true;
                 }
             }
+            FailOn::VersionDowngrade => {
+                for change in &diff.changed {
+                    for fc in &change.changes {
+                        if let sbom_diff::FieldChange::Version(Some(old_ver), Some(new_ver)) = fc {
+                            if is_version_downgrade(old_ver, new_ver) {
+                                eprintln!(
+                                    "error: version downgrade on component {}: {} -> {} (--fail-on version-downgrade)",
+                                    change.id, old_ver, new_ver
+                                );
+                                violation = true;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     violation
+}
+
+/// Attempts lenient semver parsing: strips `v`/`V` prefix, pads two-part
+/// or single-part versions to three parts (e.g., "1.0" → "1.0.0").
+fn parse_version_lenient(s: &str) -> Option<semver::Version> {
+    let s = s
+        .strip_prefix('v')
+        .or_else(|| s.strip_prefix('V'))
+        .unwrap_or(s);
+    if let Ok(v) = semver::Version::parse(s) {
+        return Some(v);
+    }
+    // Try padding: "1.0" -> "1.0.0", "1" -> "1.0.0"
+    let parts: Vec<&str> = s.splitn(3, '.').collect();
+    match parts.len() {
+        1 => semver::Version::parse(&format!("{}.0.0", parts[0])).ok(),
+        2 => semver::Version::parse(&format!("{}.{}.0", parts[0], parts[1])).ok(),
+        _ => None,
+    }
+}
+
+/// Returns `true` if `new_ver` is a downgrade from `old_ver`.
+///
+/// Uses lenient semver parsing first; falls back to dot-separated numeric
+/// segment comparison for non-semver strings (e.g., date-based versions
+/// like "2024.01.15" or four-part versions like "1.2.3.4").
+///
+/// Returns `false` if ordering cannot be determined.
+fn is_version_downgrade(old_ver: &str, new_ver: &str) -> bool {
+    // Try semver first
+    if let (Some(old), Some(new)) = (
+        parse_version_lenient(old_ver),
+        parse_version_lenient(new_ver),
+    ) {
+        return new < old;
+    }
+
+    // Fallback: dot-separated numeric comparison
+    let old_parts: Vec<&str> = old_ver.split('.').collect();
+    let new_parts: Vec<&str> = new_ver.split('.').collect();
+
+    let max_len = old_parts.len().max(new_parts.len());
+
+    for i in 0..max_len {
+        let old_seg = old_parts.get(i).copied().unwrap_or("0");
+        let new_seg = new_parts.get(i).copied().unwrap_or("0");
+
+        match (old_seg.parse::<u64>(), new_seg.parse::<u64>()) {
+            (Ok(o), Ok(n)) => {
+                if n < o {
+                    return true;
+                }
+                if n > o {
+                    return false;
+                }
+            }
+            _ => {
+                // Non-numeric segment encountered — can't determine ordering reliably
+                return false;
+            }
+        }
+    }
+
+    false // Equal versions
 }
 
 fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
@@ -1443,5 +1524,241 @@ mod tests {
             &diff,
             &[FailOn::AddedComponents, FailOn::MetadataChanged]
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Version comparison helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_version_lenient_standard_semver() {
+        let v = parse_version_lenient("1.2.3").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 3));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_v_prefix() {
+        let v = parse_version_lenient("v1.2.3").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 3));
+        let v = parse_version_lenient("V1.2.3").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 3));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_two_parts() {
+        let v = parse_version_lenient("1.2").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 0));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_single_part() {
+        let v = parse_version_lenient("42").unwrap();
+        assert_eq!(v, semver::Version::new(42, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_prerelease() {
+        let v = parse_version_lenient("1.2.3-beta.1").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert!(!v.pre.is_empty());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_nonsemver() {
+        // Four-part version can't parse as semver
+        assert!(parse_version_lenient("1.2.3.4").is_none());
+        // Totally non-numeric
+        assert!(parse_version_lenient("abc").is_none());
+    }
+
+    #[test]
+    fn test_is_version_downgrade_semver() {
+        assert!(is_version_downgrade("2.0.0", "1.5.0"));
+        assert!(is_version_downgrade("1.1.0", "1.0.0"));
+        assert!(is_version_downgrade("1.0.1", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_semver_upgrade_not_flagged() {
+        assert!(!is_version_downgrade("1.0.0", "1.1.0"));
+        assert!(!is_version_downgrade("1.0.0", "2.0.0"));
+        assert!(!is_version_downgrade("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_equal_not_flagged() {
+        assert!(!is_version_downgrade("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_v_prefix() {
+        assert!(is_version_downgrade("v2.0.0", "v1.0.0"));
+        assert!(!is_version_downgrade("v1.0.0", "v2.0.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_prerelease() {
+        // Going from release to prerelease of same version is a downgrade
+        assert!(is_version_downgrade("1.0.0", "1.0.0-rc1"));
+        // Going from prerelease to release is an upgrade
+        assert!(!is_version_downgrade("1.0.0-rc1", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_four_part_fallback() {
+        // Four-part versions use the numeric fallback
+        assert!(is_version_downgrade("1.2.3.4", "1.2.3.3"));
+        assert!(!is_version_downgrade("1.2.3.3", "1.2.3.4"));
+        assert!(!is_version_downgrade("1.2.3.4", "1.2.3.4"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_date_based_fallback() {
+        assert!(is_version_downgrade("2024.01.15", "2023.12.01"));
+        assert!(!is_version_downgrade("2023.12.01", "2024.01.15"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_non_numeric_not_flagged() {
+        // Can't compare non-numeric strings reliably
+        assert!(!is_version_downgrade("abc", "def"));
+        assert!(!is_version_downgrade("foo.bar", "foo.baz"));
+    }
+
+    // -----------------------------------------------------------------------
+    // --fail-on version-downgrade
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_check_fail_on_version_downgrade() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("2.0.0".into()));
+        let new = Component::new("pkg".into(), Some("1.5.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Version(
+                    Some("2.0.0".into()),
+                    Some("1.5.0".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_version_downgrade_upgrade_no_violation() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Version(
+                    Some("1.0.0".into()),
+                    Some("2.0.0".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_version_downgrade_empty_diff() {
+        use sbom_diff::Diff;
+
+        let diff = Diff::default();
+        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_version_downgrade_no_version_change() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        // Only license changed, no version change
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let new = Component::new("pkg".into(), Some("1.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Supplier(
+                    Some("Old Corp".into()),
+                    Some("New Corp".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_version_downgrade_version_added() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        // Version went from None to Some — not a downgrade
+        let old = Component::new("pkg".into(), None);
+        let new = Component::new("pkg".into(), Some("1.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Version(None, Some("1.0.0".into()))],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_version_downgrade_does_not_trigger_other_gates() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("2.0.0".into()));
+        let new = Component::new("pkg".into(), Some("1.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Version(
+                    Some("2.0.0".into()),
+                    Some("1.0.0".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        // ChangedComponents should still fire
+        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        // VersionDowngrade should fire
+        assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
     }
 }
