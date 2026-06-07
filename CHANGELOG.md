@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add `--fail-on version-downgrade` CI gate: detects when a changed component's version goes from a higher to a lower value, using lenient semver parsing (handles `v` prefixes, two-part versions, pre-release tags) with a dot-separated numeric fallback for non-semver strings like date-based versions (`2024.01.15`) or four-part versions (`1.2.3.4`); returns `false` (no downgrade) when version ordering cannot be determined
 - add `Differ::diff_owned()` consuming variant that normalizes SBOMs in place, avoiding two full SBOM clones when the caller owns the inputs; the CLI now uses this path, and `Differ::diff()` delegates to it
 - deduplicate `Diff::group_by_ecosystem()` / `into_group_by_ecosystem()` via a shared `group_components_by_ecosystem` helper that accepts owned iterators
 - surface silent parser failures with structured diagnostic context: CycloneDX depth-truncation warning now names the dropped component(s) and depth level; CycloneDX XML multi-version retry emits a warning when it falls back to an older spec version; SPDX tag-value parser warns when the flush-sentinel workaround fires (last package has ExternalRefs) and when phantom creators from spdx-rs 0.5 defaults are stripped

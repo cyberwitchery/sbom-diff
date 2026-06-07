@@ -600,6 +600,66 @@ fn summary_with_quiet_produces_no_output() {
 }
 
 // ---------------------------------------------------------------------------
+// --fail-on version-downgrade (exit 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_on_version_downgrade_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("version-downgrade-old.json"))
+        .arg(fixture("version-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on version-downgrade"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("version downgrade on component"),
+        "stderr should report the downgraded component, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("2.0.0 -> 1.5.0"),
+        "stderr should show old and new versions, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_version_downgrade_upgrade_exits_0() {
+    // golden fixtures only have upgrades (1.0.0 -> 1.1.0)
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_version_downgrade_no_change_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-old.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+// ---------------------------------------------------------------------------
 // Identity diff (no changes)
 // ---------------------------------------------------------------------------
 
