@@ -758,6 +758,7 @@ const RULE_COMPONENT_REMOVED: usize = 1;
 const RULE_COMPONENT_CHANGED: usize = 2;
 const RULE_DEPENDENCY_CHANGED: usize = 3;
 const RULE_METADATA_CHANGED: usize = 4;
+const RULE_PARSER_WARNING: usize = 5;
 
 #[derive(Clone, Copy)]
 struct RuleInfo {
@@ -796,6 +797,12 @@ const SARIF_RULES: &[RuleInfo] = &[
         id: "metadata-changed",
         short_desc: "Metadata changed",
         full_desc: "Document metadata (timestamp, tools, or authors) changed between SBOMs",
+        level: "note",
+    },
+    RuleInfo {
+        id: "parser-warning",
+        short_desc: "Parser warning",
+        full_desc: "The SBOM parser emitted a warning about the input document",
         level: "note",
     },
 ];
@@ -940,8 +947,43 @@ impl SarifRenderer {
         }
     }
 
-    fn build_results(diff: &Diff) -> Vec<SarifResultEntry> {
+    fn build_results(diff: &Diff, opts: &RenderOptions) -> Vec<SarifResultEntry> {
         let mut results = Vec::new();
+
+        if opts.has_warnings() {
+            for w in &opts.old_warnings {
+                results.push(SarifResultEntry {
+                    rule_id: SARIF_RULES[RULE_PARSER_WARNING].id,
+                    rule_index: RULE_PARSER_WARNING,
+                    level: SARIF_RULES[RULE_PARSER_WARNING].level,
+                    message: SarifTextMessage {
+                        text: format!("Parser warning (old SBOM): {}", w),
+                    },
+                    locations: vec![SarifLocation {
+                        logical_locations: vec![SarifLogicalLocation {
+                            fully_qualified_name: "old-sbom".to_string(),
+                            kind: "module",
+                        }],
+                    }],
+                });
+            }
+            for w in &opts.new_warnings {
+                results.push(SarifResultEntry {
+                    rule_id: SARIF_RULES[RULE_PARSER_WARNING].id,
+                    rule_index: RULE_PARSER_WARNING,
+                    level: SARIF_RULES[RULE_PARSER_WARNING].level,
+                    message: SarifTextMessage {
+                        text: format!("Parser warning (new SBOM): {}", w),
+                    },
+                    locations: vec![SarifLocation {
+                        logical_locations: vec![SarifLogicalLocation {
+                            fully_qualified_name: "new-sbom".to_string(),
+                            kind: "module",
+                        }],
+                    }],
+                });
+            }
+        }
 
         for comp in &diff.added {
             results.push(SarifResultEntry {
@@ -1088,7 +1130,7 @@ impl Renderer for SarifRenderer {
     fn render<W: Write>(
         &self,
         diff: &Diff,
-        _opts: &RenderOptions,
+        opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
         let log = SarifLog {
@@ -1103,7 +1145,7 @@ impl Renderer for SarifRenderer {
                         rules: Self::build_rules(),
                     },
                 },
-                results: Self::build_results(diff),
+                results: Self::build_results(diff, opts),
             }],
         };
         serde_json::to_writer_pretty(writer, &log)?;
@@ -2152,7 +2194,7 @@ mod tests {
         let rules = val["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
-        assert_eq!(rules.len(), 5);
+        assert_eq!(rules.len(), 6);
 
         let rule_ids: Vec<&str> = rules.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert_eq!(
@@ -2163,6 +2205,7 @@ mod tests {
                 "component-changed",
                 "dependency-changed",
                 "metadata-changed",
+                "parser-warning",
             ]
         );
 
@@ -2430,6 +2473,127 @@ mod tests {
         let ll = locs[0]["logicalLocations"].as_array().unwrap();
         assert_eq!(ll[0]["fullyQualifiedName"], "metadata");
         assert_eq!(ll[0]["kind"], "module");
+    }
+
+    #[test]
+    fn test_sarif_renderer_shows_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        SarifRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        let warnings: Vec<_> = results
+            .iter()
+            .filter(|r| r["ruleId"] == "parser-warning")
+            .collect();
+        assert_eq!(warnings.len(), 2);
+
+        // All warnings are note level
+        for w in &warnings {
+            assert_eq!(w["level"], "note");
+        }
+
+        // Check old-SBOM warning
+        let old_warning = warnings
+            .iter()
+            .find(|w| w["message"]["text"].as_str().unwrap().contains("old SBOM"))
+            .expect("should have old SBOM warning");
+        assert!(old_warning["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("orphaned ref 'SPDXRef-foo'"));
+        let ll = old_warning["locations"][0]["logicalLocations"]
+            .as_array()
+            .unwrap();
+        assert_eq!(ll[0]["fullyQualifiedName"], "old-sbom");
+        assert_eq!(ll[0]["kind"], "module");
+
+        // Check new-SBOM warning
+        let new_warning = warnings
+            .iter()
+            .find(|w| w["message"]["text"].as_str().unwrap().contains("new SBOM"))
+            .expect("should have new SBOM warning");
+        assert!(new_warning["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unknown bom-ref 'bar'"));
+        let ll = new_warning["locations"][0]["logicalLocations"]
+            .as_array()
+            .unwrap();
+        assert_eq!(ll[0]["fullyQualifiedName"], "new-sbom");
+        assert_eq!(ll[0]["kind"], "module");
+    }
+
+    #[test]
+    fn test_sarif_renderer_hides_warnings_by_default() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        assert!(
+            !results.iter().any(|r| r["ruleId"] == "parser-warning"),
+            "should not emit parser-warning results without show_warnings"
+        );
+    }
+
+    #[test]
+    fn test_sarif_renderer_no_warnings_when_empty() {
+        let diff = mock_diff();
+        let opts = RenderOptions {
+            show_warnings: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        SarifRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let val = sarif_parse(&buf);
+
+        let results = val["runs"][0]["results"].as_array().unwrap();
+        assert!(
+            !results.iter().any(|r| r["ruleId"] == "parser-warning"),
+            "should not emit parser-warning results when warning lists are empty"
+        );
+    }
+
+    #[test]
+    fn test_sarif_renderer_warnings_rule_index() {
+        let diff = mock_diff_empty();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        SarifRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let val = sarif_parse(&buf);
+
+        let rules = val["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
+        let results = val["runs"][0]["results"].as_array().unwrap();
+
+        for result in results.iter().filter(|r| r["ruleId"] == "parser-warning") {
+            let rule_index = result["ruleIndex"].as_u64().unwrap() as usize;
+            assert_eq!(rules[rule_index]["id"], "parser-warning");
+        }
+    }
+
+    #[test]
+    fn test_sarif_renderer_warnings_rule_present() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        SarifRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let val = sarif_parse(&buf);
+
+        let rules = val["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rules.len(), 6);
+        assert_eq!(rules[5]["id"], "parser-warning");
+        assert_eq!(rules[5]["defaultConfiguration"]["level"], "note");
     }
 
     #[test]
