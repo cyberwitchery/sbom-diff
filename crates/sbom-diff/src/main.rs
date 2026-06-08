@@ -84,6 +84,8 @@ enum FailOn {
     MetadataChanged,
     /// Fail if any changed component's version went from a higher to a lower value.
     VersionDowngrade,
+    /// Fail if any changed component's supplier changed or any added component has a supplier.
+    SupplierChanged,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -381,6 +383,31 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                                 violation = true;
                             }
                         }
+                    }
+                }
+            }
+            FailOn::SupplierChanged => {
+                for change in &diff.changed {
+                    for fc in &change.changes {
+                        if let sbom_diff::FieldChange::Supplier(old_sup, new_sup) = fc {
+                            let format_opt =
+                                |s: &Option<String>| s.as_deref().unwrap_or("<none>").to_string();
+                            eprintln!(
+                                "error: supplier changed on component {}: {} -> {} (--fail-on supplier-changed)",
+                                change.id, format_opt(old_sup), format_opt(new_sup)
+                            );
+                            violation = true;
+                        }
+                    }
+                }
+                for comp in &diff.added {
+                    if comp.supplier.is_some() {
+                        eprintln!(
+                            "error: added component {} has supplier: {} (--fail-on supplier-changed)",
+                            comp.id,
+                            comp.supplier.as_deref().unwrap_or("<none>")
+                        );
+                        violation = true;
                     }
                 }
             }
@@ -1596,5 +1623,171 @@ mod tests {
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
         // VersionDowngrade should fire
         assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+    }
+
+    // -----------------------------------------------------------------------
+    // --fail-on supplier-changed
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_check_fail_on_supplier_changed() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.supplier = Some("Acme Corp".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.supplier = Some("Evil Corp".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Supplier(
+                    Some("Acme Corp".into()),
+                    Some("Evil Corp".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_no_change() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Version(
+                    Some("1.0.0".into()),
+                    Some("2.0.0".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_empty_diff() {
+        use sbom_diff::Diff;
+
+        let diff = Diff::default();
+        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_supplier_added() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.supplier = Some("New Corp".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Supplier(None, Some("New Corp".into()))],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_supplier_removed() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.supplier = Some("Old Corp".into());
+        let new = Component::new("pkg".into(), Some("1.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Supplier(Some("Old Corp".into()), None)],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_added_component_with_supplier() {
+        use sbom_diff::Diff;
+
+        let mut added = Component::new("new-pkg".into(), Some("1.0.0".into()));
+        added.supplier = Some("Some Corp".into());
+
+        let diff = Diff {
+            added: vec![added],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_added_component_without_supplier() {
+        use sbom_diff::Diff;
+
+        let added = Component::new("new-pkg".into(), Some("1.0.0".into()));
+
+        let diff = Diff {
+            added: vec![added],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    #[test]
+    fn test_check_fail_on_supplier_changed_does_not_trigger_other_gates() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.supplier = Some("Acme Corp".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.supplier = Some("Evil Corp".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Supplier(
+                    Some("Acme Corp".into()),
+                    Some("Evil Corp".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        // ChangedComponents should still fire
+        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        // SupplierChanged should fire
+        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
     }
 }
