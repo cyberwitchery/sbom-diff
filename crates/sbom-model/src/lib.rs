@@ -1,5 +1,7 @@
 #![doc = include_str!("../readme.md")]
 
+pub mod versions;
+
 use indexmap::IndexMap;
 use packageurl::PackageUrl;
 use serde::{Deserialize, Serialize};
