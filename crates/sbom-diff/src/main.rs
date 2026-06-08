@@ -1761,4 +1761,206 @@ mod tests {
         // VersionDowngrade should fire
         assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
     }
+
+    // -----------------------------------------------------------------------
+    // parse_version_lenient — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_version_lenient_build_metadata() {
+        let v = parse_version_lenient("1.2.3+build.456").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert!(!v.build.is_empty());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_prerelease_and_build() {
+        let v = parse_version_lenient("1.0.0-alpha.1+build.789").unwrap();
+        assert_eq!(v.major, 1);
+        assert!(!v.pre.is_empty());
+        assert!(!v.build.is_empty());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_v_prefix_two_parts() {
+        let v = parse_version_lenient("v1.2").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 0));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_v_prefix_single_part() {
+        let v = parse_version_lenient("v5").unwrap();
+        assert_eq!(v, semver::Version::new(5, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_v_prefix_prerelease() {
+        let v = parse_version_lenient("v2.0.0-rc.1").unwrap();
+        assert_eq!(v.major, 2);
+        assert!(!v.pre.is_empty());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_empty_string() {
+        assert!(parse_version_lenient("").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_zero_version() {
+        let v = parse_version_lenient("0.0.0").unwrap();
+        assert_eq!(v, semver::Version::new(0, 0, 0));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_large_numbers() {
+        let v = parse_version_lenient("999.888.777").unwrap();
+        assert_eq!(v, semver::Version::new(999, 888, 777));
+    }
+
+    #[test]
+    fn test_parse_version_lenient_leading_zeros_rejected() {
+        // semver spec forbids leading zeros in numeric parts
+        assert!(parse_version_lenient("01.02.03").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_date_based_rejected() {
+        // 2024.01.15 has leading zeros → not valid semver
+        assert!(parse_version_lenient("2024.01.15").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_non_numeric() {
+        assert!(parse_version_lenient("foo.bar.baz").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_whitespace_rejected() {
+        assert!(parse_version_lenient(" 1.2.3").is_none());
+        assert!(parse_version_lenient("1.2.3 ").is_none());
+    }
+
+    #[test]
+    fn test_parse_version_lenient_single_zero() {
+        let v = parse_version_lenient("0").unwrap();
+        assert_eq!(v, semver::Version::new(0, 0, 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // is_version_downgrade — edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_version_downgrade_build_metadata() {
+        // The semver crate's Ord includes build metadata (needed for total
+        // ordering), so "1.0.0+build.2" > "1.0.0+build.1" even though the
+        // semver spec says build metadata should not affect precedence.
+        // This is a known quirk — document the actual behavior.
+        assert!(!is_version_downgrade("1.0.0+build.1", "1.0.0+build.2"));
+        assert!(is_version_downgrade("1.0.0+build.2", "1.0.0+build.1"));
+
+        // Same build metadata → equal, not a downgrade
+        assert!(!is_version_downgrade("1.0.0+build.1", "1.0.0+build.1"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_mixed_v_prefix() {
+        // One has v-prefix, other doesn't
+        assert!(is_version_downgrade("v2.0.0", "1.0.0"));
+        assert!(is_version_downgrade("2.0.0", "v1.0.0"));
+        assert!(!is_version_downgrade("v1.0.0", "2.0.0"));
+        assert!(!is_version_downgrade("1.0.0", "v2.0.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_prerelease_ordering() {
+        // alpha < beta < rc per semver
+        assert!(is_version_downgrade("1.0.0-beta.1", "1.0.0-alpha.1"));
+        assert!(is_version_downgrade("1.0.0-rc.1", "1.0.0-beta.1"));
+        assert!(!is_version_downgrade("1.0.0-alpha.1", "1.0.0-beta.1"));
+        assert!(!is_version_downgrade("1.0.0-beta.1", "1.0.0-rc.1"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_prerelease_numeric_ordering() {
+        // Numeric pre-release identifiers are compared as integers
+        assert!(is_version_downgrade("1.0.0-rc.2", "1.0.0-rc.1"));
+        assert!(!is_version_downgrade("1.0.0-rc.1", "1.0.0-rc.2"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_equal_with_v_prefix() {
+        assert!(!is_version_downgrade("v1.0.0", "v1.0.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_padded_two_part() {
+        // "1.2" pads to "1.2.0"
+        assert!(is_version_downgrade("1.2", "1.1"));
+        assert!(!is_version_downgrade("1.1", "1.2"));
+        assert!(!is_version_downgrade("1.2", "1.2"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_padded_single_part() {
+        assert!(is_version_downgrade("2", "1"));
+        assert!(!is_version_downgrade("1", "2"));
+        assert!(!is_version_downgrade("5", "5"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_mixed_part_counts_semver() {
+        // "2.0" (pads to 2.0.0) vs "1.9.9" — downgrade
+        assert!(is_version_downgrade("2.0", "1.9.9"));
+        assert!(!is_version_downgrade("1.9.9", "2.0"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_fallback_unequal_length() {
+        // Numeric fallback: shorter side gets implicit "0" segments
+        assert!(is_version_downgrade("1.2.3.4", "1.2.3"));
+        assert!(!is_version_downgrade("1.2.3", "1.2.3.4"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_large_major_semver_equal() {
+        // "2024.1.15" has no leading zeros, so it parses as valid semver
+        // (major=2024, minor=1, patch=15) — this tests the semver path, not
+        // the numeric fallback.
+        assert!(!is_version_downgrade("2024.1.15", "2024.1.15"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_v_prefix_fallback_bails() {
+        // When one side parses as semver and the other doesn't, the fallback
+        // operates on raw strings. The v-prefix isn't stripped in the fallback,
+        // so "v1".parse::<u64>() fails and the function returns false (can't
+        // determine ordering).
+        assert!(!is_version_downgrade("v1.2.3", "1.2.3.4"));
+        assert!(!is_version_downgrade("1.2.3.4", "v1.2.3"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_empty_strings() {
+        // Empty strings can't be parsed or compared — should not crash
+        assert!(!is_version_downgrade("", "1.0.0"));
+        assert!(!is_version_downgrade("1.0.0", ""));
+        assert!(!is_version_downgrade("", ""));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_one_semver_one_not() {
+        // One side parses as semver, other doesn't → falls through to
+        // numeric fallback (where the non-semver side may still be numeric)
+        assert!(!is_version_downgrade("1.2.3", "1.2.3.4"));
+        assert!(is_version_downgrade("1.2.3.4", "1.2.3"));
+    }
+
+    #[test]
+    fn test_is_version_downgrade_v_prefix_two_part() {
+        assert!(is_version_downgrade("v2.0", "v1.0"));
+        assert!(!is_version_downgrade("v1.0", "v2.0"));
+    }
 }
