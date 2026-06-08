@@ -2,6 +2,7 @@
 
 ## [0.4.0] - 2026-06-08
 
+- extract version comparison logic (`parse_version_lenient`, `is_version_downgrade`) from the CLI binary into a public `sbom_model::versions` module with a `Version` enum (`Semver`/`Numeric`/`Opaque` variants), `parse_lenient()` constructor, and `is_downgrade()` method; the `semver` dependency moves from `sbom-diff` to `sbom-model`; cross-variant comparison (e.g. semver `v1.2.3` vs four-part `1.2.3.4`) now works correctly instead of bailing
 - fix SARIF renderer ignoring `--show-warnings`: parser warnings are now emitted as note-level `parser-warning` results with source-labeled locations (`old-sbom`/`new-sbom`), making them visible in GitHub Code Scanning and other SARIF consumers; previously the SARIF renderer prefixed its `opts` parameter with underscore and discarded it
 - add `--fail-on version-downgrade` CI gate: detects when a changed component's version goes from a higher to a lower value, using lenient semver parsing (handles `v` prefixes, two-part versions, pre-release tags) with a dot-separated numeric fallback for non-semver strings like date-based versions (`2024.01.15`) or four-part versions (`1.2.3.4`); returns `false` (no downgrade) when version ordering cannot be determined
 - add `Differ::diff_owned()` consuming variant that normalizes SBOMs in place, avoiding two full SBOM clones when the caller owns the inputs; the CLI now uses this path, and `Differ::diff()` delegates to it
