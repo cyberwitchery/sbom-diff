@@ -732,3 +732,160 @@ fn identity_diff_exits_0_with_no_output_changes() {
     assert_eq!(v["removed"], 0);
     assert_eq!(v["changed"], 0);
 }
+
+// ---------------------------------------------------------------------------
+// --include-ecosystem / --exclude-ecosystem
+// ---------------------------------------------------------------------------
+
+#[test]
+fn include_ecosystem_filters_to_matching() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--include-ecosystem")
+        .arg("npm")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Golden fixtures are all npm — should see the same counts as unfiltered
+    assert!(stdout.contains("Added:            1"));
+    assert!(stdout.contains("Removed:          1"));
+    assert!(stdout.contains("Changed:          2"));
+}
+
+#[test]
+fn include_ecosystem_non_matching_shows_zero() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--include-ecosystem")
+        .arg("cargo")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Added:            0"));
+    assert!(stdout.contains("Removed:          0"));
+    assert!(stdout.contains("Changed:          0"));
+    assert!(stdout.contains("Old total:        0 components"));
+}
+
+#[test]
+fn exclude_ecosystem_removes_matching() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--exclude-ecosystem")
+        .arg("npm")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // All components are npm, so excluding npm should yield zero
+    assert!(stdout.contains("Added:            0"));
+    assert!(stdout.contains("Removed:          0"));
+    assert!(stdout.contains("Changed:          0"));
+}
+
+#[test]
+fn include_ecosystem_case_insensitive() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--include-ecosystem")
+        .arg("NPM")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Added:            1"));
+}
+
+#[test]
+fn include_ecosystem_json_output() {
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .arg("--include-ecosystem")
+        .arg("cargo")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+    assert_eq!(v["changed"], 0);
+    assert_eq!(v["old_total"], 0);
+}
+
+#[test]
+fn exclude_ecosystem_does_not_affect_non_matching() {
+    // Excluding cargo should leave npm data intact
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--exclude-ecosystem")
+        .arg("cargo")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Added:            1"));
+    assert!(stdout.contains("Removed:          1"));
+    assert!(stdout.contains("Changed:          2"));
+}
+
+#[test]
+fn include_and_exclude_ecosystem_combined() {
+    // Include npm then exclude npm → should be empty
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--summary")
+        .arg("--include-ecosystem")
+        .arg("npm")
+        .arg("--exclude-ecosystem")
+        .arg("npm")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Added:            0"));
+}
+
+#[test]
+fn include_ecosystem_with_fail_on_respects_filter() {
+    // fail-on added-components + include cargo → no npm adds visible → exit 0
+    let out = sbom_diff()
+        .arg(fixture("golden-old.json"))
+        .arg(fixture("golden-new.json"))
+        .arg("--fail-on")
+        .arg("added-components")
+        .arg("--include-ecosystem")
+        .arg("cargo")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "filtering out all adds should prevent fail-on trigger"
+    );
+}

@@ -146,6 +146,32 @@ impl Diff {
             self.metadata_changed,
         )
     }
+
+    /// Filters the diff to only include components whose ecosystem matches
+    /// the given predicate. Adjusts `old_total`, `new_total`, and `unchanged`
+    /// to reflect the filtered view.
+    ///
+    /// `filtered_old_total` and `filtered_new_total` are the pre-counted
+    /// number of components in each SBOM that pass the predicate. These must
+    /// be computed before [`Differ::diff_owned`] consumes the SBOMs.
+    pub fn filter_by_ecosystem<F: Fn(Option<&str>) -> bool>(
+        &mut self,
+        matches: F,
+        filtered_old_total: usize,
+        filtered_new_total: usize,
+    ) {
+        self.added.retain(|c| matches(c.ecosystem.as_deref()));
+        self.removed.retain(|c| matches(c.ecosystem.as_deref()));
+        self.changed.retain(|c| matches(c.new.ecosystem.as_deref()));
+
+        self.old_total = filtered_old_total;
+        self.new_total = filtered_new_total;
+        // unchanged = matched_filtered - changed
+        // matched_filtered = old_total_filtered - removed_filtered
+        self.unchanged = filtered_old_total
+            .saturating_sub(self.removed.len())
+            .saturating_sub(self.changed.len());
+    }
 }
 
 /// Shared implementation for [`Diff::group_by_ecosystem`] and
@@ -1728,5 +1754,198 @@ mod tests {
         let unknown_id = ComponentId::new(None, &[("name", "mystery")]);
         // No entry in component_names → falls back to raw ID
         assert_eq!(diff.display_name(&unknown_id), unknown_id.as_str());
+    }
+
+    // -----------------------------------------------------------------------
+    // Diff::filter_by_ecosystem
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filter_by_ecosystem_include() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // npm components
+        let mut npm1 = Component::new("express".into(), Some("4.18.0".into()));
+        npm1.ecosystem = Some("npm".into());
+        let mut npm2 = Component::new("lodash".into(), Some("4.17.21".into()));
+        npm2.ecosystem = Some("npm".into());
+
+        // cargo component
+        let mut cargo1 = Component::new("serde".into(), Some("1.0.0".into()));
+        cargo1.ecosystem = Some("cargo".into());
+
+        // pypi component
+        let mut pypi1 = Component::new("requests".into(), Some("2.28.0".into()));
+        pypi1.ecosystem = Some("pypi".into());
+
+        old.components.insert(npm2.id.clone(), npm2.clone());
+        old.components.insert(cargo1.id.clone(), cargo1.clone());
+
+        new.components.insert(npm1.id.clone(), npm1);
+        new.components.insert(npm2.id.clone(), npm2);
+        new.components.insert(pypi1.id.clone(), pypi1);
+
+        // old has npm2 + cargo1 (2 components)
+        // new has npm1 + npm2 + pypi1 (3 components)
+        // npm2 is unchanged, npm1 is added (npm), cargo1 is removed, pypi1 is added (pypi)
+
+        let mut diff = Differ::diff(&old, &new, None);
+
+        // Pre-filtered totals for npm: old has 1 npm (npm2), new has 2 npm (npm1, npm2)
+        diff.filter_by_ecosystem(
+            |eco| eco == Some("npm"),
+            1, // old npm count
+            2, // new npm count
+        );
+
+        assert_eq!(diff.added.len(), 1); // npm1
+        assert_eq!(diff.added[0].name, "express");
+        assert_eq!(diff.removed.len(), 0); // cargo1 was filtered out
+        assert_eq!(diff.changed.len(), 0);
+        assert_eq!(diff.old_total, 1);
+        assert_eq!(diff.new_total, 2);
+        assert_eq!(diff.unchanged, 1); // npm2
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_exclude() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let mut npm1 = Component::new("express".into(), Some("4.18.0".into()));
+        npm1.ecosystem = Some("npm".into());
+        let mut cargo1 = Component::new("serde".into(), Some("1.0.0".into()));
+        cargo1.ecosystem = Some("cargo".into());
+        let mut cargo2 = Component::new("tokio".into(), Some("1.0.0".into()));
+        cargo2.ecosystem = Some("cargo".into());
+
+        old.components.insert(cargo1.id.clone(), cargo1.clone());
+        new.components.insert(npm1.id.clone(), npm1);
+        new.components.insert(cargo2.id.clone(), cargo2);
+
+        // Exclude npm: should only see cargo changes
+        let mut diff = Differ::diff(&old, &new, None);
+        diff.filter_by_ecosystem(
+            |eco| eco != Some("npm"),
+            1, // old non-npm count
+            1, // new non-npm count
+        );
+
+        assert_eq!(diff.added.len(), 1); // cargo2
+        assert_eq!(diff.added[0].name, "tokio");
+        assert_eq!(diff.removed.len(), 1); // cargo1
+        assert_eq!(diff.removed[0].name, "serde");
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_unknown() {
+        // Components without ecosystem are treated as "unknown"
+        let old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let no_eco = Component::new("mystery".into(), Some("1.0".into()));
+        let mut npm = Component::new("express".into(), Some("4.18.0".into()));
+        npm.ecosystem = Some("npm".into());
+
+        new.components.insert(no_eco.id.clone(), no_eco);
+        new.components.insert(npm.id.clone(), npm);
+
+        let mut diff = Differ::diff(&old, &new, None);
+
+        // Include "unknown" - should keep only the component without ecosystem
+        diff.filter_by_ecosystem(
+            |eco| eco.is_none(),
+            0,
+            1, // one component without ecosystem in new
+        );
+
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.added[0].name, "mystery");
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_changed_uses_new_ecosystem() {
+        // When old has no ecosystem but new gained one (e.g. purl added),
+        // they match by name and the change uses the new component's ecosystem.
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Old: no ecosystem (wildcard match)
+        let c_old = Component::new("pkg".into(), Some("1.0".into()));
+        // New: gains npm ecosystem + version bump
+        let mut c_new = Component::new("pkg".into(), Some("2.0".into()));
+        c_new.ecosystem = Some("npm".into());
+
+        old.components.insert(c_old.id.clone(), c_old);
+        new.components.insert(c_new.id.clone(), c_new);
+
+        let mut diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+
+        // Filter to npm: should keep the changed component (new ecosystem is npm)
+        diff.filter_by_ecosystem(|eco| eco == Some("npm"), 0, 1);
+        assert_eq!(diff.changed.len(), 1);
+
+        // Filter to cargo: should exclude (new ecosystem is npm, not cargo)
+        let old2 = {
+            let mut s = Sbom::default();
+            let c = Component::new("pkg".into(), Some("1.0".into()));
+            s.components.insert(c.id.clone(), c);
+            s
+        };
+        let new2 = {
+            let mut s = Sbom::default();
+            let mut c = Component::new("pkg".into(), Some("2.0".into()));
+            c.ecosystem = Some("npm".into());
+            s.components.insert(c.id.clone(), c);
+            s
+        };
+        let mut diff = Differ::diff(&old2, &new2, None);
+        diff.filter_by_ecosystem(|eco| eco == Some("cargo"), 0, 0);
+        assert_eq!(diff.changed.len(), 0);
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_empty_diff() {
+        let mut diff = Diff::default();
+        diff.filter_by_ecosystem(|_| true, 0, 0);
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_totals_adjusted() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // Old: 2 npm, 1 cargo
+        let mut n1 = Component::new("a".into(), Some("1".into()));
+        n1.ecosystem = Some("npm".into());
+        let mut n2 = Component::new("b".into(), Some("1".into()));
+        n2.ecosystem = Some("npm".into());
+        let mut c1 = Component::new("c".into(), Some("1".into()));
+        c1.ecosystem = Some("cargo".into());
+
+        old.components.insert(n1.id.clone(), n1.clone());
+        old.components.insert(n2.id.clone(), n2.clone());
+        old.components.insert(c1.id.clone(), c1);
+
+        // New: same 2 npm (unchanged), no cargo
+        new.components.insert(n1.id.clone(), n1);
+        new.components.insert(n2.id.clone(), n2);
+
+        let mut diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.old_total, 3);
+        assert_eq!(diff.new_total, 2);
+
+        // Filter to npm only
+        diff.filter_by_ecosystem(|eco| eco == Some("npm"), 2, 2);
+
+        assert_eq!(diff.old_total, 2);
+        assert_eq!(diff.new_total, 2);
+        assert_eq!(diff.unchanged, 2);
+        assert_eq!(diff.added.len(), 0);
+        assert_eq!(diff.removed.len(), 0);
+        assert_eq!(diff.changed.len(), 0);
     }
 }

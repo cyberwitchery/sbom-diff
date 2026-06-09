@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- add `--include-ecosystem` and `--exclude-ecosystem` flags for filtering diff output by package ecosystem: in multi-ecosystem repos (npm + cargo + pypi), teams can focus CI gates and diff reviews on specific ecosystems; filtering is case-insensitive, adjusts summary totals, and works across all output formats and both full/summary modes; components without an ecosystem are treated as `"unknown"`
+- consolidate duplicated `format_set`/`format_option` helpers from `main.rs` into `renderer.rs` as public functions; optimize `format_set` to build the string directly instead of collecting into a `Vec` first
+- add `Diff::filter_by_ecosystem()` library method for programmatic ecosystem filtering with correct total adjustment
 - add `--output csv` (RFC 4180 CSV) output format for spreadsheets, CI dashboards, and data pipelines: full output produces one row per finding with columns `status,component,ecosystem,field,old_value,new_value` covering added/removed/changed components, edge diffs, and metadata changes; `--summary` mode produces compact `metric,count` pairs with an optional `ecosystem,added,removed,changed` breakdown when `--group-by-ecosystem` is set; CSV escaping handled by the `csv` crate
 - add `--fail-on supplier-changed` CI gate: detects when a changed component's supplier field differs between SBOM versions or when an added component introduces a supplier; designed to catch supply-chain takeovers (like the xz incident) where a package's maintainer/supplier changes unexpectedly
 

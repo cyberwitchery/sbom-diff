@@ -52,15 +52,24 @@ fn kind_suffix(kind: &DependencyKind) -> &'static str {
     }
 }
 
-fn format_option(opt: &Option<String>) -> &str {
+/// Formats an `Option<String>` for display, returning `"<none>"` for `None`.
+pub fn format_option(opt: &Option<String>) -> &str {
     opt.as_deref().unwrap_or("<none>")
 }
 
-fn format_set(set: &BTreeSet<String>) -> String {
+/// Formats a `BTreeSet<String>` as a comma-separated string, or `"<none>"` if empty.
+pub fn format_set(set: &BTreeSet<String>) -> String {
     if set.is_empty() {
         "<none>".to_string()
     } else {
-        set.iter().cloned().collect::<Vec<_>>().join(", ")
+        let mut out = String::new();
+        for (i, s) in set.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(s);
+        }
+        out
     }
 }
 
