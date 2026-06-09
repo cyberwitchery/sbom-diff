@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- add `--output csv` (RFC 4180 CSV) output format for spreadsheets, CI dashboards, and data pipelines: full output produces one row per finding with columns `status,component,ecosystem,field,old_value,new_value` covering added/removed/changed components, edge diffs, and metadata changes; `--summary` mode produces compact `metric,count` pairs with an optional `ecosystem,added,removed,changed` breakdown when `--group-by-ecosystem` is set; values containing commas, double-quotes, or newlines are properly escaped per RFC 4180; no new dependencies
+
 ## [0.4.0] - 2026-06-08
 
 - extract version comparison logic (`parse_version_lenient`, `is_version_downgrade`) from the CLI binary into a public `sbom_model::versions` module with a `Version` enum (`Semver`/`Numeric`/`Opaque` variants), `parse_lenient()` constructor, and `is_downgrade()` method; the `semver` dependency moves from `sbom-diff` to `sbom-model`; cross-variant comparison (e.g. semver `v1.2.3` vs four-part `1.2.3.4`) now works correctly instead of bailing

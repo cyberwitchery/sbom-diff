@@ -2,8 +2,8 @@ use anyhow::{anyhow, Context};
 use clap::{Parser, ValueEnum};
 use sbom_diff::{
     renderer::{
-        JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SarifRenderer, SummaryRenderer,
-        TextRenderer,
+        CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SarifRenderer,
+        SummaryRenderer, TextRenderer,
     },
     Differ,
 };
@@ -113,6 +113,7 @@ enum Output {
     Markdown,
     Json,
     Sarif,
+    Csv,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -175,6 +176,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 Output::Json => JsonRenderer.render_summary(&diff, &render_opts, &mut handle)?,
                 Output::Sarif => SarifRenderer.render_summary(&diff, &render_opts, &mut handle)?,
+                Output::Csv => CsvRenderer.render_summary(&diff, &render_opts, &mut handle)?,
             }
         } else {
             match args.output {
@@ -182,6 +184,7 @@ fn main() -> anyhow::Result<()> {
                 Output::Markdown => MarkdownRenderer.render(&diff, &render_opts, &mut handle)?,
                 Output::Json => JsonRenderer.render(&diff, &render_opts, &mut handle)?,
                 Output::Sarif => SarifRenderer.render(&diff, &render_opts, &mut handle)?,
+                Output::Csv => CsvRenderer.render(&diff, &render_opts, &mut handle)?,
             }
         }
     }

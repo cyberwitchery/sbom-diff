@@ -6,6 +6,7 @@
 //! - [`MarkdownRenderer`] - GitHub-flavored markdown for PR comments
 //! - [`JsonRenderer`] - Machine-readable JSON for tooling integration
 //! - [`SarifRenderer`] - SARIF 2.1.0 for GitHub Code Scanning / Azure DevOps
+//! - [`CsvRenderer`] - RFC 4180 CSV for spreadsheets, CI dashboards, and data pipelines
 
 use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange, GroupedDiff, MetadataChange};
 use sbom_model::{Component, DependencyKind};
@@ -1161,6 +1162,257 @@ impl SummaryRenderer for SarifRenderer {
         writer: &mut W,
     ) -> anyhow::Result<()> {
         self.render(diff, opts, writer)
+    }
+}
+
+// --- CSV output ---
+
+/// Escapes a value for RFC 4180 CSV output.
+///
+/// If the value contains a comma, double-quote, or newline, it is wrapped
+/// in double-quotes with internal double-quotes doubled.
+fn csv_escape(value: &str) -> String {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
+        let escaped = value.replace('"', "\"\"");
+        format!("\"{}\"", escaped)
+    } else {
+        value.to_string()
+    }
+}
+
+/// Writes a single CSV row from pre-escaped fields.
+fn csv_row<W: Write>(writer: &mut W, fields: &[&str]) -> std::io::Result<()> {
+    let escaped: Vec<String> = fields.iter().map(|f| csv_escape(f)).collect();
+    writeln!(writer, "{}", escaped.join(","))
+}
+
+/// RFC 4180 CSV renderer for spreadsheets, CI dashboards, and data pipelines.
+///
+/// Full output produces one row per finding with columns:
+/// `status,component,ecosystem,field,old_value,new_value`
+///
+/// Summary output produces `metric,count` pairs.
+pub struct CsvRenderer;
+
+impl Renderer for CsvRenderer {
+    fn render<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        writeln!(
+            writer,
+            "status,component,ecosystem,field,old_value,new_value"
+        )?;
+
+        if opts.has_warnings() {
+            for w in &opts.old_warnings {
+                csv_row(writer, &["warning", "old", "", "", w, ""])?;
+            }
+            for w in &opts.new_warnings {
+                csv_row(writer, &["warning", "new", "", "", w, ""])?;
+            }
+        }
+
+        for comp in &diff.added {
+            let display = comp.purl.as_deref().unwrap_or(comp.id.as_str());
+            let eco = comp.ecosystem.as_deref().unwrap_or("");
+            let ver = comp.version.as_deref().unwrap_or("");
+            csv_row(writer, &["added", display, eco, "version", "", ver])?;
+        }
+
+        for comp in &diff.removed {
+            let display = comp.purl.as_deref().unwrap_or(comp.id.as_str());
+            let eco = comp.ecosystem.as_deref().unwrap_or("");
+            let ver = comp.version.as_deref().unwrap_or("");
+            csv_row(writer, &["removed", display, eco, "version", ver, ""])?;
+        }
+
+        for change in &diff.changed {
+            let display = change.new.purl.as_deref().unwrap_or(change.id.as_str());
+            let eco = change.new.ecosystem.as_deref().unwrap_or("");
+            for fc in &change.changes {
+                let (field, old, new) = csv_field_change(fc);
+                csv_row(writer, &["changed", display, eco, field, &old, &new])?;
+            }
+        }
+
+        for edge in &diff.edge_diffs {
+            let parent = diff.display_name(&edge.parent);
+            for (child, kind) in &edge.added {
+                let child_name = diff.display_name(child);
+                csv_row(
+                    writer,
+                    &["edge-added", parent, "", child_name, "", &kind.to_string()],
+                )?;
+            }
+            for (child, kind) in &edge.removed {
+                let child_name = diff.display_name(child);
+                csv_row(
+                    writer,
+                    &[
+                        "edge-removed",
+                        parent,
+                        "",
+                        child_name,
+                        &kind.to_string(),
+                        "",
+                    ],
+                )?;
+            }
+            for (child, (old_kind, new_kind)) in &edge.kind_changed {
+                let child_name = diff.display_name(child);
+                csv_row(
+                    writer,
+                    &[
+                        "edge-kind-changed",
+                        parent,
+                        "",
+                        child_name,
+                        &old_kind.to_string(),
+                        &new_kind.to_string(),
+                    ],
+                )?;
+            }
+        }
+
+        if let Some(mc) = &diff.metadata_changed {
+            if let Some((ref old, ref new)) = mc.timestamp {
+                csv_row(
+                    writer,
+                    &[
+                        "metadata",
+                        "",
+                        "",
+                        "timestamp",
+                        old.as_deref().unwrap_or(""),
+                        new.as_deref().unwrap_or(""),
+                    ],
+                )?;
+            }
+            if let Some((ref old, ref new)) = mc.tools {
+                csv_row(
+                    writer,
+                    &[
+                        "metadata",
+                        "",
+                        "",
+                        "tools",
+                        &format_vec_or_none(old),
+                        &format_vec_or_none(new),
+                    ],
+                )?;
+            }
+            if let Some((ref old, ref new)) = mc.authors {
+                csv_row(
+                    writer,
+                    &[
+                        "metadata",
+                        "",
+                        "",
+                        "authors",
+                        &format_vec_or_none(old),
+                        &format_vec_or_none(new),
+                    ],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl SummaryRenderer for CsvRenderer {
+    fn render_summary<W: Write>(
+        &self,
+        diff: &Diff,
+        opts: &RenderOptions,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        writeln!(writer, "metric,count")?;
+        writeln!(writer, "old_total,{}", diff.old_total)?;
+        writeln!(writer, "new_total,{}", diff.new_total)?;
+        writeln!(writer, "unchanged,{}", diff.unchanged)?;
+        writeln!(writer, "added,{}", diff.added.len())?;
+        writeln!(writer, "removed,{}", diff.removed.len())?;
+        writeln!(writer, "changed,{}", diff.changed.len())?;
+        writeln!(writer, "edge_changes,{}", diff.edge_diffs.len())?;
+        writeln!(
+            writer,
+            "metadata_changed,{}",
+            if diff.metadata_changed.is_some() {
+                1
+            } else {
+                0
+            }
+        )?;
+
+        if opts.group_by_ecosystem {
+            let breakdown = diff.ecosystem_breakdown();
+            if !breakdown.is_empty() {
+                writeln!(writer)?;
+                writeln!(writer, "ecosystem,added,removed,changed")?;
+                for (eco, counts) in &breakdown {
+                    csv_row(
+                        writer,
+                        &[
+                            eco,
+                            &counts.added.to_string(),
+                            &counts.removed.to_string(),
+                            &counts.changed.to_string(),
+                        ],
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Converts a [`FieldChange`] into `(field_name, old_value, new_value)` for CSV output.
+fn csv_field_change(fc: &FieldChange) -> (&'static str, String, String) {
+    match fc {
+        FieldChange::Version(old, new) => (
+            "version",
+            format_option(old).to_string(),
+            format_option(new).to_string(),
+        ),
+        FieldChange::License(old, new) => ("license", format_set(old), format_set(new)),
+        FieldChange::Supplier(old, new) => (
+            "supplier",
+            format_option(old).to_string(),
+            format_option(new).to_string(),
+        ),
+        FieldChange::Purl(old, new) => (
+            "purl",
+            format_option(old).to_string(),
+            format_option(new).to_string(),
+        ),
+        FieldChange::Description(old, new) => (
+            "description",
+            format_option(old).to_string(),
+            format_option(new).to_string(),
+        ),
+        FieldChange::Hashes(old, new) => {
+            let old_str = old
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let new_str = new
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            ("hashes", old_str, new_str)
+        }
+        FieldChange::Ecosystem(old, new) => (
+            "ecosystem",
+            format_option(old).to_string(),
+            format_option(new).to_string(),
+        ),
     }
 }
 
@@ -2617,5 +2869,269 @@ mod tests {
             !results.iter().any(|r| r["ruleId"] == "metadata-changed"),
             "MetadataChange with all-None subfields should not emit a result"
         );
+    }
+
+    // --- CSV renderer tests ---
+
+    /// Parse CSV output into a vec of rows, each row a vec of fields.
+    fn csv_parse(buf: &[u8]) -> Vec<Vec<String>> {
+        let text = String::from_utf8(buf.to_vec()).unwrap();
+        text.lines()
+            .filter(|l| !l.is_empty())
+            .map(|line| line.split(',').map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn test_csv_renderer_header() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let rows = csv_parse(&buf);
+        assert_eq!(
+            rows[0],
+            vec![
+                "status",
+                "component",
+                "ecosystem",
+                "field",
+                "old_value",
+                "new_value"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_csv_renderer_empty_diff() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let rows = csv_parse(&buf);
+        // Only the header row
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn test_csv_renderer_added_removed_changed() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // Header
+        assert!(out.starts_with("status,component,ecosystem,field,old_value,new_value\n"));
+        // Added row
+        assert!(out.contains("added,"));
+        // Removed row
+        assert!(out.contains("removed,"));
+        // Changed row with version field
+        assert!(out.contains("changed,"));
+        assert!(out.contains("version,1.0,1.1"));
+    }
+
+    #[test]
+    fn test_csv_renderer_all_field_changes() {
+        let diff = mock_diff_all_field_changes();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains(",version,1.0,1.1"));
+        assert!(out.contains(",license,"));
+        assert!(out.contains(",supplier,Old Corp,New Corp"));
+        assert!(out.contains(",purl,"));
+        assert!(out.contains(",description,Old description,New description"));
+        assert!(out.contains(",hashes,"));
+        assert!(out.contains(",ecosystem,npm,cargo"));
+        // Edge diffs
+        assert!(out.contains("edge-added,"));
+        assert!(out.contains("edge-removed,"));
+    }
+
+    #[test]
+    fn test_csv_renderer_edge_diffs() {
+        let diff = mock_diff_with_hash_edge_diffs();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // Should use resolved display names, not hash IDs
+        assert!(out.contains("my-app@1.0"));
+        assert!(out.contains("old-dep@0.1"));
+        assert!(out.contains("new-dep@0.2"));
+        assert!(out.contains("edge-added"));
+        assert!(out.contains("edge-removed"));
+        assert!(!out.contains("h:"));
+    }
+
+    #[test]
+    fn test_csv_renderer_metadata() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("metadata,,,timestamp,2024-01-01,2024-01-02"));
+        assert!(out.contains("metadata,,,tools,syft,trivy"));
+        // Authors not changed, should not appear
+        assert!(!out.contains("authors"));
+    }
+
+    #[test]
+    fn test_csv_renderer_no_metadata_when_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("metadata"));
+    }
+
+    #[test]
+    fn test_csv_renderer_warnings() {
+        let diff = mock_diff();
+        let opts = opts_with_warnings();
+        let mut buf = Vec::new();
+        CsvRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("warning,old,"));
+        assert!(out.contains("warning,new,"));
+    }
+
+    #[test]
+    fn test_csv_renderer_hides_warnings_by_default() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("warning,"));
+    }
+
+    #[test]
+    fn test_csv_summary() {
+        let diff = mock_diff();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.starts_with("metric,count\n"));
+        assert!(out.contains("added,1"));
+        assert!(out.contains("removed,1"));
+        assert!(out.contains("changed,1"));
+        assert!(out.contains("edge_changes,0"));
+        assert!(out.contains("metadata_changed,0"));
+    }
+
+    #[test]
+    fn test_csv_summary_with_ecosystems() {
+        let diff = mock_diff_with_ecosystems();
+        let opts = RenderOptions {
+            group_by_ecosystem: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        CsvRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // Ecosystem breakdown section
+        assert!(out.contains("ecosystem,added,removed,changed"));
+        assert!(out.contains("npm,1,1,1"));
+        assert!(out.contains("cargo,1,0,0"));
+    }
+
+    #[test]
+    fn test_csv_summary_without_ecosystems() {
+        let diff = mock_diff_with_ecosystems();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(!out.contains("ecosystem,added,removed,changed"));
+    }
+
+    #[test]
+    fn test_csv_escape_commas() {
+        assert_eq!(csv_escape("hello,world"), "\"hello,world\"");
+    }
+
+    #[test]
+    fn test_csv_escape_quotes() {
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn test_csv_escape_newlines() {
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn test_csv_escape_plain() {
+        assert_eq!(csv_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn test_csv_renderer_group_by_ecosystem() {
+        let diff = mock_diff_with_ecosystems();
+        let opts = RenderOptions {
+            group_by_ecosystem: true,
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        CsvRenderer.render(&diff, &opts, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        // Full render always produces flat rows regardless of ecosystem grouping
+        assert!(out.contains("added,"));
+        assert!(out.contains("removed,"));
+        assert!(out.contains("changed,"));
+        // Ecosystem column should be populated
+        assert!(out.contains(",npm,"));
+        assert!(out.contains(",cargo,"));
+    }
+
+    #[test]
+    fn test_csv_summary_metadata_changed() {
+        let diff = mock_diff_with_metadata_change();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("metadata_changed,1"));
+    }
+
+    #[test]
+    fn test_csv_summary_metadata_unchanged() {
+        let diff = mock_diff_empty();
+        let mut buf = Vec::new();
+        CsvRenderer
+            .render_summary(&diff, &RenderOptions::default(), &mut buf)
+            .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("metadata_changed,0"));
     }
 }
