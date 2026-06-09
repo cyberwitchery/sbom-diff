@@ -660,6 +660,57 @@ fn fail_on_version_downgrade_no_change_exits_0() {
 }
 
 // ---------------------------------------------------------------------------
+// --fail-on supplier-changed (exit 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_on_supplier_changed_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("supplier-changed-old.json"))
+        .arg(fixture("supplier-changed-new.json"))
+        .arg("--fail-on")
+        .arg("supplier-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on supplier-changed"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("supplier changed on component"),
+        "stderr should report the changed component, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Acme Corp -> Evil Corp"),
+        "stderr should show old and new suppliers, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("added component") && stderr.contains("has supplier"),
+        "stderr should report the added component's supplier, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_supplier_changed_no_change_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("supplier-changed-old.json"))
+        .arg(fixture("supplier-changed-old.json"))
+        .arg("--fail-on")
+        .arg("supplier-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+// ---------------------------------------------------------------------------
 // Identity diff (no changes)
 // ---------------------------------------------------------------------------
 
