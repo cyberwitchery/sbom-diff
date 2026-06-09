@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- add `--output csv` (RFC 4180 CSV) output format for spreadsheets, CI dashboards, and data pipelines: full output produces one row per finding with columns `status,component,ecosystem,field,old_value,new_value` covering added/removed/changed components, edge diffs, and metadata changes; `--summary` mode produces compact `metric,count` pairs with an optional `ecosystem,added,removed,changed` breakdown when `--group-by-ecosystem` is set; values containing commas, double-quotes, or newlines are properly escaped per RFC 4180; no new dependencies
+- add `--output csv` (RFC 4180 CSV) output format for spreadsheets, CI dashboards, and data pipelines: full output produces one row per finding with columns `status,component,ecosystem,field,old_value,new_value` covering added/removed/changed components, edge diffs, and metadata changes; `--summary` mode produces compact `metric,count` pairs with an optional `ecosystem,added,removed,changed` breakdown when `--group-by-ecosystem` is set; CSV escaping handled by the `csv` crate
 
 ## [0.4.0] - 2026-06-08
 
