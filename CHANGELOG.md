@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- add `--fail-on supplier-changed` CI gate: detects when a changed component's supplier field differs between SBOM versions or when an added component introduces a supplier; designed to catch supply-chain takeovers (like the xz incident) where a package's maintainer/supplier changes unexpectedly
+
 ## [0.4.0] - 2026-06-08
 
 - extract version comparison logic (`parse_version_lenient`, `is_version_downgrade`) from the CLI binary into a public `sbom_model::versions` module with a `Version` enum (`Semver`/`Numeric`/`Opaque` variants), `parse_lenient()` constructor, and `is_downgrade()` method; the `semver` dependency moves from `sbom-diff` to `sbom-model`; cross-variant comparison (e.g. semver `v1.2.3` vs four-part `1.2.3.4`) now works correctly instead of bailing
