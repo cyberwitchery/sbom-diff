@@ -2,8 +2,8 @@ use anyhow::{anyhow, Context};
 use clap::{Parser, ValueEnum};
 use sbom_diff::{
     renderer::{
-        CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SarifRenderer,
-        SummaryRenderer, TextRenderer,
+        format_option, format_set, CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions,
+        Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
     Differ,
 };
@@ -47,6 +47,14 @@ struct Args {
     /// fail on specific conditions (repeatable)
     #[arg(long, value_enum)]
     fail_on: Vec<FailOn>,
+
+    /// only show changes for these ecosystems (repeatable)
+    #[arg(long)]
+    include_ecosystem: Vec<String>,
+
+    /// exclude changes for these ecosystems (repeatable)
+    #[arg(long)]
+    exclude_ecosystem: Vec<String>,
 
     /// break down counts by package ecosystem (npm, cargo, pypi, etc)
     #[arg(long)]
@@ -139,6 +147,48 @@ fn main() -> anyhow::Result<()> {
 
     let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
 
+    // Build ecosystem filter and pre-count filtered totals before diff_owned
+    // consumes the SBOMs.
+    let eco_include: HashSet<String> = args
+        .include_ecosystem
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    let eco_exclude: HashSet<String> = args
+        .exclude_ecosystem
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    let eco_filter_active = !eco_include.is_empty() || !eco_exclude.is_empty();
+
+    let eco_matches = |eco: Option<&str>| -> bool {
+        let eco_lower = eco.unwrap_or("unknown").to_ascii_lowercase();
+        if !eco_include.is_empty() && !eco_include.contains(&eco_lower) {
+            return false;
+        }
+        if eco_exclude.contains(&eco_lower) {
+            return false;
+        }
+        true
+    };
+
+    let (filtered_old_total, filtered_new_total) = if eco_filter_active {
+        (
+            old_sbom
+                .components
+                .values()
+                .filter(|c| eco_matches(c.ecosystem.as_deref()))
+                .count(),
+            new_sbom
+                .components
+                .values()
+                .filter(|c| eco_matches(c.ecosystem.as_deref()))
+                .count(),
+        )
+    } else {
+        (0, 0)
+    };
+
     let only_fields: Vec<sbom_diff::Field> = args
         .only
         .iter()
@@ -154,7 +204,7 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    let diff = Differ::diff_owned(
+    let mut diff = Differ::diff_owned(
         old_sbom,
         new_sbom,
         if only_fields.is_empty() {
@@ -163,6 +213,10 @@ fn main() -> anyhow::Result<()> {
             Some(&only_fields)
         },
     );
+
+    if eco_filter_active {
+        diff.filter_by_ecosystem(eco_matches, filtered_old_total, filtered_new_total);
+    }
 
     let fail_on_violation = check_fail_on(&diff, &args.fail_on);
 
@@ -328,13 +382,6 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                 for change in &diff.changed {
                     for fc in &change.changes {
                         if let sbom_diff::FieldChange::License(old, new) = fc {
-                            let format_set = |s: &std::collections::BTreeSet<String>| {
-                                if s.is_empty() {
-                                    "<none>".to_string()
-                                } else {
-                                    s.iter().cloned().collect::<Vec<_>>().join(", ")
-                                }
-                            };
                             eprintln!(
                                 "error: license changed on component {}: {} -> {} (--fail-on license-changed)",
                                 change.id, format_set(old), format_set(new)
@@ -393,11 +440,9 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                 for change in &diff.changed {
                     for fc in &change.changes {
                         if let sbom_diff::FieldChange::Supplier(old_sup, new_sup) = fc {
-                            let format_opt =
-                                |s: &Option<String>| s.as_deref().unwrap_or("<none>").to_string();
                             eprintln!(
                                 "error: supplier changed on component {}: {} -> {} (--fail-on supplier-changed)",
-                                change.id, format_opt(old_sup), format_opt(new_sup)
+                                change.id, format_option(old_sup), format_option(new_sup)
                             );
                             violation = true;
                         }
