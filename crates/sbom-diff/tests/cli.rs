@@ -132,6 +132,8 @@ fn fail_on_no_violation_exits_0() {
         .arg("deps")
         .arg("--fail-on")
         .arg("license-changed")
+        .arg("--fail-on")
+        .arg("hash-algorithm-downgrade")
         .output()
         .unwrap();
 
@@ -887,5 +889,72 @@ fn include_ecosystem_with_fail_on_respects_filter() {
         out.status.code(),
         Some(0),
         "filtering out all adds should prevent fail-on trigger"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --fail-on hash-algorithm-downgrade (exit 3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_on_hash_algorithm_downgrade_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("hash-downgrade-old.json"))
+        .arg(fixture("hash-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("hash-algorithm-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on hash-algorithm-downgrade"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("hash algorithm downgrade on component"),
+        "stderr should report the downgraded component, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_hash_algorithm_downgrade_no_change_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("hash-downgrade-old.json"))
+        .arg(fixture("hash-downgrade-old.json"))
+        .arg("--fail-on")
+        .arg("hash-algorithm-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_hash_algorithm_downgrade_only_downgraded_component_reported() {
+    // pkg-a: SHA-256 → MD5 (downgrade), pkg-b: SHA-512 → SHA-512 (no change)
+    let out = sbom_diff()
+        .arg(fixture("hash-downgrade-old.json"))
+        .arg(fixture("hash-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("hash-algorithm-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Only pkg-a should be reported, not pkg-b
+    assert!(
+        stderr.contains("pkg-a"),
+        "stderr should mention pkg-a, got: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("pkg-b"),
+        "stderr should NOT mention pkg-b (unchanged hash), got: {}",
+        stderr
     );
 }

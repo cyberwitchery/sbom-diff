@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add `--fail-on hash-algorithm-downgrade` CI gate: detects when a changed component's strongest hash algorithm is weaker than before (e.g. SHA-256 replaced with MD5), using a strength ordering across known algorithm families (MD < SHA-1 < SHA-224 < SHA-256/SHA3-256/BLAKE2b-256/BLAKE3 < SHA-384 < SHA-512); complements `--fail-on missing-hashes` which catches completely dropped hashes
 - add `--include-ecosystem` and `--exclude-ecosystem` flags to filter diff output by package ecosystem
 - add `Diff::filter_by_ecosystem()` for programmatic ecosystem filtering
 - add `--output csv` (RFC 4180 CSV) output format for spreadsheets, CI dashboards, and data pipelines: full output produces one row per finding with columns `status,component,ecosystem,field,old_value,new_value` covering added/removed/changed components, edge diffs, and metadata changes; `--summary` mode produces compact `metric,count` pairs with an optional `ecosystem,added,removed,changed` breakdown when `--group-by-ecosystem` is set; CSV escaping handled by the `csv` crate

@@ -436,6 +436,88 @@ pub fn canonical_algorithm_name(name: &str) -> String {
     .to_string()
 }
 
+/// Returns the strength tier of a hash algorithm, where higher values
+/// indicate stronger algorithms.
+///
+/// Returns `None` for unrecognized algorithms. The tiers are:
+/// - 0: Non-cryptographic checksums (ADLER-32)
+/// - 1: Broken cryptographic hashes (MD2, MD4, MD5)
+/// - 2: Weak cryptographic hashes (SHA-1)
+/// - 3: 112-bit security (SHA-224)
+/// - 4: 128-bit security (SHA-256, SHA3-256, BLAKE2b-256, BLAKE3, MD6)
+/// - 5: 192-bit security (SHA-384, SHA3-384, BLAKE2b-384)
+/// - 6: 256-bit security (SHA-512, SHA3-512, BLAKE2b-512)
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::hash_algorithm_strength;
+///
+/// assert!(hash_algorithm_strength("SHA-256").unwrap() > hash_algorithm_strength("MD5").unwrap());
+/// assert!(hash_algorithm_strength("SHA-512").unwrap() > hash_algorithm_strength("SHA-256").unwrap());
+/// assert_eq!(hash_algorithm_strength("UNKNOWN"), None);
+/// ```
+pub fn hash_algorithm_strength(name: &str) -> Option<u8> {
+    let canonical = canonical_algorithm_name(name);
+    match canonical.as_str() {
+        "ADLER-32" => Some(0),
+        "MD2" | "MD4" | "MD5" => Some(1),
+        "SHA-1" => Some(2),
+        "SHA-224" => Some(3),
+        "SHA-256" | "SHA3-256" | "BLAKE2b-256" | "BLAKE3" | "MD6" => Some(4),
+        "SHA-384" | "SHA3-384" | "BLAKE2b-384" => Some(5),
+        "SHA-512" | "SHA3-512" | "BLAKE2b-512" => Some(6),
+        _ => None,
+    }
+}
+
+/// Detects whether the hash algorithms in a component were downgraded.
+///
+/// Compares the strongest known algorithm in `old_hashes` against the
+/// strongest known algorithm in `new_hashes`. Returns `true` if the new
+/// set's strongest algorithm is weaker than the old set's strongest.
+///
+/// Returns `false` when:
+/// - Either hash set is empty (use `missing-hashes` for that)
+/// - Neither set contains a recognized algorithm
+/// - The new set is at least as strong as the old set
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::is_hash_algorithm_downgrade;
+/// use std::collections::BTreeMap;
+///
+/// let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+/// let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
+/// assert!(is_hash_algorithm_downgrade(&old, &new));
+///
+/// let new_strong: BTreeMap<String, String> = [("sha-512".into(), "ghi".into())].into();
+/// assert!(!is_hash_algorithm_downgrade(&old, &new_strong));
+/// ```
+pub fn is_hash_algorithm_downgrade(
+    old_hashes: &BTreeMap<String, String>,
+    new_hashes: &BTreeMap<String, String>,
+) -> bool {
+    if old_hashes.is_empty() || new_hashes.is_empty() {
+        return false;
+    }
+
+    let old_max = old_hashes
+        .keys()
+        .filter_map(|k| hash_algorithm_strength(k))
+        .max();
+    let new_max = new_hashes
+        .keys()
+        .filter_map(|k| hash_algorithm_strength(k))
+        .max();
+
+    match (old_max, new_max) {
+        (Some(old_strength), Some(new_strength)) => new_strength < old_strength,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +803,137 @@ mod tests {
 
         // Unknown algorithm passes through
         assert_eq!(canonical_algorithm_name("TIGER"), "TIGER");
+    }
+
+    #[test]
+    fn test_hash_algorithm_strength_ordering() {
+        // Task-specified ordering: MD5 < SHA-1 < SHA-224 < SHA-256 < SHA-384 < SHA-512
+        let md5 = hash_algorithm_strength("MD5").unwrap();
+        let sha1 = hash_algorithm_strength("SHA-1").unwrap();
+        let sha224 = hash_algorithm_strength("SHA-224").unwrap();
+        let sha256 = hash_algorithm_strength("SHA-256").unwrap();
+        let sha384 = hash_algorithm_strength("SHA-384").unwrap();
+        let sha512 = hash_algorithm_strength("SHA-512").unwrap();
+
+        assert!(md5 < sha1);
+        assert!(sha1 < sha224);
+        assert!(sha224 < sha256);
+        assert!(sha256 < sha384);
+        assert!(sha384 < sha512);
+    }
+
+    #[test]
+    fn test_hash_algorithm_strength_variants() {
+        // Case and hyphenation variants resolve to same strength
+        assert_eq!(
+            hash_algorithm_strength("sha256"),
+            hash_algorithm_strength("SHA-256")
+        );
+        assert_eq!(
+            hash_algorithm_strength("sha-1"),
+            hash_algorithm_strength("SHA1")
+        );
+
+        // SHA-3 at same tier as SHA-2 equivalent
+        assert_eq!(
+            hash_algorithm_strength("SHA3-256"),
+            hash_algorithm_strength("SHA-256")
+        );
+        assert_eq!(
+            hash_algorithm_strength("SHA3-512"),
+            hash_algorithm_strength("SHA-512")
+        );
+
+        // BLAKE at same tier as SHA-2 equivalent
+        assert_eq!(
+            hash_algorithm_strength("BLAKE2b-256"),
+            hash_algorithm_strength("SHA-256")
+        );
+        assert_eq!(
+            hash_algorithm_strength("BLAKE3"),
+            hash_algorithm_strength("SHA-256")
+        );
+
+        // Unknown returns None
+        assert_eq!(hash_algorithm_strength("TIGER"), None);
+        assert_eq!(hash_algorithm_strength("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn test_hash_algorithm_strength_adler() {
+        let adler = hash_algorithm_strength("ADLER-32").unwrap();
+        let md5 = hash_algorithm_strength("MD5").unwrap();
+        assert!(adler < md5);
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_sha256_to_md5() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
+        assert!(is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_upgrade_not_flagged() {
+        let old: BTreeMap<String, String> = [("sha-1".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
+        assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_same_algorithm() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
+        assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_empty_old() {
+        let old: BTreeMap<String, String> = BTreeMap::new();
+        let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
+        assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_empty_new() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = BTreeMap::new();
+        assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_multi_algorithm() {
+        // Old has SHA-256 + MD5, new has only MD5 → downgrade (strongest dropped)
+        let old: BTreeMap<String, String> = [
+            ("sha-256".into(), "abc".into()),
+            ("md5".into(), "xyz".into()),
+        ]
+        .into();
+        let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
+        assert!(is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_multi_algorithm_kept() {
+        // Old has SHA-256 + MD5, new has SHA-256 + SHA-1 → not a downgrade
+        let old: BTreeMap<String, String> = [
+            ("sha-256".into(), "abc".into()),
+            ("md5".into(), "xyz".into()),
+        ]
+        .into();
+        let new: BTreeMap<String, String> = [
+            ("sha-256".into(), "def".into()),
+            ("sha-1".into(), "ghi".into()),
+        ]
+        .into();
+        assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_hash_algorithm_downgrade_unknown_algorithms() {
+        // Both have only unknown algorithms → false (can't determine ordering)
+        let old: BTreeMap<String, String> = [("TIGER".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("WHIRLPOOL".into(), "def".into())].into();
+        assert!(!is_hash_algorithm_downgrade(&old, &new));
     }
 }

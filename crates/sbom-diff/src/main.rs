@@ -7,6 +7,7 @@ use sbom_diff::{
     },
     Differ,
 };
+use sbom_model::is_hash_algorithm_downgrade;
 use sbom_model::versions::is_version_downgrade;
 use sbom_model::Sbom;
 use sbom_model_cyclonedx::CycloneDxReader;
@@ -94,6 +95,8 @@ enum FailOn {
     VersionDowngrade,
     /// Fail if any changed component's supplier changed or any added component has a supplier.
     SupplierChanged,
+    /// Fail if any changed component's strongest hash algorithm is weaker than before.
+    HashAlgorithmDowngrade,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -456,6 +459,25 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                             comp.supplier.as_deref().unwrap_or("<none>")
                         );
                         violation = true;
+                    }
+                }
+            }
+            FailOn::HashAlgorithmDowngrade => {
+                for change in &diff.changed {
+                    for fc in &change.changes {
+                        if let sbom_diff::FieldChange::Hashes(old_hashes, new_hashes) = fc {
+                            if is_hash_algorithm_downgrade(old_hashes, new_hashes) {
+                                let old_algos: Vec<_> = old_hashes.keys().cloned().collect();
+                                let new_algos: Vec<_> = new_hashes.keys().cloned().collect();
+                                eprintln!(
+                                    "error: hash algorithm downgrade on component {}: [{}] -> [{}] (--fail-on hash-algorithm-downgrade)",
+                                    change.id,
+                                    old_algos.join(", "),
+                                    new_algos.join(", "),
+                                );
+                                violation = true;
+                            }
+                        }
                     }
                 }
             }
@@ -1837,5 +1859,188 @@ mod tests {
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
         // SupplierChanged should fire
         assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+    }
+
+    // -----------------------------------------------------------------------
+    // --fail-on hash-algorithm-downgrade
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.hashes.insert("sha-256".into(), "abc".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.hashes.insert("md5".into(), "def".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_upgrade_no_violation() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.hashes.insert("sha-1".into(), "abc".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.hashes.insert("sha-256".into(), "def".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_same_algorithm() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.hashes.insert("sha-256".into(), "abc".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.hashes.insert("sha-256".into(), "def".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_empty_diff() {
+        use sbom_diff::Diff;
+
+        let diff = Diff::default();
+        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_no_hash_change() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        // Only version changed, no hash change
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Version(
+                    Some("1.0.0".into()),
+                    Some("2.0.0".into()),
+                )],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_dropped_strongest() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        // Old has SHA-256 + MD5, new has only MD5
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.hashes.insert("sha-256".into(), "abc".into());
+        old.hashes.insert("md5".into(), "xyz".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.hashes.insert("md5".into(), "def".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_hashes_dropped_entirely() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeMap;
+
+        // Old has SHA-256, new has no hashes — should NOT trigger
+        // (missing-hashes gate handles this)
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.hashes.insert("sha-256".into(), "abc".into());
+        let new = Component::new("pkg".into(), Some("1.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Hashes(old.hashes.clone(), BTreeMap::new())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    #[test]
+    fn test_check_fail_on_hash_algorithm_downgrade_does_not_trigger_other_gates() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.hashes.insert("sha-256".into(), "abc".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.hashes.insert("md5".into(), "def".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+            }],
+            ..Diff::default()
+        };
+
+        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
+        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
+        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        // ChangedComponents should still fire
+        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        // HashAlgorithmDowngrade should fire
+        assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
     }
 }
