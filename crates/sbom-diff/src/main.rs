@@ -1868,7 +1868,6 @@ mod tests {
     #[test]
     fn test_check_fail_on_hash_algorithm_downgrade() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
-        use std::collections::BTreeMap;
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-256".into(), "abc".into());
@@ -1967,7 +1966,6 @@ mod tests {
     #[test]
     fn test_check_fail_on_hash_algorithm_downgrade_dropped_strongest() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
-        use std::collections::BTreeMap;
 
         // Old has SHA-256 + MD5, new has only MD5
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
