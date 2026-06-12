@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add content-based format detection heuristics to auto-detect mode: pre-scans input for format markers (`"bomFormat"` for CycloneDX JSON, `cyclonedx.org/schema/bom` namespace for CycloneDX XML, `"spdxVersion"` for SPDX JSON, `SPDXVersion:` header for SPDX tag-value), tries the likely format first, falls back to remaining parsers, and provides targeted error messages naming the detected format on failure; rejects empty files and binary input (null bytes) with clear diagnostics
 - add `--fail-on hash-algorithm-downgrade` CI gate: detects when a changed component's strongest hash algorithm is weaker than before (e.g. SHA-256 replaced with MD5), using a strength ordering across known algorithm families (MD < SHA-1 < SHA-224 < SHA-256/SHA3-256/BLAKE2b-256/BLAKE3 < SHA-384 < SHA-512); complements `--fail-on missing-hashes` which catches completely dropped hashes
 - add `--include-ecosystem` and `--exclude-ecosystem` flags to filter diff output by package ecosystem
 - add `Diff::filter_by_ecosystem()` for programmatic ecosystem filtering
