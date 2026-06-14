@@ -1948,4 +1948,75 @@ mod tests {
         assert_eq!(diff.removed.len(), 0);
         assert_eq!(diff.changed.len(), 0);
     }
+
+    #[test]
+    fn test_diff_owned_identity() {
+        let mut sbom = Sbom::default();
+
+        // Build a non-trivial SBOM with varied component fields
+        let mut parent = Component::new("my-app".to_string(), Some("2.0.0".to_string()));
+        parent.purl = Some("pkg:cargo/my-app@2.0.0".to_string());
+        parent.ecosystem = Some("cargo".to_string());
+        parent.licenses.insert("MIT".into());
+        parent.supplier = Some("Acme Corp".into());
+        parent.id = ComponentId::new(parent.purl.as_deref(), &[]);
+
+        let mut dep_a = Component::new("dep-a".to_string(), Some("1.0.0".to_string()));
+        dep_a.purl = Some("pkg:cargo/dep-a@1.0.0".to_string());
+        dep_a.ecosystem = Some("cargo".to_string());
+        dep_a.licenses.insert("Apache-2.0".into());
+        dep_a
+            .hashes
+            .insert("sha256".into(), "abcdef1234567890".into());
+        dep_a.id = ComponentId::new(dep_a.purl.as_deref(), &[]);
+
+        let mut dep_b = Component::new("dep-b".to_string(), Some("0.5.0".to_string()));
+        dep_b.ecosystem = Some("cargo".to_string());
+        dep_b.description = Some("A helper library".into());
+
+        sbom.components.insert(parent.id.clone(), parent.clone());
+        sbom.components.insert(dep_a.id.clone(), dep_a.clone());
+        sbom.components.insert(dep_b.id.clone(), dep_b.clone());
+
+        // Add dependency edges: parent -> dep-a (runtime), parent -> dep-b (dev)
+        sbom.dependencies
+            .entry(parent.id.clone())
+            .or_default()
+            .insert(dep_a.id.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(parent.id.clone())
+            .or_default()
+            .insert(dep_b.id.clone(), DependencyKind::Dev);
+
+        let copy = sbom.clone();
+        let diff = Differ::diff_owned(sbom, copy, None);
+
+        assert_eq!(
+            diff.added.len(),
+            0,
+            "identical SBOMs should have no added components"
+        );
+        assert_eq!(
+            diff.removed.len(),
+            0,
+            "identical SBOMs should have no removed components"
+        );
+        assert_eq!(
+            diff.changed.len(),
+            0,
+            "identical SBOMs should have no changed components"
+        );
+        assert_eq!(
+            diff.edge_diffs.len(),
+            0,
+            "identical SBOMs should have no edge diffs"
+        );
+        assert_eq!(
+            diff.metadata_changed, None,
+            "identical SBOMs should have no metadata changes"
+        );
+        assert_eq!(diff.old_total, 3);
+        assert_eq!(diff.new_total, 3);
+        assert_eq!(diff.unchanged, 3);
+    }
 }
