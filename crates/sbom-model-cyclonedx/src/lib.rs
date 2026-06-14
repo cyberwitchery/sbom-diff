@@ -8,50 +8,50 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
-/// Errors that can occur when parsing CycloneDX documents.
+/// errors that can occur when parsing CycloneDX documents.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// The JSON structure doesn't match the CycloneDX schema.
+    /// the JSON structure doesn't match the CycloneDX schema.
     #[error("CycloneDX JSON parse error: {0}")]
     Parse(#[from] cyclonedx_bom::errors::JsonReadError),
     /// XML parsing failed for all attempted spec versions.
     #[error("CycloneDX XML failed all spec versions:\n{0}")]
     XmlParseAllVersions(String),
-    /// The CycloneDX document version is not supported.
+    /// the CycloneDX document version is not supported.
     #[error("unsupported CycloneDX specVersion '{version}': only 1.3–1.5 is supported")]
     UnsupportedVersion {
-        /// The version string found in the document.
+        /// the version string found in the document.
         version: String,
     },
-    /// An I/O error occurred while reading the input.
+    /// an I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    /// Internal normalization failed.
+    /// internal normalization failed.
     #[error("Normalization error: {0}")]
     Normalization(String),
 }
 
-/// Spec versions the `cyclonedx-bom` crate (0.6) can deserialize.
+/// spec versions the `cyclonedx-bom` crate (0.6) can deserialize.
 ///
-/// Used by the pre-check guards so there is a single place to update when
+/// used by the pre-check guards so there is a single place to update when
 /// the library gains support for newer spec revisions.
 const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1.3", "1.4", "1.5"];
 
-/// Maximum nesting depth for recursive sub-component collection.
+/// maximum nesting depth for recursive sub-component collection.
 ///
-/// Real-world SBOMs rarely nest more than a handful of levels. A limit
+/// real-world SBOMs rarely nest more than a handful of levels. A limit
 /// prevents stack overflow from adversarial or malformed input. Kept
 /// below serde_json's own recursion limit so we produce a clear warning
 /// instead of a cryptic parse error.
 const MAX_COMPONENT_DEPTH: usize = 32;
 
-/// Parser for CycloneDX JSON documents.
+/// parser for CycloneDX JSON documents.
 ///
-/// Converts CycloneDX 1.4+ JSON into the format-agnostic [`Sbom`] type.
+/// converts CycloneDX 1.4+ JSON into the format-agnostic [`Sbom`] type.
 pub struct CycloneDxReader;
 
 impl CycloneDxReader {
-    /// Parses a CycloneDX JSON document from a reader.
+    /// parses a CycloneDX JSON document from a reader.
     ///
     /// # Example
     ///
@@ -68,7 +68,7 @@ impl CycloneDxReader {
     /// let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
     /// ```
     pub fn read_json<R: Read>(mut reader: R) -> Result<Sbom, Error> {
-        // Buffer the input so we can check the specVersion before full
+        // buffer the input so we can check the specVersion before full
         // parsing. Without this, CycloneDX 1.6+ or 2.0 documents produce
         // garbled cyclonedx-bom errors instead of a clear message.
         let mut buf = Vec::new();
@@ -80,9 +80,9 @@ impl CycloneDxReader {
         Self::bom_to_sbom(bom)
     }
 
-    /// Parses a CycloneDX XML document from a byte slice.
+    /// parses a CycloneDX XML document from a byte slice.
     ///
-    /// Tries spec versions 1.5, 1.4, and 1.3 in order, returning the first
+    /// tries spec versions 1.5, 1.4, and 1.3 in order, returning the first
     /// successful parse.
     ///
     /// # Example
@@ -129,9 +129,9 @@ impl CycloneDxReader {
         Err(Error::XmlParseAllVersions(msg.trim_end().to_string()))
     }
 
-    /// Pre-check the `specVersion` field in a CycloneDX JSON document.
+    /// pre-check the `specVersion` field in a CycloneDX JSON document.
     ///
-    /// Returns an error for unsupported spec versions, giving a clear
+    /// returns an error for unsupported spec versions, giving a clear
     /// message instead of cryptic deserialization failures.
     fn check_cyclonedx_version(data: &[u8]) -> Result<(), Error> {
         #[derive(serde::Deserialize)]
@@ -142,7 +142,7 @@ impl CycloneDxReader {
 
         let probe: VersionProbe = match serde_json::from_slice(data) {
             Ok(p) => p,
-            // Not valid JSON — let the full parser produce a proper error.
+            // not valid JSON — let the full parser produce a proper error.
             Err(_) => return Ok(()),
         };
 
@@ -151,20 +151,20 @@ impl CycloneDxReader {
             Some(v) => Err(Error::UnsupportedVersion {
                 version: v.to_string(),
             }),
-            // Missing specVersion — let the full parser handle it.
+            // missing specVersion — let the full parser handle it.
             None => Ok(()),
         }
     }
 
-    /// Pre-check the CycloneDX namespace version in an XML document.
+    /// pre-check the CycloneDX namespace version in an XML document.
     ///
-    /// Scans for the `http://cyclonedx.org/schema/bom/` namespace URL
+    /// scans for the `http://cyclonedx.org/schema/bom/` namespace URL
     /// and rejects versions outside the supported set.
     fn check_cyclonedx_version_xml(data: &[u8]) -> Result<(), Error> {
         const NS_PREFIX: &[u8] = b"http://cyclonedx.org/schema/bom/";
 
         let Some(pos) = data.windows(NS_PREFIX.len()).position(|w| w == NS_PREFIX) else {
-            // No CycloneDX namespace found — let the parser handle it.
+            // no CycloneDX namespace found — let the parser handle it.
             return Ok(());
         };
 
@@ -245,10 +245,10 @@ impl CycloneDxReader {
         }
 
         // 3. Process Dependencies
-        // This is tricky because CDX uses bom-refs for dependency graph.
-        // We need to map bom-refs to our ComponentIds.
+        // this is tricky because CDX uses bom-refs for dependency graph.
+        // we need to map bom-refs to our ComponentIds.
 
-        // Build a map of bom-ref -> ComponentId
+        // build a map of bom-ref -> ComponentId
         let mut ref_map = BTreeMap::new();
         for (id, comp) in &sbom.components {
             for src_id in &comp.source_ids {
@@ -337,7 +337,7 @@ impl CycloneDxReader {
             let purl = cdx_comp.purl.as_ref().map(|p| p.to_string());
             let purl_str = purl.as_deref();
 
-            // Extract ecosystem from purl
+            // extract ecosystem from purl
             let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
             let id = ComponentId::new(purl_str, &props);
@@ -392,7 +392,7 @@ impl CycloneDxReader {
 
             sbom.components.insert(id, comp);
 
-            // Recurse into sub-components
+            // recurse into sub-components
             if let Some(sub) = &cdx_comp.components {
                 Self::collect_components(&sub.0, sbom, depth + 1);
             }
@@ -525,7 +525,7 @@ mod tests {
         let result = CycloneDxReader::read_xml(xml.as_slice());
         let err = result.unwrap_err();
         let msg = err.to_string();
-        // All three version errors should be present
+        // all three version errors should be present
         assert!(msg.contains("v1.5:"), "missing v1.5 error: {msg}");
         assert!(msg.contains("v1.4:"), "missing v1.4 error: {msg}");
         assert!(msg.contains("v1.3:"), "missing v1.3 error: {msg}");
@@ -740,7 +740,7 @@ mod tests {
             ]
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
-        // Parent + 2 children = 3 components
+        // parent + 2 children = 3 components
         assert_eq!(sbom.components.len(), 3);
         assert!(sbom.components.values().any(|c| c.name == "my-image"));
         assert!(sbom.components.values().any(|c| c.name == "libc"));
@@ -880,8 +880,8 @@ mod tests {
 
     #[test]
     fn test_recursion_depth_limit() {
-        // Build a CycloneDX JSON with nesting deeper than MAX_COMPONENT_DEPTH.
-        // The parser should collect components up to the limit and emit a
+        // build a CycloneDX JSON with nesting deeper than MAX_COMPONENT_DEPTH.
+        // the parser should collect components up to the limit and emit a
         // warning instead of stack-overflowing.
         let depth = super::MAX_COMPONENT_DEPTH + 5;
         let mut json = String::from(
@@ -897,7 +897,7 @@ mod tests {
                 i
             ));
         }
-        // Close all the braces: each component + its components array
+        // close all the braces: each component + its components array
         for i in (0..depth).rev() {
             json.push('}'); // close component object
             if i > 0 {
@@ -908,10 +908,10 @@ mod tests {
 
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
 
-        // Should have collected exactly MAX_COMPONENT_DEPTH components
+        // should have collected exactly MAX_COMPONENT_DEPTH components
         assert_eq!(sbom.components.len(), super::MAX_COMPONENT_DEPTH);
 
-        // Should have a warning about depth, including the dropped component name
+        // should have a warning about depth, including the dropped component name
         assert!(
             sbom.warnings.iter().any(|w| w.contains("nesting exceeds")
                 && w.contains("dropped")
@@ -920,7 +920,7 @@ mod tests {
             sbom.warnings
         );
 
-        // Components at the boundary should be present, those beyond should not
+        // components at the boundary should be present, those beyond should not
         assert!(sbom.components.values().any(|c| c.name == "level-0"));
         assert!(sbom
             .components
@@ -1063,7 +1063,7 @@ mod tests {
     fn test_cyclonedx_xml_no_namespace_falls_through() {
         let xml = b"<not-a-bom/>";
         let result = CycloneDxReader::read_xml(xml.as_slice());
-        // Should fail, but with a parse error, not UnsupportedVersion
+        // should fail, but with a parse error, not UnsupportedVersion
         let err = result.unwrap_err();
         assert!(
             !err.to_string()
@@ -1075,7 +1075,7 @@ mod tests {
 
     #[test]
     fn test_xml_version_fallback_warns() {
-        // A v1.4 document should succeed but warn that v1.5 was tried first.
+        // a v1.4 document should succeed but warn that v1.5 was tried first.
         let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
 <bom xmlns="http://cyclonedx.org/schema/bom/1.4" version="1">
   <components>
@@ -1094,7 +1094,7 @@ mod tests {
             .warnings
             .iter()
             .find(|w| w.contains("parsed as v1.4") && w.contains("failing"));
-        // The v1.4 namespace might succeed on v1.5 too (the parser is
+        // the v1.4 namespace might succeed on v1.5 too (the parser is
         // permissive), so this warning is conditional — just verify it's
         // well-formed if present.
         if let Some(w) = fallback_warning {
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn test_depth_limit_warning_includes_component_names() {
-        // Build a JSON that nests exactly one level past the limit.
+        // build a JSON that nests exactly one level past the limit.
         let depth = super::MAX_COMPONENT_DEPTH + 1;
         let mut json = String::from(
             r#"{"bomFormat":"CycloneDX","specVersion":"1.4","version":1,"components":["#,
@@ -1136,17 +1136,17 @@ mod tests {
             .find(|w| w.contains("nesting exceeds"))
             .expect("should have a depth warning");
 
-        // Warning should mention the dropped component's name
+        // warning should mention the dropped component's name
         assert!(
             depth_warning.contains(&format!("comp-{}", super::MAX_COMPONENT_DEPTH)),
             "warning should include dropped component name: {depth_warning}"
         );
-        // Warning should include the count
+        // warning should include the count
         assert!(
             depth_warning.contains("dropped 1 component(s)"),
             "warning should include dropped count: {depth_warning}"
         );
-        // Warning should include the depth
+        // warning should include the depth
         assert!(
             depth_warning.contains(&format!("at depth {}", super::MAX_COMPONENT_DEPTH)),
             "warning should include depth: {depth_warning}"

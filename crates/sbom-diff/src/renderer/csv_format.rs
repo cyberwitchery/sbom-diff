@@ -4,7 +4,7 @@ use super::{
 use crate::{Diff, FieldChange};
 use std::io::Write;
 
-/// Creates a [`csv::Writer`] configured for this crate's output conventions
+/// creates a [`csv::Writer`] configured for this crate's output conventions
 /// (LF line endings, no BOM).
 fn csv_writer<W: Write>(writer: W) -> csv::Writer<W> {
     csv::WriterBuilder::new()
@@ -14,10 +14,10 @@ fn csv_writer<W: Write>(writer: W) -> csv::Writer<W> {
 
 /// RFC 4180 CSV renderer for spreadsheets, CI dashboards, and data pipelines.
 ///
-/// Full output produces one row per finding with columns:
+/// full output produces one row per finding with columns:
 /// `status,component,ecosystem,field,old_value,new_value`
 ///
-/// Summary output produces `metric,count` pairs.
+/// summary output produces `metric,count` pairs.
 pub struct CsvRenderer;
 
 impl Renderer for CsvRenderer {
@@ -187,7 +187,7 @@ impl SummaryRenderer for CsvRenderer {
     }
 }
 
-/// Converts a [`FieldChange`] into `(field_name, old_value, new_value)` for CSV output.
+/// converts a [`FieldChange`] into `(field_name, old_value, new_value)` for CSV output.
 fn csv_field_change(fc: &FieldChange) -> (&'static str, String, String) {
     match fc {
         FieldChange::Version(old, new) => (

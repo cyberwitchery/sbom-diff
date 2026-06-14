@@ -18,7 +18,7 @@ fn write_md_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io
 
 /// GitHub-flavored markdown renderer for PR comments.
 ///
-/// Produces collapsible sections using `<details>` tags.
+/// produces collapsible sections using `<details>` tags.
 pub struct MarkdownRenderer;
 
 impl FieldChangeFormatter for MarkdownRenderer {

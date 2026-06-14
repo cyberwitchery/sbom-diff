@@ -6,32 +6,32 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub mod renderer;
 
-/// Structured tracking of document metadata changes between two SBOMs.
+/// structured tracking of document metadata changes between two SBOMs.
 ///
-/// Instead of a simple boolean, this captures exactly which metadata fields
+/// instead of a simple boolean, this captures exactly which metadata fields
 /// differ, making it possible to render meaningful output and gate CI on
 /// specific metadata changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MetadataChange {
-    /// Timestamp changed: (old, new).
+    /// timestamp changed: (old, new).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<(Option<String>, Option<String>)>,
-    /// Tools changed: (old, new).
+    /// tools changed: (old, new).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<(Vec<String>, Vec<String>)>,
-    /// Authors changed: (old, new).
+    /// authors changed: (old, new).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authors: Option<(Vec<String>, Vec<String>)>,
 }
 
 impl MetadataChange {
-    /// Returns true if no metadata fields actually differ.
+    /// returns true if no metadata fields actually differ.
     pub fn is_empty(&self) -> bool {
         self.timestamp.is_none() && self.tools.is_none() && self.authors.is_none()
     }
 }
 
-/// Per-ecosystem counts of added, removed, and changed components.
+/// per-ecosystem counts of added, removed, and changed components.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EcosystemCounts {
     pub added: usize,
@@ -39,39 +39,39 @@ pub struct EcosystemCounts {
     pub changed: usize,
 }
 
-/// The result of comparing two SBOMs.
+/// the result of comparing two SBOMs.
 ///
-/// Contains lists of added, removed, and changed components,
+/// contains lists of added, removed, and changed components,
 /// as well as dependency edge changes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Diff {
-    /// Components present in the new SBOM but not the old.
+    /// components present in the new SBOM but not the old.
     pub added: Vec<Component>,
-    /// Components present in the old SBOM but not the new.
+    /// components present in the old SBOM but not the new.
     pub removed: Vec<Component>,
-    /// Components present in both with field-level changes.
+    /// components present in both with field-level changes.
     pub changed: Vec<ComponentChange>,
-    /// Dependency edge changes between components.
+    /// dependency edge changes between components.
     pub edge_diffs: Vec<EdgeDiff>,
-    /// Structured metadata change details, or `None` if metadata is unchanged.
+    /// structured metadata change details, or `None` if metadata is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_changed: Option<MetadataChange>,
-    /// Total number of components in the old SBOM.
+    /// total number of components in the old SBOM.
     pub old_total: usize,
-    /// Total number of components in the new SBOM.
+    /// total number of components in the new SBOM.
     pub new_total: usize,
-    /// Number of components present in both SBOMs with no changes.
+    /// number of components present in both SBOMs with no changes.
     pub unchanged: usize,
-    /// Human-readable display names for component IDs that appear in edge diffs.
+    /// human-readable display names for component IDs that appear in edge diffs.
     ///
-    /// Maps hash-based IDs (`h:...`) to `name@version` or `name` so that edge
+    /// maps hash-based IDs (`h:...`) to `name@version` or `name` so that edge
     /// diff output is readable without cross-referencing the full component list.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub component_names: BTreeMap<ComponentId, String>,
 }
 
 impl Diff {
-    /// Returns `true` if the diff contains no changes of any kind.
+    /// returns `true` if the diff contains no changes of any kind.
     pub fn is_empty(&self) -> bool {
         self.added.is_empty()
             && self.removed.is_empty()
@@ -80,9 +80,9 @@ impl Diff {
             && self.metadata_changed.is_none()
     }
 
-    /// Returns a human-readable display name for a component ID.
+    /// returns a human-readable display name for a component ID.
     ///
-    /// Looks up the ID in `component_names`; falls back to the raw ID string.
+    /// looks up the ID in `component_names`; falls back to the raw ID string.
     pub fn display_name<'a>(&'a self, id: &'a ComponentId) -> &'a str {
         self.component_names
             .get(id)
@@ -90,9 +90,9 @@ impl Diff {
             .unwrap_or_else(|| id.as_str())
     }
 
-    /// Groups added/removed/changed counts by package ecosystem.
+    /// groups added/removed/changed counts by package ecosystem.
     ///
-    /// Components without an ecosystem are grouped under `"unknown"`.
+    /// components without an ecosystem are grouped under `"unknown"`.
     pub fn ecosystem_breakdown(&self) -> BTreeMap<String, EcosystemCounts> {
         let mut breakdown: BTreeMap<String, EcosystemCounts> = BTreeMap::new();
 
@@ -119,10 +119,10 @@ impl Diff {
         breakdown
     }
 
-    /// Groups the full diff by ecosystem, returning per-ecosystem slices.
+    /// groups the full diff by ecosystem, returning per-ecosystem slices.
     ///
-    /// Components without an ecosystem are grouped under `"unknown"`.
-    /// This clones components out of the diff; use
+    /// components without an ecosystem are grouped under `"unknown"`.
+    /// this clones components out of the diff; use
     /// [`into_group_by_ecosystem`](Self::into_group_by_ecosystem) to move
     /// them instead when you own the diff.
     pub fn group_by_ecosystem(&self) -> GroupedDiff {
@@ -135,7 +135,7 @@ impl Diff {
         )
     }
 
-    /// Consuming variant of [`group_by_ecosystem`](Self::group_by_ecosystem)
+    /// consuming variant of [`group_by_ecosystem`](Self::group_by_ecosystem)
     /// that moves components instead of cloning them.
     pub fn into_group_by_ecosystem(self) -> GroupedDiff {
         group_components_by_ecosystem(
@@ -147,7 +147,7 @@ impl Diff {
         )
     }
 
-    /// Filters the diff to only include components whose ecosystem matches
+    /// filters the diff to only include components whose ecosystem matches
     /// the given predicate. Adjusts `old_total`, `new_total`, and `unchanged`
     /// to reflect the filtered view.
     ///
@@ -174,7 +174,7 @@ impl Diff {
     }
 }
 
-/// Shared implementation for [`Diff::group_by_ecosystem`] and
+/// shared implementation for [`Diff::group_by_ecosystem`] and
 /// [`Diff::into_group_by_ecosystem`]. Accepts owned iterators so both the
 /// cloning and consuming callers can share the same loop logic.
 fn group_components_by_ecosystem(
@@ -206,7 +206,7 @@ fn group_components_by_ecosystem(
     }
 }
 
-/// Diff grouped by package ecosystem.
+/// diff grouped by package ecosystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupedDiff {
     pub by_ecosystem: BTreeMap<String, EcosystemDiff>,
@@ -216,9 +216,9 @@ pub struct GroupedDiff {
 }
 
 impl GroupedDiff {
-    /// Derives per-ecosystem counts from the already-grouped data.
+    /// derives per-ecosystem counts from the already-grouped data.
     ///
-    /// This avoids a redundant traversal when both grouped components and
+    /// this avoids a redundant traversal when both grouped components and
     /// counts are needed — call [`Diff::group_by_ecosystem`] once, then
     /// derive counts from the result.
     pub fn ecosystem_breakdown(&self) -> BTreeMap<String, EcosystemCounts> {
@@ -238,7 +238,7 @@ impl GroupedDiff {
     }
 }
 
-/// Per-ecosystem slice of added, removed, and changed components.
+/// per-ecosystem slice of added, removed, and changed components.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EcosystemDiff {
     pub added: Vec<Component>,
@@ -246,85 +246,85 @@ pub struct EcosystemDiff {
     pub changed: Vec<ComponentChange>,
 }
 
-/// A component that exists in both SBOMs with detected changes.
+/// a component that exists in both SBOMs with detected changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentChange {
-    /// The component identifier (from the new SBOM).
+    /// the component identifier (from the new SBOM).
     pub id: ComponentId,
-    /// The component as it appeared in the old SBOM.
+    /// the component as it appeared in the old SBOM.
     pub old: Component,
-    /// The component as it appears in the new SBOM.
+    /// the component as it appears in the new SBOM.
     pub new: Component,
-    /// List of specific field changes detected.
+    /// list of specific field changes detected.
     pub changes: Vec<FieldChange>,
 }
 
-/// A dependency edge change for a single parent component.
+/// a dependency edge change for a single parent component.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeDiff {
-    /// The parent component whose dependencies changed.
+    /// the parent component whose dependencies changed.
     pub parent: ComponentId,
-    /// Dependencies added in the new SBOM, with their dependency kind.
+    /// dependencies added in the new SBOM, with their dependency kind.
     pub added: BTreeMap<ComponentId, DependencyKind>,
-    /// Dependencies removed from the old SBOM, with their dependency kind.
+    /// dependencies removed from the old SBOM, with their dependency kind.
     pub removed: BTreeMap<ComponentId, DependencyKind>,
-    /// Dependencies whose kind changed between old and new (old_kind, new_kind).
+    /// dependencies whose kind changed between old and new (old_kind, new_kind).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub kind_changed: BTreeMap<ComponentId, (DependencyKind, DependencyKind)>,
 }
 
-/// A specific field that changed between two versions of a component.
+/// a specific field that changed between two versions of a component.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FieldChange {
-    /// Version changed: (old, new).
+    /// version changed: (old, new).
     Version(Option<String>, Option<String>),
-    /// Licenses changed: (old, new).
+    /// licenses changed: (old, new).
     License(BTreeSet<String>, BTreeSet<String>),
-    /// Supplier changed: (old, new).
+    /// supplier changed: (old, new).
     Supplier(Option<String>, Option<String>),
-    /// Package URL changed: (old, new).
+    /// package URL changed: (old, new).
     Purl(Option<String>, Option<String>),
-    /// Description changed: (old, new).
+    /// description changed: (old, new).
     Description(Option<String>, Option<String>),
-    /// Hashes changed: (old, new).
+    /// hashes changed: (old, new).
     Hashes(BTreeMap<String, String>, BTreeMap<String, String>),
-    /// Ecosystem changed: (old, new).
+    /// ecosystem changed: (old, new).
     Ecosystem(Option<String>, Option<String>),
 }
 
-/// Fields that can be compared and filtered.
+/// fields that can be compared and filtered.
 ///
-/// Use with [`Differ::diff`] to limit comparison to specific fields.
+/// use with [`Differ::diff`] to limit comparison to specific fields.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Field {
-    /// Package version.
+    /// package version.
     Version,
-    /// License identifiers.
+    /// license identifiers.
     License,
-    /// Supplier/publisher.
+    /// supplier/publisher.
     Supplier,
-    /// Package URL.
+    /// package URL.
     Purl,
-    /// Human-readable description.
+    /// human-readable description.
     Description,
-    /// Checksums.
+    /// checksums.
     Hashes,
-    /// Package ecosystem.
+    /// package ecosystem.
     Ecosystem,
-    /// Dependency edges.
+    /// dependency edges.
     Deps,
 }
 
 /// SBOM comparison engine.
 ///
-/// Compares two SBOMs and produces a [`Diff`] describing the changes.
-/// Components are matched first by ID (purl), then by identity (name + ecosystem).
+/// compares two SBOMs and produces a [`Diff`] describing the changes.
+/// components are matched first by ID (purl), then by identity (name + ecosystem).
 pub struct Differ;
 
 impl Differ {
-    /// Compares two SBOMs and returns the differences.
+    /// compares two SBOMs and returns the differences.
     ///
-    /// Both SBOMs are normalized before comparison to ignore irrelevant differences
+    /// both SBOMs are normalized before comparison to ignore irrelevant differences
     /// like ordering or metadata timestamps. This method clones both SBOMs
     /// internally; use [`diff_owned`](Self::diff_owned) to avoid cloning when
     /// you already own the SBOMs.
@@ -354,10 +354,10 @@ impl Differ {
         Self::diff_owned(old.clone(), new.clone(), only)
     }
 
-    /// Consuming variant of [`diff`](Self::diff) that normalizes in place,
+    /// consuming variant of [`diff`](Self::diff) that normalizes in place,
     /// avoiding two full SBOM clones.
     pub fn diff_owned(mut old: Sbom, mut new: Sbom, only: Option<&[Field]>) -> Diff {
-        // Compare metadata before normalize() strips volatile fields
+        // compare metadata before normalize() strips volatile fields
         let metadata_changed = {
             let mut mc = MetadataChange {
                 timestamp: None,
@@ -393,7 +393,7 @@ impl Differ {
         let mut processed_old = HashSet::new();
         let mut processed_new = HashSet::new();
 
-        // Track old_id -> new_id mappings for edge reconciliation
+        // track old_id -> new_id mappings for edge reconciliation
         let mut id_mapping: BTreeMap<ComponentId, ComponentId> = BTreeMap::new();
 
         // 1. Match by ID
@@ -410,10 +410,10 @@ impl Differ {
         }
 
         // 2. Reconciliation: Match by "Identity" (Name + Ecosystem)
-        // When purls are absent or change, we match by (ecosystem, name).
-        // If either ecosystem is None, we treat it as a wildcard and match by name alone.
+        // when purls are absent or change, we match by (ecosystem, name).
+        // if either ecosystem is None, we treat it as a wildcard and match by name alone.
         //
-        // The map is keyed by name, then by ecosystem, so the wildcard lookup
+        // the map is keyed by name, then by ecosystem, so the wildcard lookup
         // (case 3: new has no ecosystem → match any old with same name) is
         // O(k) where k is the number of distinct ecosystems sharing that name,
         // rather than a linear scan of the entire map.
@@ -435,23 +435,23 @@ impl Differ {
                 continue;
             }
 
-            // Try to find a matching old component:
+            // try to find a matching old component:
             // 1. Exact match on (ecosystem, name)
             // 2. If new has ecosystem but no exact match, try old with None ecosystem (same name)
             // 3. If new has no ecosystem, try any old with same name
             let matched_old_id = old_identity_map
                 .get_mut(&new_comp.name)
                 .and_then(|eco_map| {
-                    // Case 1: exact match on (ecosystem, name)
+                    // case 1: exact match on (ecosystem, name)
                     eco_map
                         .get_mut(&new_comp.ecosystem)
                         .and_then(|ids| ids.pop())
                         .or_else(|| {
                             if new_comp.ecosystem.is_some() {
-                                // Case 2: new has ecosystem, try old with None ecosystem
+                                // case 2: new has ecosystem, try old with None ecosystem
                                 eco_map.get_mut(&None).and_then(|ids| ids.pop())
                             } else {
-                                // Case 3: new has no ecosystem, try any old with same name
+                                // case 3: new has no ecosystem, try any old with same name
                                 eco_map.values_mut().find_map(|ids| ids.pop())
                             }
                         })
@@ -511,11 +511,11 @@ impl Differ {
         }
     }
 
-    /// Computes dependency edge differences between two SBOMs.
+    /// computes dependency edge differences between two SBOMs.
     ///
-    /// Uses the id_mapping to translate old component IDs to new IDs when
+    /// uses the id_mapping to translate old component IDs to new IDs when
     /// components were matched by identity rather than exact ID match.
-    /// Tracks dependency kind for added/removed edges and detects kind changes
+    /// tracks dependency kind for added/removed edges and detects kind changes
     /// (e.g. a dependency moving from dev to runtime).
     fn compute_edge_diffs(
         old: &Sbom,
@@ -524,15 +524,15 @@ impl Differ {
     ) -> Vec<EdgeDiff> {
         let mut edge_diffs = Vec::new();
 
-        // Build reverse mapping (new_id -> old_id) once upfront for O(1) lookups.
-        // The forward id_mapping is old_id -> new_id; we need the inverse for
+        // build reverse mapping (new_id -> old_id) once upfront for O(1) lookups.
+        // the forward id_mapping is old_id -> new_id; we need the inverse for
         // translating new parent IDs back to old parent IDs.
         let reverse_mapping: BTreeMap<ComponentId, ComponentId> = id_mapping
             .iter()
             .map(|(old_id, new_id)| (new_id.clone(), old_id.clone()))
             .collect();
 
-        // Helper to translate old ID to new ID (if mapped) or keep as-is
+        // helper to translate old ID to new ID (if mapped) or keep as-is
         let translate_id = |old_id: &ComponentId| -> ComponentId {
             id_mapping
                 .get(old_id)
@@ -540,25 +540,25 @@ impl Differ {
                 .unwrap_or_else(|| old_id.clone())
         };
 
-        // Collect all parent IDs from new SBOM's perspective
-        // We use new IDs as the canonical reference
+        // collect all parent IDs from new SBOM's perspective
+        // we use new IDs as the canonical reference
         let mut all_parents: BTreeSet<ComponentId> = new.dependencies.keys().cloned().collect();
 
-        // Also include old parents (translated to new IDs)
+        // also include old parents (translated to new IDs)
         for old_parent in old.dependencies.keys() {
             all_parents.insert(translate_id(old_parent));
         }
 
         for parent_id in all_parents {
-            // Get new dependencies for this parent (child -> kind)
+            // get new dependencies for this parent (child -> kind)
             let new_children: BTreeMap<ComponentId, DependencyKind> = new
                 .dependencies
                 .get(&parent_id)
                 .cloned()
                 .unwrap_or_default();
 
-            // Get old dependencies, translating both parent and child IDs
-            // Look up the old parent ID via the reverse map
+            // get old dependencies, translating both parent and child IDs
+            // look up the old parent ID via the reverse map
             let old_parent_id = reverse_mapping
                 .get(&parent_id)
                 .cloned()
@@ -578,7 +578,7 @@ impl Differ {
             let new_keys: BTreeSet<&ComponentId> = new_children.keys().collect();
             let old_keys: BTreeSet<&ComponentId> = old_children.keys().collect();
 
-            // Compute added and removed edges with their kinds
+            // compute added and removed edges with their kinds
             let added: BTreeMap<ComponentId, DependencyKind> = new_keys
                 .difference(&old_keys)
                 .map(|&id| (id.clone(), new_children[id]))
@@ -588,7 +588,7 @@ impl Differ {
                 .map(|&id| (id.clone(), old_children[id]))
                 .collect();
 
-            // Detect kind changes for edges that exist in both
+            // detect kind changes for edges that exist in both
             let kind_changed: BTreeMap<ComponentId, (DependencyKind, DependencyKind)> = new_keys
                 .intersection(&old_keys)
                 .filter_map(|&id| {
@@ -615,9 +615,9 @@ impl Differ {
         edge_diffs
     }
 
-    /// Builds a human-readable display name map for component IDs in edge diffs.
+    /// builds a human-readable display name map for component IDs in edge diffs.
     ///
-    /// Only includes entries for hash-based IDs (`h:...`) since purl-based IDs
+    /// only includes entries for hash-based IDs (`h:...`) since purl-based IDs
     /// are already human-readable. Looks up component names from both SBOMs.
     fn build_component_names(
         old: &Sbom,
@@ -626,7 +626,7 @@ impl Differ {
     ) -> BTreeMap<ComponentId, String> {
         let mut names = BTreeMap::new();
 
-        // Collect all IDs that appear in edge diffs
+        // collect all IDs that appear in edge diffs
         let mut ids = BTreeSet::new();
         for edge in edge_diffs {
             ids.insert(&edge.parent);
@@ -635,13 +635,13 @@ impl Differ {
             ids.extend(edge.kind_changed.keys());
         }
 
-        // Only resolve hash-based IDs — purls are already readable
+        // only resolve hash-based IDs — purls are already readable
         for id in ids {
             if !id.as_str().starts_with("h:") {
                 continue;
             }
 
-            // Try new SBOM first (edge diffs use new-SBOM IDs), then old
+            // try new SBOM first (edge diffs use new-SBOM IDs), then old
             let comp = new.components.get(id).or_else(|| old.components.get(id));
             if let Some(comp) = comp {
                 let display = match &comp.version {
@@ -934,7 +934,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        // Only description: should see description change but not version
+        // only description: should see description change but not version
         let diff = Differ::diff(&old, &new, Some(&[Field::Description]));
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
@@ -943,7 +943,7 @@ mod tests {
             FieldChange::Description(_, _)
         ));
 
-        // Only version: should see version change but not description
+        // only version: should see version change but not description
         let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
@@ -1015,7 +1015,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        // Only ecosystem: should see ecosystem change but not version
+        // only ecosystem: should see ecosystem change but not version
         let diff = Differ::diff(&old, &new, Some(&[Field::Ecosystem]));
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
@@ -1024,7 +1024,7 @@ mod tests {
             FieldChange::Ecosystem(_, _)
         ));
 
-        // Only version: should see version change but not ecosystem
+        // only version: should see version change but not ecosystem
         let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
@@ -1198,18 +1198,18 @@ mod tests {
 
     #[test]
     fn test_purl_change_same_ecosystem_name_is_change_not_add_remove() {
-        // Component with purl in old, different purl in new (same ecosystem+name)
-        // Should be treated as a CHANGE with Purl field change, not add/remove
+        // component with purl in old, different purl in new (same ecosystem+name)
+        // should be treated as a CHANGE with Purl field change, not add/remove
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Old: lodash with one purl
+        // old: lodash with one purl
         let mut c_old = Component::new("lodash".to_string(), Some("4.17.20".to_string()));
         c_old.purl = Some("pkg:npm/lodash@4.17.20".to_string());
         c_old.ecosystem = Some("npm".to_string());
         c_old.id = ComponentId::new(c_old.purl.as_deref(), &[]);
 
-        // New: lodash with updated purl (version bump)
+        // new: lodash with updated purl (version bump)
         let mut c_new = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
         c_new.purl = Some("pkg:npm/lodash@4.17.21".to_string());
         c_new.ecosystem = Some("npm".to_string());
@@ -1220,14 +1220,14 @@ mod tests {
 
         let diff = Differ::diff(&old, &new, None);
 
-        // Should NOT be add/remove
+        // should NOT be add/remove
         assert_eq!(diff.added.len(), 0, "Should not have added components");
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
 
-        // Should be a change
+        // should be a change
         assert_eq!(diff.changed.len(), 1, "Should have one changed component");
 
-        // Should include both Version and Purl changes
+        // should include both Version and Purl changes
         let changes = &diff.changed[0].changes;
         assert!(changes
             .iter()
@@ -1237,8 +1237,8 @@ mod tests {
 
     #[test]
     fn test_purl_removed_is_change() {
-        // Component with purl in old, no purl in new (same name)
-        // This is realistic: old SBOM from tool that adds purls, new from tool that doesn't
+        // component with purl in old, no purl in new (same name)
+        // this is realistic: old SBOM from tool that adds purls, new from tool that doesn't
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
@@ -1247,7 +1247,7 @@ mod tests {
         c_old.ecosystem = Some("npm".to_string()); // Extracted from purl
         c_old.id = ComponentId::new(c_old.purl.as_deref(), &[]);
 
-        // New component without purl - ecosystem is None (realistic!)
+        // new component without purl - ecosystem is None (realistic!)
         let mut c_new = Component::new("lodash".to_string(), Some("4.17.21".to_string()));
         c_new.purl = None;
         c_new.ecosystem = None; // No purl means no ecosystem extraction
@@ -1263,7 +1263,7 @@ mod tests {
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
         assert_eq!(diff.changed.len(), 1, "Should have one changed component");
 
-        // Should have Purl change
+        // should have Purl change
         assert!(diff.changed[0]
             .changes
             .iter()
@@ -1272,8 +1272,8 @@ mod tests {
 
     #[test]
     fn test_purl_added_is_change() {
-        // Component with no purl in old, purl in new
-        // This is realistic: old SBOM without purls, new from better tooling
+        // component with no purl in old, purl in new
+        // this is realistic: old SBOM without purls, new from better tooling
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
@@ -1299,17 +1299,17 @@ mod tests {
 
     #[test]
     fn test_same_name_different_ecosystems_not_matched() {
-        // Two components with same name but different ecosystems should NOT match
+        // two components with same name but different ecosystems should NOT match
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Old: "utils" from npm
+        // old: "utils" from npm
         let mut c_old = Component::new("utils".to_string(), Some("1.0.0".to_string()));
         c_old.purl = Some("pkg:npm/utils@1.0.0".to_string());
         c_old.ecosystem = Some("npm".to_string());
         c_old.id = ComponentId::new(c_old.purl.as_deref(), &[]);
 
-        // New: "utils" from pypi (different ecosystem!)
+        // new: "utils" from pypi (different ecosystem!)
         let mut c_new = Component::new("utils".to_string(), Some("1.0.0".to_string()));
         c_new.purl = Some("pkg:pypi/utils@1.0.0".to_string());
         c_new.ecosystem = Some("pypi".to_string());
@@ -1320,7 +1320,7 @@ mod tests {
 
         let diff = Differ::diff(&old, &new, None);
 
-        // Should be separate add/remove, NOT a change
+        // should be separate add/remove, NOT a change
         assert_eq!(diff.added.len(), 1, "pypi/utils should be added");
         assert_eq!(diff.removed.len(), 1, "npm/utils should be removed");
         assert_eq!(
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn test_same_name_both_no_ecosystem_matched() {
-        // Components with same name and both having None ecosystem should match
+        // components with same name and both having None ecosystem should match
         // (backwards compatibility for SBOMs without purls)
         let mut old = Sbom::default();
         let mut new = Sbom::default();
@@ -1370,7 +1370,7 @@ mod tests {
         let child_a_id = c2.id.clone();
         let child_b_id = c3.id.clone();
 
-        // Add all components to both SBOMs
+        // add all components to both SBOMs
         old.components.insert(c1.id.clone(), c1.clone());
         old.components.insert(c2.id.clone(), c2.clone());
         old.components.insert(c3.id.clone(), c3.clone());
@@ -1379,13 +1379,13 @@ mod tests {
         new.components.insert(c2.id.clone(), c2);
         new.components.insert(c3.id.clone(), c3);
 
-        // Old: parent -> child-a
+        // old: parent -> child-a
         old.dependencies
             .entry(parent_id.clone())
             .or_default()
             .insert(child_a_id.clone(), DependencyKind::Runtime);
 
-        // New: parent -> child-b (removed child-a, added child-b)
+        // new: parent -> child-b (removed child-a, added child-b)
         new.dependencies
             .entry(parent_id.clone())
             .or_default()
@@ -1401,24 +1401,24 @@ mod tests {
 
     #[test]
     fn test_edge_diff_with_identity_reconciliation() {
-        // Test that edge diffs work when components are matched by identity
+        // test that edge diffs work when components are matched by identity
         // (different IDs but same name/ecosystem)
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Parent with purl in old
+        // parent with purl in old
         let mut parent_old = Component::new("parent".to_string(), Some("1.0".to_string()));
         parent_old.purl = Some("pkg:npm/parent@1.0".to_string());
         parent_old.ecosystem = Some("npm".to_string());
         parent_old.id = ComponentId::new(parent_old.purl.as_deref(), &[]);
 
-        // Parent with different purl in new (same name/ecosystem)
+        // parent with different purl in new (same name/ecosystem)
         let mut parent_new = Component::new("parent".to_string(), Some("1.1".to_string()));
         parent_new.purl = Some("pkg:npm/parent@1.1".to_string());
         parent_new.ecosystem = Some("npm".to_string());
         parent_new.id = ComponentId::new(parent_new.purl.as_deref(), &[]);
 
-        // Child component (same in both)
+        // child component (same in both)
         let child = Component::new("child".to_string(), Some("1.0".to_string()));
 
         old.components
@@ -1429,13 +1429,13 @@ mod tests {
             .insert(parent_new.id.clone(), parent_new.clone());
         new.components.insert(child.id.clone(), child.clone());
 
-        // Old: parent -> child
+        // old: parent -> child
         old.dependencies
             .entry(parent_old.id.clone())
             .or_default()
             .insert(child.id.clone(), DependencyKind::Runtime);
 
-        // New: parent -> child (same edge, but parent has different ID)
+        // new: parent -> child (same edge, but parent has different ID)
         new.dependencies
             .entry(parent_new.id.clone())
             .or_default()
@@ -1443,7 +1443,7 @@ mod tests {
 
         let diff = Differ::diff(&old, &new, None);
 
-        // Components should be matched by identity, so no spurious edge changes
+        // components should be matched by identity, so no spurious edge changes
         // (the edge parent->child exists in both, just under different parent IDs)
         assert_eq!(
             diff.edge_diffs.len(),
@@ -1454,7 +1454,7 @@ mod tests {
 
     #[test]
     fn test_edge_diff_filtering() {
-        // Test that --only filtering excludes edge diffs when deps not included
+        // test that --only filtering excludes edge diffs when deps not included
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
@@ -1470,21 +1470,21 @@ mod tests {
         new.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        // New has an edge that old doesn't
+        // new has an edge that old doesn't
         new.dependencies
             .entry(parent_id.clone())
             .or_default()
             .insert(child_id, DependencyKind::Runtime);
 
-        // Without filtering - should have edge diff
+        // without filtering - should have edge diff
         let diff = Differ::diff(&old, &new, None);
         assert_eq!(diff.edge_diffs.len(), 1);
 
-        // With filtering to only Version - should NOT have edge diff
+        // with filtering to only Version - should NOT have edge diff
         let diff_filtered = Differ::diff(&old, &new, Some(&[Field::Version]));
         assert_eq!(diff_filtered.edge_diffs.len(), 0);
 
-        // With filtering to include Deps - should have edge diff
+        // with filtering to include Deps - should have edge diff
         let diff_with_deps = Differ::diff(&old, &new, Some(&[Field::Deps]));
         assert_eq!(diff_with_deps.edge_diffs.len(), 1);
     }
@@ -1613,7 +1613,7 @@ mod tests {
         assert_eq!(unknown.removed.len(), 0);
         assert_eq!(unknown.changed.len(), 0);
 
-        // Derived breakdown should match direct breakdown
+        // derived breakdown should match direct breakdown
         let grouped_counts = grouped.ecosystem_breakdown();
         let direct_counts = diff.ecosystem_breakdown();
         assert_eq!(grouped_counts, direct_counts);
@@ -1671,7 +1671,7 @@ mod tests {
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Components without purls → hash-based IDs
+        // components without purls → hash-based IDs
         let parent = Component::new("my-app".to_string(), Some("1.0".to_string()));
         let child_a = Component::new("dep-old".to_string(), Some("0.1".to_string()));
         let child_b = Component::new("dep-new".to_string(), Some("0.2".to_string()));
@@ -1681,7 +1681,7 @@ mod tests {
         new.components.insert(parent.id.clone(), parent.clone());
         new.components.insert(child_b.id.clone(), child_b.clone());
 
-        // Set up edges: old parent -> child_a, new parent -> child_b
+        // set up edges: old parent -> child_a, new parent -> child_b
         old.dependencies.insert(
             parent.id.clone(),
             BTreeMap::from([(child_a.id.clone(), DependencyKind::Runtime)]),
@@ -1693,7 +1693,7 @@ mod tests {
 
         let diff = Differ::diff(&old, &new, None);
 
-        // All IDs in edge diffs should be hash-based (no purls)
+        // all IDs in edge diffs should be hash-based (no purls)
         assert!(diff.edge_diffs[0].parent.as_str().starts_with("h:"));
 
         // component_names should resolve all hash IDs to readable names
@@ -1752,7 +1752,7 @@ mod tests {
     fn test_display_name_fallback() {
         let diff = Diff::default();
         let unknown_id = ComponentId::new(None, &[("name", "mystery")]);
-        // No entry in component_names → falls back to raw ID
+        // no entry in component_names → falls back to raw ID
         assert_eq!(diff.display_name(&unknown_id), unknown_id.as_str());
     }
 
@@ -1792,7 +1792,7 @@ mod tests {
 
         let mut diff = Differ::diff(&old, &new, None);
 
-        // Pre-filtered totals for npm: old has 1 npm (npm2), new has 2 npm (npm1, npm2)
+        // pre-filtered totals for npm: old has 1 npm (npm2), new has 2 npm (npm1, npm2)
         diff.filter_by_ecosystem(
             |eco| eco == Some("npm"),
             1, // old npm count
@@ -1824,7 +1824,7 @@ mod tests {
         new.components.insert(npm1.id.clone(), npm1);
         new.components.insert(cargo2.id.clone(), cargo2);
 
-        // Exclude npm: should only see cargo changes
+        // exclude npm: should only see cargo changes
         let mut diff = Differ::diff(&old, &new, None);
         diff.filter_by_ecosystem(
             |eco| eco != Some("npm"),
@@ -1840,7 +1840,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_ecosystem_unknown() {
-        // Components without ecosystem are treated as "unknown"
+        // components without ecosystem are treated as "unknown"
         let old = Sbom::default();
         let mut new = Sbom::default();
 
@@ -1853,7 +1853,7 @@ mod tests {
 
         let mut diff = Differ::diff(&old, &new, None);
 
-        // Include "unknown" - should keep only the component without ecosystem
+        // include "unknown" - should keep only the component without ecosystem
         diff.filter_by_ecosystem(
             |eco| eco.is_none(),
             0,
@@ -1866,14 +1866,14 @@ mod tests {
 
     #[test]
     fn test_filter_by_ecosystem_changed_uses_new_ecosystem() {
-        // When old has no ecosystem but new gained one (e.g. purl added),
+        // when old has no ecosystem but new gained one (e.g. purl added),
         // they match by name and the change uses the new component's ecosystem.
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Old: no ecosystem (wildcard match)
+        // old: no ecosystem (wildcard match)
         let c_old = Component::new("pkg".into(), Some("1.0".into()));
-        // New: gains npm ecosystem + version bump
+        // new: gains npm ecosystem + version bump
         let mut c_new = Component::new("pkg".into(), Some("2.0".into()));
         c_new.ecosystem = Some("npm".into());
 
@@ -1883,11 +1883,11 @@ mod tests {
         let mut diff = Differ::diff(&old, &new, None);
         assert_eq!(diff.changed.len(), 1);
 
-        // Filter to npm: should keep the changed component (new ecosystem is npm)
+        // filter to npm: should keep the changed component (new ecosystem is npm)
         diff.filter_by_ecosystem(|eco| eco == Some("npm"), 0, 1);
         assert_eq!(diff.changed.len(), 1);
 
-        // Filter to cargo: should exclude (new ecosystem is npm, not cargo)
+        // filter to cargo: should exclude (new ecosystem is npm, not cargo)
         let old2 = {
             let mut s = Sbom::default();
             let c = Component::new("pkg".into(), Some("1.0".into()));
@@ -1918,7 +1918,7 @@ mod tests {
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // Old: 2 npm, 1 cargo
+        // old: 2 npm, 1 cargo
         let mut n1 = Component::new("a".into(), Some("1".into()));
         n1.ecosystem = Some("npm".into());
         let mut n2 = Component::new("b".into(), Some("1".into()));
@@ -1930,7 +1930,7 @@ mod tests {
         old.components.insert(n2.id.clone(), n2.clone());
         old.components.insert(c1.id.clone(), c1);
 
-        // New: same 2 npm (unchanged), no cargo
+        // new: same 2 npm (unchanged), no cargo
         new.components.insert(n1.id.clone(), n1);
         new.components.insert(n2.id.clone(), n2);
 
@@ -1938,7 +1938,7 @@ mod tests {
         assert_eq!(diff.old_total, 3);
         assert_eq!(diff.new_total, 2);
 
-        // Filter to npm only
+        // filter to npm only
         diff.filter_by_ecosystem(|eco| eco == Some("npm"), 2, 2);
 
         assert_eq!(diff.old_total, 2);
@@ -1953,7 +1953,7 @@ mod tests {
     fn test_diff_owned_identity() {
         let mut sbom = Sbom::default();
 
-        // Build a non-trivial SBOM with varied component fields
+        // build a non-trivial SBOM with varied component fields
         let mut parent = Component::new("my-app".to_string(), Some("2.0.0".to_string()));
         parent.purl = Some("pkg:cargo/my-app@2.0.0".to_string());
         parent.ecosystem = Some("cargo".to_string());
@@ -1978,7 +1978,7 @@ mod tests {
         sbom.components.insert(dep_a.id.clone(), dep_a.clone());
         sbom.components.insert(dep_b.id.clone(), dep_b.clone());
 
-        // Add dependency edges: parent -> dep-a (runtime), parent -> dep-b (dev)
+        // add dependency edges: parent -> dep-a (runtime), parent -> dep-b (dev)
         sbom.dependencies
             .entry(parent.id.clone())
             .or_default()

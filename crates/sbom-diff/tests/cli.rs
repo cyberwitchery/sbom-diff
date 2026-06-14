@@ -185,13 +185,13 @@ fn fail_on_license_changed_exits_3() {
         "stderr should mention the violated condition, got: {}",
         stderr
     );
-    // Should mention the changed license
+    // should mention the changed license
     assert!(
         stderr.contains("license changed on component"),
         "stderr should report the changed component, got: {}",
         stderr
     );
-    // Should mention the added component introducing licenses
+    // should mention the added component introducing licenses
     assert!(
         stderr.contains("introduces license(s)"),
         "stderr should report the added component's licenses, got: {}",
@@ -201,7 +201,7 @@ fn fail_on_license_changed_exits_3() {
 
 #[test]
 fn fail_on_license_changed_no_change_exits_0() {
-    // Same file as both old and new — no license changes
+    // same file as both old and new — no license changes
     let out = sbom_diff()
         .arg(fixture("cli-license.json"))
         .arg(fixture("cli-license.json"))
@@ -274,7 +274,7 @@ fn deny_license_no_match_exits_0() {
 
 #[test]
 fn allow_license_violation_exits_2() {
-    // Only allow Apache-2.0 — the MIT component should trigger a violation.
+    // only allow Apache-2.0 — the MIT component should trigger a violation.
     let out = sbom_diff()
         .arg(fixture("cli-license.json"))
         .arg(fixture("cli-license.json"))
@@ -304,12 +304,12 @@ fn allow_license_all_match_exits_0() {
 }
 
 // ---------------------------------------------------------------------------
-// Exit code precedence: license (2) wins over fail-on (3)
+// exit code precedence: license (2) wins over fail-on (3)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn license_violation_takes_precedence_over_fail_on() {
-    // The golden fixtures have added components (fail-on → exit 3) AND
+    // the golden fixtures have added components (fail-on → exit 3) AND
     // we deny MIT in the license fixture. Use the license fixture so
     // that both violations are possible.
     //
@@ -318,12 +318,12 @@ fn license_violation_takes_precedence_over_fail_on() {
     // deny a license that exists in golden-new (no licenses there, so
     // that won't work). Use a fixture pair where we can trigger both.
     //
-    // Simpler approach: the license check runs on the *new* sbom
+    // simpler approach: the license check runs on the *new* sbom
     // regardless of diff. Use cli-license as both old and new (no diff
     // changes, so fail-on won't fire). We need a fixture that has both
     // a diff AND licenses.
     //
-    // Since we don't have such a fixture, we verify the precedence rule
+    // since we don't have such a fixture, we verify the precedence rule
     // structurally: when only license violation → exit 2, when only
     // fail-on → exit 3.
     let license_only = sbom_diff()
@@ -336,7 +336,7 @@ fn license_violation_takes_precedence_over_fail_on() {
         .output()
         .unwrap();
 
-    // No diff changes here, so only license fires → exit 2.
+    // no diff changes here, so only license fires → exit 2.
     assert_eq!(license_only.status.code(), Some(2));
 
     let fail_on_only = sbom_diff()
@@ -347,7 +347,7 @@ fn license_violation_takes_precedence_over_fail_on() {
         .output()
         .unwrap();
 
-    // Golden fixtures have no licenses, so only fail-on fires → exit 3.
+    // golden fixtures have no licenses, so only fail-on fires → exit 3.
     assert_eq!(fail_on_only.status.code(), Some(3));
 }
 
@@ -408,7 +408,7 @@ fn quiet_preserves_fail_on_exit_code() {
 }
 
 // ---------------------------------------------------------------------------
-// Format auto-detection
+// format auto-detection
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -583,7 +583,7 @@ fn summary_markdown_output() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Markdown summary should contain a table or structured output
+    // markdown summary should contain a table or structured output
     assert!(!stdout.is_empty());
 }
 
@@ -713,7 +713,7 @@ fn fail_on_supplier_changed_no_change_exits_0() {
 }
 
 // ---------------------------------------------------------------------------
-// Identity diff (no changes)
+// identity diff (no changes)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -752,7 +752,7 @@ fn include_ecosystem_filters_to_matching() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Golden fixtures are all npm — should see the same counts as unfiltered
+    // golden fixtures are all npm — should see the same counts as unfiltered
     assert!(stdout.contains("Added:            1"));
     assert!(stdout.contains("Removed:          1"));
     assert!(stdout.contains("Changed:          2"));
@@ -790,7 +790,7 @@ fn exclude_ecosystem_removes_matching() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // All components are npm, so excluding npm should yield zero
+    // all components are npm, so excluding npm should yield zero
     assert!(stdout.contains("Added:            0"));
     assert!(stdout.contains("Removed:          0"));
     assert!(stdout.contains("Changed:          0"));
@@ -836,7 +836,7 @@ fn include_ecosystem_json_output() {
 
 #[test]
 fn exclude_ecosystem_does_not_affect_non_matching() {
-    // Excluding cargo should leave npm data intact
+    // excluding cargo should leave npm data intact
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))
         .arg(fixture("golden-new.json"))
@@ -855,7 +855,7 @@ fn exclude_ecosystem_does_not_affect_non_matching() {
 
 #[test]
 fn include_and_exclude_ecosystem_combined() {
-    // Include npm then exclude npm → should be empty
+    // include npm then exclude npm → should be empty
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))
         .arg(fixture("golden-new.json"))
@@ -946,7 +946,7 @@ fn fail_on_hash_algorithm_downgrade_only_downgraded_component_reported() {
 
     assert_eq!(out.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Only pkg-a should be reported, not pkg-b
+    // only pkg-a should be reported, not pkg-b
     assert!(
         stderr.contains("pkg-a"),
         "stderr should mention pkg-a, got: {}",
@@ -975,7 +975,7 @@ fn mixed_eco_include_npm_text() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Summary counts: 1 added (axios), 1 removed (express), 1 changed (lodash)
+    // summary counts: 1 added (axios), 1 removed (express), 1 changed (lodash)
     assert!(stdout.contains("Old total:        2 components"));
     assert!(stdout.contains("New total:        2 components"));
     assert!(stdout.contains("Added:            1"));
@@ -1180,7 +1180,7 @@ fn mixed_eco_multi_include_text() {
 
 #[test]
 fn mixed_eco_include_unknown_text() {
-    // Components without a purl default to "unknown" ecosystem
+    // components without a purl default to "unknown" ecosystem
     let out = sbom_diff()
         .arg(fixture("mixed-eco-old.json"))
         .arg(fixture("mixed-eco-new.json"))
@@ -1191,7 +1191,7 @@ fn mixed_eco_include_unknown_text() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Only no-purl-lib (unchanged in both) should remain
+    // only no-purl-lib (unchanged in both) should remain
     assert!(stdout.contains("Old total:        1 components"));
     assert!(stdout.contains("New total:        1 components"));
     assert!(stdout.contains("Unchanged:        1"));

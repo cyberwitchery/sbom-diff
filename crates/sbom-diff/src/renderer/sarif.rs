@@ -12,7 +12,7 @@ use std::io::Write;
 const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
 
-// Rule indices (must match order in SARIF_RULES)
+// rule indices (must match order in SARIF_RULES)
 const RULE_COMPONENT_ADDED: usize = 0;
 const RULE_COMPONENT_REMOVED: usize = 1;
 const RULE_COMPONENT_CHANGED: usize = 2;
@@ -144,7 +144,7 @@ struct SarifLogicalLocation {
 
 /// SARIF 2.1.0 renderer for GitHub Code Scanning integration.
 ///
-/// Produces a SARIF log with one run containing rules for each change type
+/// produces a SARIF log with one run containing rules for each change type
 /// (component added/removed/changed, dependency changed, metadata changed)
 /// and a result entry per finding.
 pub struct SarifRenderer;

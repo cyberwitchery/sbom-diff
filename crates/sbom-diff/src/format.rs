@@ -15,7 +15,7 @@ pub enum Format {
     SpdxTv,
 }
 
-/// Format detected by content-based heuristics.
+/// format detected by content-based heuristics.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum DetectedFormat {
     CyclonedxJson,
@@ -37,21 +37,21 @@ impl DetectedFormat {
     }
 }
 
-/// Pre-scan the first bytes of `content` for well-known SBOM format markers.
+/// pre-scan the first bytes of `content` for well-known SBOM format markers.
 ///
-/// The scan window is capped at 8 KiB — every supported format places its
+/// the scan window is capped at 8 KiB — every supported format places its
 /// identifying marker near the top of the document.
 fn detect_format(content: &[u8]) -> DetectedFormat {
     let window = &content[..content.len().min(8192)];
 
-    // Fast path: check if this looks like XML at all (after optional BOM / whitespace).
+    // fast path: check if this looks like XML at all (after optional BOM / whitespace).
     let trimmed = strip_bom_and_whitespace(window);
     if trimmed.starts_with(b"<") {
         // XML-ish — look for the CycloneDX namespace.
         if find_subsequence(window, b"cyclonedx.org/schema/bom").is_some() {
             return DetectedFormat::CyclonedxXml;
         }
-        // Could be some other XML, but not a format we support.
+        // could be some other XML, but not a format we support.
         return DetectedFormat::Unknown;
     }
 
@@ -63,14 +63,14 @@ fn detect_format(content: &[u8]) -> DetectedFormat {
         return DetectedFormat::SpdxJson;
     }
 
-    // Tag-value: lines starting with SPDXVersion:
+    // tag-value: lines starting with SPDXVersion:
     for line in window.split(|&b| b == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         let line = trim_ascii_start(line);
         if line.starts_with(b"SPDXVersion:") {
             return DetectedFormat::SpdxTv;
         }
-        // Only inspect up to the first non-empty, non-comment line.
+        // only inspect up to the first non-empty, non-comment line.
         if !line.is_empty() && !line.starts_with(b"#") {
             break;
         }
@@ -79,13 +79,13 @@ fn detect_format(content: &[u8]) -> DetectedFormat {
     DetectedFormat::Unknown
 }
 
-/// Strip a leading UTF-8 BOM and ASCII whitespace from a byte slice.
+/// strip a leading UTF-8 BOM and ASCII whitespace from a byte slice.
 fn strip_bom_and_whitespace(data: &[u8]) -> &[u8] {
     let data = data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data);
     trim_ascii_start(data)
 }
 
-/// Trim leading ASCII whitespace bytes.
+/// trim leading ASCII whitespace bytes.
 fn trim_ascii_start(data: &[u8]) -> &[u8] {
     let pos = data
         .iter()
@@ -94,12 +94,12 @@ fn trim_ascii_start(data: &[u8]) -> &[u8] {
     &data[pos..]
 }
 
-/// Naive subsequence search (good enough for small windows).
+/// naive subsequence search (good enough for small windows).
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Try a single parser, returning `Ok(sbom)` or appending to `errors`.
+/// try a single parser, returning `Ok(sbom)` or appending to `errors`.
 fn try_parse(
     content: &[u8],
     label: &str,
@@ -117,7 +117,7 @@ fn try_parse(
 
 type ParseFn = fn(&[u8]) -> Result<Sbom, Box<dyn std::fmt::Display>>;
 
-/// The four parsers in a fixed order, used for fallback iteration.
+/// the four parsers in a fixed order, used for fallback iteration.
 const ALL_PARSERS: &[(&str, ParseFn)] = &[
     ("cyclonedx json", |c| {
         CycloneDxReader::read_json(c).map_err(|e| Box::new(e) as _)
@@ -146,7 +146,7 @@ pub fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
         return Err(anyhow!("input is empty"));
     }
 
-    // Reject binary input: check for null bytes in the first 8 KiB.
+    // reject binary input: check for null bytes in the first 8 KiB.
     let probe = &content[..content.len().min(8192)];
     if probe.contains(&0) {
         return Err(anyhow!(
@@ -173,7 +173,7 @@ pub fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
 fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
     let detected = detect_format(content);
 
-    // Map detected format to the index into ALL_PARSERS that should go first.
+    // map detected format to the index into ALL_PARSERS that should go first.
     let primary_idx = match detected {
         DetectedFormat::CyclonedxJson => Some(0),
         DetectedFormat::CyclonedxXml => Some(1),
@@ -184,7 +184,7 @@ fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
 
     let mut errors = Vec::new();
 
-    // Try the detected format first.
+    // try the detected format first.
     if let Some(idx) = primary_idx {
         let (label, parse) = ALL_PARSERS[idx];
         if let Some(sbom) = try_parse(content, label, parse, &mut errors) {
@@ -192,7 +192,7 @@ fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
         }
     }
 
-    // Fallback: try remaining parsers in order.
+    // fallback: try remaining parsers in order.
     for (i, (label, parse)) in ALL_PARSERS.iter().enumerate() {
         if Some(i) == primary_idx {
             continue; // already tried
@@ -202,7 +202,7 @@ fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
         }
     }
 
-    // All parsers failed — build a targeted error message.
+    // all parsers failed — build a targeted error message.
     match detected {
         DetectedFormat::Unknown => Err(anyhow!(
             "could not detect SBOM format; the input does not contain \
@@ -411,7 +411,7 @@ mod tests {
         use std::io::Write;
         let dir = std::env::temp_dir().join("sbom-diff-test-detected");
         std::fs::create_dir_all(&dir).unwrap();
-        // Has the bomFormat marker but is otherwise invalid JSON
+        // has the bomFormat marker but is otherwise invalid JSON
         let path = dir.join("bad-cdx.json");
         std::fs::File::create(&path)
             .unwrap()

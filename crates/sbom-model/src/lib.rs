@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
-/// Format-agnostic SBOM (Software Bill of Materials) representation.
+/// format-agnostic SBOM (Software Bill of Materials) representation.
 ///
-/// This is the central type that holds all components and their relationships.
-/// It abstracts over format-specific details from CycloneDX, SPDX, and other formats.
+/// this is the central type that holds all components and their relationships.
+/// it abstracts over format-specific details from CycloneDX, SPDX, and other formats.
 ///
 /// # Example
 ///
@@ -26,13 +26,13 @@ use std::str::FromStr;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sbom {
-    /// Document-level metadata (creation time, tools, authors).
+    /// document-level metadata (creation time, tools, authors).
     pub metadata: Metadata,
-    /// All components indexed by their stable identifier.
+    /// all components indexed by their stable identifier.
     pub components: IndexMap<ComponentId, Component>,
-    /// Dependency graph as adjacency list: parent -> (child -> kind).
+    /// dependency graph as adjacency list: parent -> (child -> kind).
     pub dependencies: BTreeMap<ComponentId, BTreeMap<ComponentId, DependencyKind>>,
-    /// Non-fatal warnings produced during parsing (e.g. orphaned dependency refs).
+    /// non-fatal warnings produced during parsing (e.g. orphaned dependency refs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -50,44 +50,44 @@ impl Default for Sbom {
 
 /// SBOM document metadata.
 ///
-/// Contains information about when and how the SBOM was created.
-/// This data is stripped during normalization since it varies between
+/// contains information about when and how the SBOM was created.
+/// this data is stripped during normalization since it varies between
 /// tool runs and shouldn't affect diff comparisons.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Metadata {
     /// ISO 8601 timestamp of document creation.
     pub timestamp: Option<String>,
-    /// Tools used to generate the SBOM (e.g., "syft", "trivy").
+    /// tools used to generate the SBOM (e.g., "syft", "trivy").
     pub tools: Vec<String>,
-    /// Document authors or organizations.
+    /// document authors or organizations.
     pub authors: Vec<String>,
 }
 
-/// The semantic type of a dependency relationship.
+/// the semantic type of a dependency relationship.
 ///
 /// SPDX distinguishes between runtime, dev, build, test, optional, and
 /// provided dependencies. CycloneDX does not encode scope in its
 /// dependency graph, so all CycloneDX edges use [`Runtime`](DependencyKind::Runtime).
 ///
-/// The default is `Runtime`, which also covers generic relationships
+/// the default is `Runtime`, which also covers generic relationships
 /// like `DEPENDS_ON` or `CONTAINS` that don't specify a scope.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum DependencyKind {
-    /// Runtime or unspecified dependency (the default).
+    /// runtime or unspecified dependency (the default).
     #[default]
     Runtime,
-    /// Development-only dependency.
+    /// development-only dependency.
     Dev,
-    /// Build-time dependency.
+    /// build-time dependency.
     Build,
-    /// Test-only dependency.
+    /// test-only dependency.
     Test,
-    /// Optional dependency.
+    /// optional dependency.
     Optional,
-    /// Provided by the runtime environment.
+    /// provided by the runtime environment.
     Provided,
 }
 
@@ -104,9 +104,9 @@ impl fmt::Display for DependencyKind {
     }
 }
 
-/// Stable identifier for a component.
+/// stable identifier for a component.
 ///
-/// Used as a key in the component map and dependency graph. Prefers package URLs
+/// used as a key in the component map and dependency graph. Prefers package URLs
 /// (purls) when available since they provide globally unique identifiers. Falls
 /// back to a deterministic SHA-256 hash of component properties when no purl exists.
 ///
@@ -127,20 +127,20 @@ impl fmt::Display for DependencyKind {
 pub struct ComponentId(String);
 
 impl ComponentId {
-    /// Creates a new identifier from a purl or property hash.
+    /// creates a new identifier from a purl or property hash.
     ///
-    /// If a purl is provided, it will be canonicalized. Otherwise, a deterministic
+    /// if a purl is provided, it will be canonicalized. Otherwise, a deterministic
     /// SHA-256 hash is computed from the provided key-value properties.
     pub fn new(purl: Option<&str>, properties: &[(&str, &str)]) -> Self {
         if let Some(purl) = purl {
-            // Try to canonicalize purl
+            // try to canonicalize purl
             if let Ok(parsed) = PackageUrl::from_str(purl) {
                 return ComponentId(parsed.to_string());
             }
             return ComponentId(purl.to_string());
         }
 
-        // Deterministic hash fallback
+        // deterministic hash fallback
         let mut hasher = Sha256::new();
         for (k, v) in properties {
             hasher.update(k.as_bytes());
@@ -152,7 +152,7 @@ impl ComponentId {
         ComponentId(format!("h:{}", hash))
     }
 
-    /// Returns the identifier as a string slice.
+    /// returns the identifier as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -164,40 +164,40 @@ impl std::fmt::Display for ComponentId {
     }
 }
 
-/// A software component (package, library, or application).
+/// a software component (package, library, or application).
 ///
-/// Represents a single entry in the SBOM with all its metadata.
-/// Components are identified by their [`ComponentId`] and can have
+/// represents a single entry in the SBOM with all its metadata.
+/// components are identified by their [`ComponentId`] and can have
 /// relationships to other components via the dependency graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Component {
-    /// Stable identifier for this component.
+    /// stable identifier for this component.
     pub id: ComponentId,
-    /// Package name (e.g., "serde", "lodash").
+    /// package name (e.g., "serde", "lodash").
     pub name: String,
-    /// Package version (e.g., "1.0.0", "4.17.21").
+    /// package version (e.g., "1.0.0", "4.17.21").
     pub version: Option<String>,
-    /// Package ecosystem (e.g., "cargo", "npm", "pypi").
+    /// package ecosystem (e.g., "cargo", "npm", "pypi").
     pub ecosystem: Option<String>,
-    /// Package supplier or publisher.
+    /// package supplier or publisher.
     pub supplier: Option<String>,
-    /// Human-readable description.
+    /// human-readable description.
     pub description: Option<String>,
-    /// Package URL per the [purl spec](https://github.com/package-url/purl-spec).
+    /// package URL per the [purl spec](https://github.com/package-url/purl-spec).
     pub purl: Option<String>,
     /// SPDX license identifiers (e.g., "MIT", "Apache-2.0").
     pub licenses: BTreeSet<String>,
-    /// Checksums keyed by algorithm (e.g., "sha256" -> "abc123...").
+    /// checksums keyed by algorithm (e.g., "sha256" -> "abc123...").
     pub hashes: BTreeMap<String, String>,
-    /// Original identifiers from the source document (e.g., SPDX SPDXRef, CycloneDX bom-ref).
+    /// original identifiers from the source document (e.g., SPDX SPDXRef, CycloneDX bom-ref).
     pub source_ids: Vec<String>,
 }
 
 impl Component {
-    /// Creates a new component with the given name and optional version.
+    /// creates a new component with the given name and optional version.
     ///
-    /// The component ID is generated from a hash of the name and version.
-    /// Use this for simple cases; for full control, construct the struct directly.
+    /// the component ID is generated from a hash of the name and version.
+    /// use this for simple cases; for full control, construct the struct directly.
     pub fn new(name: String, version: Option<String>) -> Self {
         let mut props = vec![("name", name.as_str())];
         if let Some(v) = &version {
@@ -221,33 +221,33 @@ impl Component {
 }
 
 impl Sbom {
-    /// Normalizes the SBOM for deterministic comparison.
+    /// normalizes the SBOM for deterministic comparison.
     ///
-    /// This method:
+    /// this method:
     /// - Sorts components by ID
     /// - Deduplicates and sorts licenses within each component
     /// - Lowercases hash algorithms and values
     /// - Clears volatile metadata (timestamps, tools, authors)
     ///
-    /// Call this before comparing two SBOMs to ignore irrelevant differences.
+    /// call this before comparing two SBOMs to ignore irrelevant differences.
     pub fn normalize(&mut self) {
-        // Sort components by ID for deterministic output
+        // sort components by ID for deterministic output
         self.components.sort_keys();
 
-        // Normalize components
+        // normalize components
         for component in self.components.values_mut() {
             component.normalize();
         }
 
-        // Strip volatile metadata
+        // strip volatile metadata
         self.metadata.timestamp = None;
         self.metadata.tools.clear();
         self.metadata.authors.clear(); // Authors might be relevant, but often change slightly. Let's keep strict for now.
     }
 
-    /// Returns root components (those not depended on by any other component).
+    /// returns root components (those not depended on by any other component).
     ///
-    /// These are typically the top-level packages or applications in the SBOM.
+    /// these are typically the top-level packages or applications in the SBOM.
     pub fn roots(&self) -> Vec<ComponentId> {
         let targets: BTreeSet<_> = self
             .dependencies
@@ -261,7 +261,7 @@ impl Sbom {
             .collect()
     }
 
-    /// Returns direct dependencies of the given component.
+    /// returns direct dependencies of the given component.
     pub fn deps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.dependencies
             .get(id)
@@ -269,7 +269,7 @@ impl Sbom {
             .unwrap_or_default()
     }
 
-    /// Returns reverse dependencies (components that depend on the given component).
+    /// returns reverse dependencies (components that depend on the given component).
     pub fn rdeps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.dependencies
             .iter()
@@ -278,9 +278,9 @@ impl Sbom {
             .collect()
     }
 
-    /// Returns all transitive dependencies of the given component.
+    /// returns all transitive dependencies of the given component.
     ///
-    /// Traverses the dependency graph depth-first and returns all reachable components.
+    /// traverses the dependency graph depth-first and returns all reachable components.
     pub fn transitive_deps(&self, id: &ComponentId) -> BTreeSet<ComponentId> {
         let mut visited = BTreeSet::new();
         let mut stack = vec![id.clone()];
@@ -296,7 +296,7 @@ impl Sbom {
         visited
     }
 
-    /// Returns all unique ecosystems present in the SBOM.
+    /// returns all unique ecosystems present in the SBOM.
     pub fn ecosystems(&self) -> BTreeSet<String> {
         self.components
             .values()
@@ -304,7 +304,7 @@ impl Sbom {
             .collect()
     }
 
-    /// Returns all unique licenses present across all components.
+    /// returns all unique licenses present across all components.
     pub fn licenses(&self) -> BTreeSet<String> {
         self.components
             .values()
@@ -312,9 +312,9 @@ impl Sbom {
             .collect()
     }
 
-    /// Returns components that have no checksums/hashes.
+    /// returns components that have no checksums/hashes.
     ///
-    /// Useful for identifying components that may need integrity verification.
+    /// useful for identifying components that may need integrity verification.
     pub fn missing_hashes(&self) -> Vec<ComponentId> {
         self.components
             .iter()
@@ -323,7 +323,7 @@ impl Sbom {
             .collect()
     }
 
-    /// Finds a component by its package URL.
+    /// finds a component by its package URL.
     pub fn by_purl(&self, purl: &str) -> Option<&Component> {
         let id = ComponentId::new(Some(purl), &[]);
         self.components.get(&id)
@@ -331,9 +331,9 @@ impl Sbom {
 }
 
 impl Component {
-    /// Normalizes the component for deterministic comparison.
+    /// normalizes the component for deterministic comparison.
     ///
-    /// Lowercases hash keys and values. Licenses are stored as a BTreeSet
+    /// lowercases hash keys and values. Licenses are stored as a BTreeSet
     /// so they're already sorted and deduplicated.
     pub fn normalize(&mut self) {
         let normalized_hashes: BTreeMap<String, String> = self
@@ -345,9 +345,9 @@ impl Component {
     }
 }
 
-/// Extracts the ecosystem (package type) from a purl string.
+/// extracts the ecosystem (package type) from a purl string.
 ///
-/// Returns `None` if the purl is invalid or cannot be parsed.
+/// returns `None` if the purl is invalid or cannot be parsed.
 ///
 /// # Example
 ///
@@ -362,10 +362,10 @@ pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
     PackageUrl::from_str(purl).ok().map(|p| p.ty().to_string())
 }
 
-/// Extracts individual license IDs from an SPDX expression.
+/// extracts individual license IDs from an SPDX expression.
 ///
-/// Parses the expression and returns all license IDs found.
-/// If parsing fails, returns the original string as a single-element set.
+/// parses the expression and returns all license IDs found.
+/// if parsing fails, returns the original string as a single-element set.
 ///
 /// # Example
 ///
@@ -385,22 +385,22 @@ pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
                 .map(|id| id.name.to_string())
                 .collect();
             if ids.is_empty() {
-                // Expression parsed but no IDs found, keep original
+                // expression parsed but no IDs found, keep original
                 BTreeSet::from([license.to_string()])
             } else {
                 ids
             }
         }
         Err(_) => {
-            // Not a valid SPDX expression, keep original
+            // not a valid SPDX expression, keep original
             BTreeSet::from([license.to_string()])
         }
     }
 }
 
-/// Normalizes a hash algorithm name to its canonical form.
+/// normalizes a hash algorithm name to its canonical form.
 ///
-/// Handles variations in casing and hyphenation so that algorithm names
+/// handles variations in casing and hyphenation so that algorithm names
 /// from different SBOM formats (SPDX, CycloneDX) compare equal.
 ///
 /// # Example
@@ -436,10 +436,10 @@ pub fn canonical_algorithm_name(name: &str) -> String {
     .to_string()
 }
 
-/// Returns the strength tier of a hash algorithm, where higher values
+/// returns the strength tier of a hash algorithm, where higher values
 /// indicate stronger algorithms.
 ///
-/// Returns `None` for unrecognized algorithms. The tiers are:
+/// returns `None` for unrecognized algorithms. The tiers are:
 /// - 0: Non-cryptographic checksums (ADLER-32)
 /// - 1: Broken cryptographic hashes (MD2, MD4, MD5)
 /// - 2: Weak cryptographic hashes (SHA-1)
@@ -471,13 +471,13 @@ pub fn hash_algorithm_strength(name: &str) -> Option<u8> {
     }
 }
 
-/// Detects whether the hash algorithms in a component were downgraded.
+/// detects whether the hash algorithms in a component were downgraded.
 ///
-/// Compares the strongest known algorithm in `old_hashes` against the
+/// compares the strongest known algorithm in `old_hashes` against the
 /// strongest known algorithm in `new_hashes`. Returns `true` if the new
 /// set's strongest algorithm is weaker than the old set's strongest.
 ///
-/// Returns `false` when:
+/// returns `false` when:
 /// - Either hash set is empty (use `missing-hashes` for that)
 /// - Neither set contains a recognized algorithm
 /// - The new set is at least as strong as the old set
@@ -563,7 +563,7 @@ mod tests {
         assert!(ids.contains("Apache-2.0"));
         assert_eq!(ids.len(), 2);
 
-        // Single license
+        // single license
         let ids = parse_license_expression("MIT");
         assert_eq!(ids, BTreeSet::from(["MIT".to_string()]));
 
@@ -572,7 +572,7 @@ mod tests {
         assert!(ids.contains("MIT"));
         assert!(ids.contains("Apache-2.0"));
 
-        // Invalid expression kept as-is
+        // invalid expression kept as-is
         let ids = parse_license_expression("Custom License");
         assert_eq!(ids, BTreeSet::from(["Custom License".to_string()]));
 
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_license_set_equality() {
-        // Two components with same licenses in different order are equal
+        // two components with same licenses in different order are equal
         let mut c1 = Component::new("test".into(), None);
         c1.licenses.insert("MIT".into());
         c1.licenses.insert("Apache-2.0".into());
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn test_component_id_unparseable_purl() {
-        // A purl string that can't be parsed should still be used as-is
+        // a purl string that can't be parsed should still be used as-is
         let id = ComponentId::new(Some("not-a-valid-purl-but-still-a-string"), &[]);
         assert_eq!(id.as_str(), "not-a-valid-purl-but-still-a-string");
     }
@@ -780,7 +780,7 @@ mod tests {
         assert_eq!(canonical_algorithm_name("SHA-1"), "SHA-1");
         assert_eq!(canonical_algorithm_name("SHA-384"), "SHA-384");
 
-        // Case-insensitive
+        // case-insensitive
         assert_eq!(canonical_algorithm_name("sha256"), "SHA-256");
         assert_eq!(canonical_algorithm_name("sha-256"), "SHA-256");
 
@@ -801,13 +801,13 @@ mod tests {
         assert_eq!(canonical_algorithm_name("ADLER32"), "ADLER-32");
         assert_eq!(canonical_algorithm_name("ADLER-32"), "ADLER-32");
 
-        // Unknown algorithm passes through
+        // unknown algorithm passes through
         assert_eq!(canonical_algorithm_name("TIGER"), "TIGER");
     }
 
     #[test]
     fn test_hash_algorithm_strength_ordering() {
-        // Task-specified ordering: MD5 < SHA-1 < SHA-224 < SHA-256 < SHA-384 < SHA-512
+        // task-specified ordering: MD5 < SHA-1 < SHA-224 < SHA-256 < SHA-384 < SHA-512
         let md5 = hash_algorithm_strength("MD5").unwrap();
         let sha1 = hash_algorithm_strength("SHA-1").unwrap();
         let sha224 = hash_algorithm_strength("SHA-224").unwrap();
@@ -824,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_hash_algorithm_strength_variants() {
-        // Case and hyphenation variants resolve to same strength
+        // case and hyphenation variants resolve to same strength
         assert_eq!(
             hash_algorithm_strength("sha256"),
             hash_algorithm_strength("SHA-256")
@@ -854,7 +854,7 @@ mod tests {
             hash_algorithm_strength("SHA-256")
         );
 
-        // Unknown returns None
+        // unknown returns None
         assert_eq!(hash_algorithm_strength("TIGER"), None);
         assert_eq!(hash_algorithm_strength("UNKNOWN"), None);
     }
@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_is_hash_algorithm_downgrade_multi_algorithm() {
-        // Old has SHA-256 + MD5, new has only MD5 → downgrade (strongest dropped)
+        // old has SHA-256 + MD5, new has only MD5 → downgrade (strongest dropped)
         let old: BTreeMap<String, String> = [
             ("sha-256".into(), "abc".into()),
             ("md5".into(), "xyz".into()),
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_is_hash_algorithm_downgrade_multi_algorithm_kept() {
-        // Old has SHA-256 + MD5, new has SHA-256 + SHA-1 → not a downgrade
+        // old has SHA-256 + MD5, new has SHA-256 + SHA-1 → not a downgrade
         let old: BTreeMap<String, String> = [
             ("sha-256".into(), "abc".into()),
             ("md5".into(), "xyz".into()),
@@ -931,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_is_hash_algorithm_downgrade_unknown_algorithms() {
-        // Both have only unknown algorithms → false (can't determine ordering)
+        // both have only unknown algorithms → false (can't determine ordering)
         let old: BTreeMap<String, String> = [("TIGER".into(), "abc".into())].into();
         let new: BTreeMap<String, String> = [("WHIRLPOOL".into(), "def".into())].into();
         assert!(!is_hash_algorithm_downgrade(&old, &new));

@@ -1,6 +1,6 @@
-//! Output renderers for displaying SBOM diffs.
+//! output renderers for displaying SBOM diffs.
 //!
-//! This module provides formatters for different output contexts:
+//! this module provides formatters for different output contexts:
 //!
 //! - [`TextRenderer`] - Plain text for terminal output
 //! - [`MarkdownRenderer`] - GitHub-flavored markdown for PR comments
@@ -25,33 +25,33 @@ use sbom_model::DependencyKind;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
-/// Options controlling how diffs are rendered.
+/// options controlling how diffs are rendered.
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
-    /// When true, include a per-ecosystem breakdown of added/removed/changed counts.
+    /// when true, include a per-ecosystem breakdown of added/removed/changed counts.
     pub group_by_ecosystem: bool,
-    /// When true, include parser warnings in the output.
+    /// when true, include parser warnings in the output.
     pub show_warnings: bool,
-    /// Parser warnings from the old SBOM.
+    /// parser warnings from the old SBOM.
     pub old_warnings: Vec<String>,
-    /// Parser warnings from the new SBOM.
+    /// parser warnings from the new SBOM.
     pub new_warnings: Vec<String>,
 }
 
 impl RenderOptions {
-    /// Returns true when warnings should be displayed.
+    /// returns true when warnings should be displayed.
     pub fn has_warnings(&self) -> bool {
         self.show_warnings && (!self.old_warnings.is_empty() || !self.new_warnings.is_empty())
     }
 
-    /// Total number of warnings across both SBOMs.
+    /// total number of warnings across both SBOMs.
     pub fn warning_count(&self) -> usize {
         self.old_warnings.len() + self.new_warnings.len()
     }
 }
 
-/// Returns a display suffix for a dependency kind.
-/// Runtime dependencies get no suffix (they are the default/common case).
+/// returns a display suffix for a dependency kind.
+/// runtime dependencies get no suffix (they are the default/common case).
 pub(super) fn kind_suffix(kind: &DependencyKind) -> &'static str {
     match kind {
         DependencyKind::Runtime => "",
@@ -63,12 +63,12 @@ pub(super) fn kind_suffix(kind: &DependencyKind) -> &'static str {
     }
 }
 
-/// Formats an `Option<String>` for display, returning `"<none>"` for `None`.
+/// formats an `Option<String>` for display, returning `"<none>"` for `None`.
 pub fn format_option(opt: &Option<String>) -> &str {
     opt.as_deref().unwrap_or("<none>")
 }
 
-/// Formats a `BTreeSet<String>` as a comma-separated string, or `"<none>"` if empty.
+/// formats a `BTreeSet<String>` as a comma-separated string, or `"<none>"` if empty.
 pub fn format_set(set: &BTreeSet<String>) -> String {
     if set.is_empty() {
         "<none>".to_string()
@@ -84,9 +84,9 @@ pub fn format_set(set: &BTreeSet<String>) -> String {
     }
 }
 
-/// Trait for rendering a [`Diff`] to an output stream.
+/// trait for rendering a [`Diff`] to an output stream.
 pub trait Renderer {
-    /// Writes the formatted diff to the provided writer.
+    /// writes the formatted diff to the provided writer.
     fn render<W: Write>(
         &self,
         diff: &Diff,
@@ -95,11 +95,11 @@ pub trait Renderer {
     ) -> anyhow::Result<()>;
 }
 
-/// Trait for rendering a summary (counts only, no component details) to an output stream.
+/// trait for rendering a summary (counts only, no component details) to an output stream.
 ///
-/// Mirrors [`Renderer`] but produces compact output suitable for `--summary` mode.
+/// mirrors [`Renderer`] but produces compact output suitable for `--summary` mode.
 pub trait SummaryRenderer {
-    /// Writes a summary-only view of the diff to the provided writer.
+    /// writes a summary-only view of the diff to the provided writer.
     fn render_summary<W: Write>(
         &self,
         diff: &Diff,
@@ -193,9 +193,9 @@ pub(super) fn write_changed<F: FieldChangeFormatter, W: Write>(
     Ok(())
 }
 
-/// Format-specific building blocks for summary output.
+/// format-specific building blocks for summary output.
 ///
-/// Text and markdown renderers implement this trait; the shared
+/// text and markdown renderers implement this trait; the shared
 /// [`write_summary`] function orchestrates calls in the correct order.
 /// JSON uses a fundamentally different approach (building a single
 /// serializable value) and implements [`SummaryRenderer`] directly.

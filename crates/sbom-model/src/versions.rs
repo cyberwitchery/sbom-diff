@@ -1,30 +1,30 @@
-//! Version parsing and comparison utilities.
+//! version parsing and comparison utilities.
 //!
-//! Provides lenient version parsing for SBOM component versions, supporting
+//! provides lenient version parsing for SBOM component versions, supporting
 //! semver, dot-separated numeric strings, and opaque version strings.
 
-/// Parsed version representation for lenient comparison.
+/// parsed version representation for lenient comparison.
 ///
-/// Covers the three common version formats found in SBOMs:
+/// covers the three common version formats found in SBOMs:
 /// - Standard semver (possibly with `v` prefix or fewer than three parts)
 /// - Dot-separated numeric (e.g., date-based `2024.01.15` or four-part `1.2.3.4`)
 /// - Opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Version {
-    /// Parseable as semver (with lenient parsing: `v`/`V` prefix stripped,
+    /// parseable as semver (with lenient parsing: `v`/`V` prefix stripped,
     /// one- or two-part versions padded to three parts).
     Semver(semver::Version),
-    /// Dot-separated numeric segments that don't qualify as semver
+    /// dot-separated numeric segments that don't qualify as semver
     /// (e.g., four-part versions or versions with leading zeros).
     Numeric(Vec<u64>),
-    /// Non-parseable version string where ordering cannot be determined.
+    /// non-parseable version string where ordering cannot be determined.
     Opaque(String),
 }
 
 impl Version {
-    /// Parses a version string leniently.
+    /// parses a version string leniently.
     ///
-    /// Tries semver first (stripping `v`/`V` prefix and padding one- or
+    /// tries semver first (stripping `v`/`V` prefix and padding one- or
     /// two-part versions), then dot-separated numeric, then falls back
     /// to [`Opaque`](Version::Opaque).
     ///
@@ -48,7 +48,7 @@ impl Version {
             return Version::Semver(v);
         }
 
-        // Try padding: "1.0" -> "1.0.0", "1" -> "1.0.0"
+        // try padding: "1.0" -> "1.0.0", "1" -> "1.0.0"
         let parts: Vec<&str> = stripped.splitn(3, '.').collect();
         let padded = match parts.len() {
             1 => Some(format!("{}.0.0", parts[0])),
@@ -61,7 +61,7 @@ impl Version {
             }
         }
 
-        // Try dot-separated numeric
+        // try dot-separated numeric
         let raw_parts: Vec<&str> = s.split('.').collect();
         let mut segments = Vec::new();
         for part in &raw_parts {
@@ -76,9 +76,9 @@ impl Version {
         Version::Numeric(segments)
     }
 
-    /// Returns `true` if `new` is a downgrade from `self`.
+    /// returns `true` if `new` is a downgrade from `self`.
     ///
-    /// Comparison strategy depends on the variant pair:
+    /// comparison strategy depends on the variant pair:
     /// - **Semver vs Semver**: standard semver ordering (including pre-release)
     /// - **Numeric vs Numeric**: segment-by-segment with implicit zero padding
     /// - **Semver vs Numeric** (either direction): extracts `[major, minor, patch]`
@@ -115,7 +115,7 @@ impl Version {
     }
 }
 
-/// Segment-by-segment numeric comparison with implicit zero padding.
+/// segment-by-segment numeric comparison with implicit zero padding.
 fn numeric_downgrade(old: &[u64], new: &[u64]) -> bool {
     let max_len = old.len().max(new.len());
     for i in 0..max_len {
@@ -131,9 +131,9 @@ fn numeric_downgrade(old: &[u64], new: &[u64]) -> bool {
     false
 }
 
-/// Convenience function: returns `true` if `new_ver` is a downgrade from `old_ver`.
+/// convenience function: returns `true` if `new_ver` is a downgrade from `old_ver`.
 ///
-/// Parses both strings with [`Version::parse_lenient`] and delegates to
+/// parses both strings with [`Version::parse_lenient`] and delegates to
 /// [`Version::is_downgrade`].
 pub fn is_version_downgrade(old_ver: &str, new_ver: &str) -> bool {
     Version::parse_lenient(old_ver).is_downgrade(&Version::parse_lenient(new_ver))
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn parse_date_based_is_numeric() {
-        // Leading zeros are rejected by semver but u64 parses them fine
+        // leading zeros are rejected by semver but u64 parses them fine
         assert_eq!(
             Version::parse_lenient("2024.01.15"),
             Version::Numeric(vec![2024, 1, 15])
@@ -467,7 +467,7 @@ mod tests {
 
     #[test]
     fn downgrade_v_prefix_vs_four_part() {
-        // Unlike the old implementation (which bailed because the numeric
+        // unlike the old implementation (which bailed because the numeric
         // fallback couldn't parse "v1"), the Version enum correctly handles
         // cross-variant comparison after stripping the v-prefix during parse.
         assert!(!is_version_downgrade("v1.2.3", "1.2.3.4"));
@@ -475,7 +475,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Edge cases
+    // edge cases
     // -------------------------------------------------------------------
 
     #[test]

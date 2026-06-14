@@ -6,13 +6,13 @@ use std::io::Write;
 
 /// JSON renderer for machine consumption.
 ///
-/// Outputs the [`Diff`] struct as pretty-printed JSON. When
+/// outputs the [`Diff`] struct as pretty-printed JSON. When
 /// `group_by_ecosystem` is set, the output includes an
 /// `ecosystem_breakdown` field with per-ecosystem counts and the
 /// `by_ecosystem` field with grouped component data.
 pub struct JsonRenderer;
 
-/// Wrapper for JSON output that optionally includes ecosystem breakdown.
+/// wrapper for JSON output that optionally includes ecosystem breakdown.
 #[derive(Serialize)]
 struct JsonOutput<'a> {
     #[serde(flatten)]

@@ -74,28 +74,28 @@ struct Args {
     show_warnings: bool,
 }
 
-/// Conditions that trigger a non-zero exit code.
+/// conditions that trigger a non-zero exit code.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum FailOn {
-    /// Fail if any added component lacks checksums or a changed component dropped all its checksums.
+    /// fail if any added component lacks checksums or a changed component dropped all its checksums.
     MissingHashes,
-    /// Fail if any components were added.
+    /// fail if any components were added.
     AddedComponents,
-    /// Fail if any components were removed.
+    /// fail if any components were removed.
     RemovedComponents,
-    /// Fail if any components changed.
+    /// fail if any components changed.
     ChangedComponents,
-    /// Fail if any dependency edges changed.
+    /// fail if any dependency edges changed.
     Deps,
-    /// Fail if any changed component's license changed or any added component introduces licenses.
+    /// fail if any changed component's license changed or any added component introduces licenses.
     LicenseChanged,
-    /// Fail if document metadata changed (timestamp, tools, or authors).
+    /// fail if document metadata changed (timestamp, tools, or authors).
     MetadataChanged,
-    /// Fail if any changed component's version went from a higher to a lower value.
+    /// fail if any changed component's version went from a higher to a lower value.
     VersionDowngrade,
-    /// Fail if any changed component's supplier changed or any added component has a supplier.
+    /// fail if any changed component's supplier changed or any added component has a supplier.
     SupplierChanged,
-    /// Fail if any changed component's strongest hash algorithm is weaker than before.
+    /// fail if any changed component's strongest hash algorithm is weaker than before.
     HashAlgorithmDowngrade,
 }
 
@@ -130,7 +130,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("warning: {}", w);
     }
 
-    // Build render options and run license checks before diff_owned consumes
+    // build render options and run license checks before diff_owned consumes
     // the SBOMs — this avoids cloning both SBOMs inside the differ.
     let render_opts = RenderOptions {
         group_by_ecosystem: args.group_by_ecosystem,
@@ -141,7 +141,7 @@ fn main() -> anyhow::Result<()> {
 
     let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
 
-    // Build ecosystem filter and pre-count filtered totals before diff_owned
+    // build ecosystem filter and pre-count filtered totals before diff_owned
     // consumes the SBOMs.
     let eco_include: HashSet<String> = args
         .include_ecosystem
@@ -252,14 +252,14 @@ fn main() -> anyhow::Result<()> {
 
 fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
-    // Normalize to lowercase for matching so that e.g. --deny-license GPL-3.0-only
+    // normalize to lowercase for matching so that e.g. --deny-license GPL-3.0-only
     // catches components whose SBOM uses gpl-3.0-only.
     let deny_lower: HashSet<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
     let allow_lower: HashSet<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     let mut violation = false;
     for comp in sbom.components.values() {
-        // A component with no license information cannot satisfy an allow-list.
+        // a component with no license information cannot satisfy an allow-list.
         if !allow.is_empty() && comp.licenses.is_empty() {
             eprintln!(
                 "error: component {} has no license information (--allow-license requires it)",
@@ -490,13 +490,13 @@ mod tests {
         c.licenses.insert("GPL-3.0-only".into());
         sbom.components.insert(c.id.clone(), c);
 
-        // Exact match
+        // exact match
         assert!(check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
-        // No match
+        // no match
         assert!(!check_licenses(&sbom, &["MIT".into()], &[]));
-        // Not in allow list
+        // not in allow list
         assert!(check_licenses(&sbom, &[], &["MIT".into()]));
-        // In allow list
+        // in allow list
         assert!(!check_licenses(&sbom, &[], &["GPL-3.0-only".into()]));
     }
 
@@ -504,15 +504,15 @@ mod tests {
     fn test_check_licenses_multiple() {
         let mut sbom = Sbom::default();
         let mut c = Component::new("a".into(), Some("1".into()));
-        // Two separate licenses in the set
+        // two separate licenses in the set
         c.licenses.insert("MIT".into());
         c.licenses.insert("Apache-2.0".into());
         sbom.components.insert(c.id.clone(), c);
 
-        // Either license triggers deny
+        // either license triggers deny
         assert!(check_licenses(&sbom, &["MIT".into()], &[]));
         assert!(check_licenses(&sbom, &["Apache-2.0".into()], &[]));
-        // Both must be in allow list
+        // both must be in allow list
         assert!(check_licenses(&sbom, &[], &["MIT".into()])); // Apache-2.0 not allowed
         assert!(!check_licenses(
             &sbom,
@@ -627,7 +627,7 @@ mod tests {
             ..Diff::default()
         };
 
-        // Both conditions checked
+        // both conditions checked
         assert!(check_fail_on(
             &diff,
             &[FailOn::AddedComponents, FailOn::MissingHashes]
@@ -637,25 +637,25 @@ mod tests {
     #[test]
     fn test_check_licenses_empty_lists() {
         let sbom = Sbom::default();
-        // No components, no violations
+        // no components, no violations
         assert!(!check_licenses(&sbom, &[], &[]));
     }
 
     #[test]
     fn test_check_licenses_unlicensed_component_with_allowlist() {
         let mut sbom = Sbom::default();
-        // Component with no license information
+        // component with no license information
         let c = Component::new("unlicensed-pkg".into(), Some("1.0".into()));
         // licenses is empty by default
         sbom.components.insert(c.id.clone(), c);
 
-        // No allow-list: unlicensed component is not a violation
+        // no allow-list: unlicensed component is not a violation
         assert!(!check_licenses(&sbom, &[], &[]));
 
-        // With allow-list: unlicensed component cannot satisfy it → violation
+        // with allow-list: unlicensed component cannot satisfy it → violation
         assert!(check_licenses(&sbom, &[], &["MIT".into()]));
 
-        // With deny-list only: unlicensed component is not a violation (nothing to deny)
+        // with deny-list only: unlicensed component is not a violation (nothing to deny)
         assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
     }
 
@@ -666,15 +666,15 @@ mod tests {
         c.licenses.insert("GPL-3.0-only".into());
         sbom.components.insert(c.id.clone(), c);
 
-        // Deny: different casing still matches
+        // deny: different casing still matches
         assert!(check_licenses(&sbom, &["gpl-3.0-only".into()], &[]));
         assert!(check_licenses(&sbom, &["Gpl-3.0-Only".into()], &[]));
 
-        // Allow: different casing is still accepted
+        // allow: different casing is still accepted
         assert!(!check_licenses(&sbom, &[], &["gpl-3.0-only".into()]));
         assert!(!check_licenses(&sbom, &[], &["GPL-3.0-ONLY".into()]));
 
-        // Allow: wrong license is still rejected regardless of case
+        // allow: wrong license is still rejected regardless of case
         assert!(check_licenses(&sbom, &[], &["mit".into()]));
     }
 
@@ -690,10 +690,10 @@ mod tests {
             ..Diff::default()
         };
 
-        // No added components - no violation
+        // no added components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
 
-        // With added component - violation
+        // with added component - violation
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
         assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
@@ -711,15 +711,15 @@ mod tests {
             ..Diff::default()
         };
 
-        // No added components - no violation
+        // no added components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
 
-        // Added component without hashes - violation
+        // added component without hashes - violation
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
         assert!(check_fail_on(&diff, &[FailOn::MissingHashes]));
 
-        // Added component with hashes - no violation
+        // added component with hashes - no violation
         diff.added[0].hashes.insert("sha256".into(), "abc".into());
         assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
     }
@@ -811,10 +811,10 @@ mod tests {
             ..Diff::default()
         };
 
-        // No edge changes - no violation
+        // no edge changes - no violation
         assert!(!check_fail_on(&diff, &[FailOn::Deps]));
 
-        // With edge changes - violation
+        // with edge changes - violation
         diff.edge_diffs.push(EdgeDiff {
             parent: ComponentId::new(None, &[("name", "parent")]),
             added: BTreeMap::from([(
@@ -839,10 +839,10 @@ mod tests {
             ..Diff::default()
         };
 
-        // No removed components - no violation
+        // no removed components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
 
-        // With removed component - violation
+        // with removed component - violation
         diff.removed
             .push(Component::new("old-pkg".into(), Some("1.0".into())));
         assert!(check_fail_on(&diff, &[FailOn::RemovedComponents]));
@@ -860,10 +860,10 @@ mod tests {
             ..Diff::default()
         };
 
-        // No changed components - no violation
+        // no changed components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
 
-        // With changed component - violation
+        // with changed component - violation
         let old = Component::new("pkg".into(), Some("1.0".into()));
         let new = Component::new("pkg".into(), Some("2.0".into()));
         diff.changed.push(ComponentChange {
@@ -909,7 +909,7 @@ mod tests {
                 FailOn::LicenseChanged,
             ]
         ));
-        // But ChangedComponents *should* trigger on description changes
+        // but ChangedComponents *should* trigger on description changes
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
     }
 
@@ -943,7 +943,7 @@ mod tests {
         assert!(out.contains("| Removed | 1 |"));
         assert!(out.contains("| Changed | 0 |"));
         assert!(out.contains("| Edge changes | 0 |"));
-        // Should NOT contain component details
+        // should NOT contain component details
         assert!(!out.contains("<details>"));
     }
 
@@ -1342,7 +1342,7 @@ mod tests {
             ..Diff::default()
         };
 
-        // Both conditions should be checked
+        // both conditions should be checked
         assert!(check_fail_on(
             &diff,
             &[FailOn::AddedComponents, FailOn::LicenseChanged]
@@ -1406,7 +1406,7 @@ mod tests {
             ..Diff::default()
         };
 
-        // Only MetadataChanged should trigger, not other gates
+        // only MetadataChanged should trigger, not other gates
         assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
         assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
         assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
@@ -1430,7 +1430,7 @@ mod tests {
             ..Diff::default()
         };
 
-        // Both should fire
+        // both should fire
         assert!(check_fail_on(
             &diff,
             &[FailOn::AddedComponents, FailOn::MetadataChanged]
@@ -1499,7 +1499,7 @@ mod tests {
     fn test_check_fail_on_version_downgrade_no_version_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
-        // Only license changed, no version change
+        // only license changed, no version change
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
         let new = Component::new("pkg".into(), Some("1.0.0".into()));
 
@@ -1523,7 +1523,7 @@ mod tests {
     fn test_check_fail_on_version_downgrade_version_added() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
-        // Version went from None to Some — not a downgrade
+        // version went from None to Some — not a downgrade
         let old = Component::new("pkg".into(), None);
         let new = Component::new("pkg".into(), Some("1.0.0".into()));
 
@@ -1820,7 +1820,7 @@ mod tests {
     fn test_check_fail_on_hash_algorithm_downgrade_no_hash_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
-        // Only version changed, no hash change
+        // only version changed, no hash change
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
         let new = Component::new("pkg".into(), Some("2.0.0".into()));
 
@@ -1844,7 +1844,7 @@ mod tests {
     fn test_check_fail_on_hash_algorithm_downgrade_dropped_strongest() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
-        // Old has SHA-256 + MD5, new has only MD5
+        // old has SHA-256 + MD5, new has only MD5
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-256".into(), "abc".into());
         old.hashes.insert("md5".into(), "xyz".into());
@@ -1869,7 +1869,7 @@ mod tests {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeMap;
 
-        // Old has SHA-256, new has no hashes — should NOT trigger
+        // old has SHA-256, new has no hashes — should NOT trigger
         // (missing-hashes gate handles this)
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-256".into(), "abc".into());

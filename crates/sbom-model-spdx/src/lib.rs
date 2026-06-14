@@ -10,55 +10,55 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
-/// Errors that can occur when parsing SPDX documents.
+/// errors that can occur when parsing SPDX documents.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// The JSON structure doesn't match the SPDX schema.
+    /// the JSON structure doesn't match the SPDX schema.
     #[error("SPDX parse error: {0}")]
     Parse(#[from] serde_json::Error),
-    /// An I/O error occurred while reading the input.
+    /// an I/O error occurred while reading the input.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    /// The SPDX document version is not supported.
+    /// the SPDX document version is not supported.
     #[error("unsupported SPDX version '{version}': only SPDX 2.x is supported (e.g. SPDX-2.3)")]
     UnsupportedVersion {
-        /// The version string found in the document.
+        /// the version string found in the document.
         version: String,
     },
-    /// The tag-value input could not be parsed.
+    /// the tag-value input could not be parsed.
     #[error("SPDX tag-value parse error: {0}")]
     TagValue(String),
 }
 
-/// Edge direction for a dependency relationship.
+/// edge direction for a dependency relationship.
 enum Direction {
-    /// The left element depends on the right (left → right).
+    /// the left element depends on the right (left → right).
     Forward,
-    /// The right element depends on the left (right → left).
+    /// the right element depends on the left (right → left).
     Inverse,
 }
 
-/// Classifies an SPDX relationship type into a dependency edge direction
+/// classifies an SPDX relationship type into a dependency edge direction
 /// and semantic kind.
 ///
-/// Returns `Some((Direction, DependencyKind))` for relationship types that
+/// returns `Some((Direction, DependencyKind))` for relationship types that
 /// represent dependency edges, or `None` for non-dependency relationships
 /// (e.g. BUILD_TOOL_OF, GENERATED_FROM).
 fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, DependencyKind)> {
     match rel_type {
-        // Forward: A {verb} B means A depends on / contains B.
+        // forward: A {verb} B means A depends on / contains B.
         RelationshipType::DependsOn
         | RelationshipType::Contains
         | RelationshipType::Describes
         | RelationshipType::HasPrerequisite => Some((Direction::Forward, DependencyKind::Runtime)),
 
-        // Inverse: A {verb} B means B depends on / contains A.
+        // inverse: A {verb} B means B depends on / contains A.
         RelationshipType::DependencyOf
         | RelationshipType::ContainedBy
         | RelationshipType::DescribedBy
         | RelationshipType::PrerequisiteFor => Some((Direction::Inverse, DependencyKind::Runtime)),
 
-        // Scoped inverse types — carry their dependency kind.
+        // scoped inverse types — carry their dependency kind.
         RelationshipType::RuntimeDependencyOf => {
             Some((Direction::Inverse, DependencyKind::Runtime))
         }
@@ -72,18 +72,18 @@ fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, Depen
             Some((Direction::Inverse, DependencyKind::Provided))
         }
 
-        // Not a dependency relationship — ignore.
+        // not a dependency relationship — ignore.
         _ => None,
     }
 }
 
-/// Parser for SPDX JSON documents.
+/// parser for SPDX JSON documents.
 ///
-/// Converts SPDX 2.3 JSON into the format-agnostic [`Sbom`] type.
+/// converts SPDX 2.3 JSON into the format-agnostic [`Sbom`] type.
 pub struct SpdxReader;
 
 impl SpdxReader {
-    /// Parses an SPDX JSON document from a reader.
+    /// parses an SPDX JSON document from a reader.
     ///
     /// # Example
     ///
@@ -95,7 +95,7 @@ impl SpdxReader {
     /// let sbom = SpdxReader::read_json(file).unwrap();
     /// ```
     pub fn read_json<R: Read>(mut reader: R) -> Result<Sbom, Error> {
-        // Buffer the input so we can check the SPDX version before full
+        // buffer the input so we can check the SPDX version before full
         // parsing. Without this, SPDX 3.0 documents would either produce
         // garbled output or an inscrutable deserialization error.
         let mut buf = Vec::new();
@@ -108,7 +108,7 @@ impl SpdxReader {
         Ok(Self::spdx_to_sbom(spdx_doc))
     }
 
-    /// Parses an SPDX tag-value document from a reader.
+    /// parses an SPDX tag-value document from a reader.
     ///
     /// # Example
     ///
@@ -145,7 +145,7 @@ impl SpdxReader {
             input.trim_end()
         );
 
-        // Detect whether the flush-sentinel was needed: does the last
+        // detect whether the flush-sentinel was needed: does the last
         // package in the raw input have ExternalRef lines?  If so, spdx-rs
         // 0.5 would have silently dropped the last one without the sentinel.
         let mut last_pkg_has_ext_ref = false;
@@ -161,12 +161,12 @@ impl SpdxReader {
         let mut spdx_doc =
             spdx_from_tag_value(&patched).map_err(|e| Error::TagValue(e.to_string()))?;
 
-        // Strip the sentinel package.
+        // strip the sentinel package.
         spdx_doc
             .package_information
             .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
 
-        // Fix creator contamination: re-parse Creator lines from the raw
+        // fix creator contamination: re-parse Creator lines from the raw
         // input instead of trusting the parsed result.
         let parsed_creators = spdx_doc
             .document_creation_information
@@ -188,7 +188,7 @@ impl SpdxReader {
 
         let mut sbom = Self::spdx_to_sbom(spdx_doc);
 
-        // Emit diagnostics for workarounds that fired.
+        // emit diagnostics for workarounds that fired.
         if last_pkg_has_ext_ref {
             sbom.warnings.push(
                 "SPDX: applied flush-sentinel workaround — spdx-rs 0.5 silently \
@@ -215,7 +215,7 @@ impl SpdxReader {
         Ok(sbom)
     }
 
-    /// Converts a parsed `spdx_rs::models::SPDX` document into the
+    /// converts a parsed `spdx_rs::models::SPDX` document into the
     /// format-agnostic [`Sbom`] type. Shared by JSON and tag-value readers.
     fn spdx_to_sbom(spdx_doc: spdx_rs::models::SPDX) -> Sbom {
         let mut sbom = Sbom::default();
@@ -261,7 +261,7 @@ impl SpdxReader {
             }
             let purl_str = purl.as_deref();
 
-            // Extract ecosystem from purl
+            // extract ecosystem from purl
             let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
             let id = ComponentId::new(purl_str, &props);
@@ -282,7 +282,7 @@ impl SpdxReader {
                 source_ids: vec![pkg.package_spdx_identifier.clone()],
             };
 
-            // Licenses: prefer concludedLicense, fall back to declaredLicense
+            // licenses: prefer concludedLicense, fall back to declaredLicense
             // when concluded is absent or NOASSERTION/NONE (common in
             // automated tooling output from syft, trivy, etc.).
             let license_expr = pkg
@@ -301,7 +301,7 @@ impl SpdxReader {
                     .extend(parse_license_expression(&l.to_string()));
             }
 
-            // Hashes
+            // hashes
             for checksum in pkg.package_checksum {
                 comp.hashes.insert(
                     canonical_algorithm_name(&format!("{:?}", checksum.algorithm)),
@@ -313,7 +313,7 @@ impl SpdxReader {
         }
 
         // 3. Relationships
-        // Map SPDX IDs -> ComponentId
+        // map SPDX IDs -> ComponentId
         let mut ref_map = BTreeMap::new();
         for (id, comp) in &sbom.components {
             for src_id in &comp.source_ids {
@@ -331,17 +331,17 @@ impl SpdxReader {
             let right_spdx = rel.related_spdx_element;
             let rel_type = rel.relationship_type;
 
-            // Determine the edge direction and semantic kind for this
+            // determine the edge direction and semantic kind for this
             // relationship type.
-            // Forward: left depends on right (left → right edge).
-            // Inverse: right depends on left (right → left edge).
+            // forward: left depends on right (left → right edge).
+            // inverse: right depends on left (right → left edge).
             let (parent_spdx, child_spdx, kind) = match dependency_direction(&rel_type) {
                 Some((Direction::Forward, kind)) => (&left_spdx, &right_spdx, kind),
                 Some((Direction::Inverse, kind)) => (&right_spdx, &left_spdx, kind),
                 None => continue,
             };
 
-            // Skip relationships involving the document element itself
+            // skip relationships involving the document element itself
             // (e.g. SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package). The
             // document element is not a package so it will never appear
             // in ref_map, and warning about it is a false positive.
@@ -377,9 +377,9 @@ impl SpdxReader {
         sbom
     }
 
-    /// Pre-check the `spdxVersion` field before full parsing.
+    /// pre-check the `spdxVersion` field before full parsing.
     ///
-    /// Returns an error for SPDX 3.x or any other unsupported spec version,
+    /// returns an error for SPDX 3.x or any other unsupported spec version,
     /// giving a clear message instead of cryptic deserialization failures.
     fn check_spdx_version(data: &[u8]) -> Result<(), Error> {
         #[derive(serde::Deserialize)]
@@ -390,7 +390,7 @@ impl SpdxReader {
 
         let probe: VersionProbe = match serde_json::from_slice(data) {
             Ok(p) => p,
-            // Not valid JSON — let the full parser produce a proper error.
+            // not valid JSON — let the full parser produce a proper error.
             Err(_) => return Ok(()),
         };
 
@@ -399,16 +399,16 @@ impl SpdxReader {
             Some(v) => Err(Error::UnsupportedVersion {
                 version: v.to_string(),
             }),
-            // Missing version field — let the full parser produce its own
+            // missing version field — let the full parser produce its own
             // error; the document is malformed either way.
             None => Ok(()),
         }
     }
 
-    /// Pre-check the `SPDXVersion` tag in a tag-value document.
+    /// pre-check the `SPDXVersion` tag in a tag-value document.
     ///
-    /// Scans for the first `SPDXVersion:` line and rejects non-2.x versions.
-    /// Also rejects input that has no `SPDXVersion:` at all, since the
+    /// scans for the first `SPDXVersion:` line and rejects non-2.x versions.
+    /// also rejects input that has no `SPDXVersion:` at all, since the
     /// spdx-rs tag-value parser is permissive enough to "parse" arbitrary
     /// text files without error.
     fn check_spdx_version_tag_value(input: &str) -> Result<(), Error> {
@@ -1092,16 +1092,16 @@ mod tests {
         // NONE concluded -> falls back to declared Apache-2.0
         assert!(find("concluded-none").licenses.contains("Apache-2.0"));
 
-        // Both NOASSERTION -> no licenses
+        // both NOASSERTION -> no licenses
         assert!(find("both-noassertion").licenses.is_empty());
 
-        // Valid concluded -> uses concluded, ignores declared
+        // valid concluded -> uses concluded, ignores declared
         // spdx 0.13 preserves the canonical SPDX id (GPL-3.0-only) rather than
         // collapsing it to the deprecated short form (GPL-3.0) as 0.10 did.
         assert!(find("concluded-present").licenses.contains("GPL-3.0-only"));
         assert!(!find("concluded-present").licenses.contains("MIT"));
 
-        // No license fields at all -> empty
+        // no license fields at all -> empty
         assert!(find("no-license-fields").licenses.is_empty());
     }
 
@@ -1179,13 +1179,13 @@ mod tests {
 
     #[test]
     fn test_non_json_input_does_not_produce_serde_error() {
-        // Non-JSON input (e.g. XML or tag-value) should fail with a parse
+        // non-JSON input (e.g. XML or tag-value) should fail with a parse
         // error from the full parser, not a cryptic serde error from the
         // version pre-check.
         let xml = br#"<?xml version="1.0" encoding="UTF-8"?><bom/>"#;
         let err = SpdxReader::read_json(&xml[..]).unwrap_err();
         let msg = err.to_string();
-        // Should be a parse error from the full JSON parser, not an
+        // should be a parse error from the full JSON parser, not an
         // "unsupported SPDX version" error.
         assert!(
             msg.contains("parse error"),
@@ -1249,7 +1249,7 @@ mod tests {
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert!(sbom.warnings.is_empty());
 
-        // The edge should go from app-b → lib-a (app-b depends on lib-a).
+        // the edge should go from app-b → lib-a (app-b depends on lib-a).
         let app_id = sbom
             .components
             .values()
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn test_scoped_dependency_of_types() {
-        // Scoped types like RUNTIME_DEPENDENCY_OF are inverse: "A is a
+        // scoped types like RUNTIME_DEPENDENCY_OF are inverse: "A is a
         // runtime dep of B" means B depends on A.
         let json = r#"{
             "spdxVersion": "SPDX-2.3",
@@ -1391,7 +1391,7 @@ mod tests {
         assert!(dep_names.contains("runtime-lib"));
         assert!(dep_names.contains("dev-lib"));
 
-        // Verify dependency kinds are preserved
+        // verify dependency kinds are preserved
         let runtime_id = sbom
             .components
             .values()
@@ -1792,7 +1792,7 @@ ExternalRef: PACKAGE-MANAGER purl pkg:cargo/serde@1.0.200
             "should warn about flush-sentinel workaround when last package has ExternalRef: {:?}",
             sbom.warnings
         );
-        // The ExternalRef should still be parsed correctly
+        // the ExternalRef should still be parsed correctly
         assert_eq!(
             sbom.components[0].purl,
             Some("pkg:cargo/serde@1.0.200".to_string())
@@ -1828,11 +1828,11 @@ PackageCopyrightText: NOASSERTION
 
     #[test]
     fn test_tag_value_phantom_creator_detection() {
-        // This test verifies that when spdx-rs injects phantom creators,
+        // this test verifies that when spdx-rs injects phantom creators,
         // a warning is emitted. In practice, the phantom creator is
         // "Tool: LicenseFind-1.0" from CreationInfo::default(). Whether
         // the phantom appears depends on the spdx-rs version's behavior.
-        // We test the detection mechanism rather than assuming the bug fires.
+        // we test the detection mechanism rather than assuming the bug fires.
         let tv = "\
 SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
@@ -1850,11 +1850,11 @@ PackageLicenseConcluded: NOASSERTION
 PackageCopyrightText: NOASSERTION
 ";
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
-        // Regardless of whether the phantom fires, the result should have
+        // regardless of whether the phantom fires, the result should have
         // the correct creator, not the phantom one.
         assert_eq!(sbom.metadata.tools, vec!["manual"]);
 
-        // If a phantom warning exists, it should mention what was stripped.
+        // if a phantom warning exists, it should mention what was stripped.
         if let Some(w) = sbom.warnings.iter().find(|w| w.contains("phantom")) {
             assert!(
                 w.contains("LicenseFind") || w.contains("stripped"),

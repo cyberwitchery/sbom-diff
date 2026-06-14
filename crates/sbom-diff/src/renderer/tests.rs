@@ -490,7 +490,7 @@ fn test_text_renderer_resolves_edge_diff_names() {
     assert!(out.contains("my-app@1.0"));
     assert!(out.contains("- old-dep@0.1"));
     assert!(out.contains("+ new-dep@0.2"));
-    // Should NOT contain raw hash IDs
+    // should NOT contain raw hash IDs
     assert!(!out.contains("h:"));
 }
 
@@ -604,7 +604,7 @@ fn test_text_renderer_metadata_change() {
     assert!(out.contains("[~] Metadata Changes"));
     assert!(out.contains("Timestamp: 2024-01-01 -> 2024-01-02"));
     assert!(out.contains("Tools: syft -> trivy"));
-    // Authors not changed, should not appear
+    // authors not changed, should not appear
     assert!(!out.contains("Authors:"));
 }
 
@@ -828,7 +828,7 @@ fn test_sarif_renderer_rules() {
         ]
     );
 
-    // Check that each rule has required fields
+    // check that each rule has required fields
     for rule in rules {
         assert!(rule["shortDescription"]["text"].is_string());
         assert!(rule["fullDescription"]["text"].is_string());
@@ -861,7 +861,7 @@ fn test_sarif_renderer_added_removed_changed() {
     let results = val["runs"][0]["results"].as_array().unwrap();
     assert_eq!(results.len(), 3); // 1 added + 1 removed + 1 changed
 
-    // Check rule IDs
+    // check rule IDs
     let rule_ids: Vec<&str> = results
         .iter()
         .map(|r| r["ruleId"].as_str().unwrap())
@@ -870,7 +870,7 @@ fn test_sarif_renderer_added_removed_changed() {
     assert!(rule_ids.contains(&"component-removed"));
     assert!(rule_ids.contains(&"component-changed"));
 
-    // Added component is note level
+    // added component is note level
     let added = results
         .iter()
         .find(|r| r["ruleId"] == "component-added")
@@ -878,14 +878,14 @@ fn test_sarif_renderer_added_removed_changed() {
     assert_eq!(added["level"], "note");
     assert!(added["message"]["text"].as_str().unwrap().contains("added"));
 
-    // Removed component is warning level
+    // removed component is warning level
     let removed = results
         .iter()
         .find(|r| r["ruleId"] == "component-removed")
         .unwrap();
     assert_eq!(removed["level"], "warning");
 
-    // Changed component is warning level
+    // changed component is warning level
     let changed = results
         .iter()
         .find(|r| r["ruleId"] == "component-changed")
@@ -940,7 +940,7 @@ fn test_sarif_renderer_rule_index() {
 
     let results = val["runs"][0]["results"].as_array().unwrap();
 
-    // Each result's ruleIndex should match its ruleId position in rules array
+    // each result's ruleIndex should match its ruleId position in rules array
     for result in results {
         let rule_id = result["ruleId"].as_str().unwrap();
         let rule_index = result["ruleIndex"].as_u64().unwrap() as usize;
@@ -1015,7 +1015,7 @@ fn test_sarif_renderer_edge_diffs_with_names() {
         .find(|r| r["ruleId"] == "dependency-changed")
         .unwrap();
     let msg = dep["message"]["text"].as_str().unwrap();
-    // Should use resolved display names, not raw hash IDs
+    // should use resolved display names, not raw hash IDs
     assert!(msg.contains("my-app@1.0"));
     assert!(msg.contains("old-dep@0.1"));
     assert!(msg.contains("new-dep@0.2"));
@@ -1023,7 +1023,7 @@ fn test_sarif_renderer_edge_diffs_with_names() {
 
 #[test]
 fn test_sarif_renderer_locations_present_and_well_formed() {
-    // Component results: added, removed, changed all get "package" locations
+    // component results: added, removed, changed all get "package" locations
     let diff = mock_diff();
     let mut buf = Vec::new();
     SarifRenderer
@@ -1055,7 +1055,7 @@ fn test_sarif_renderer_locations_present_and_well_formed() {
         );
     }
 
-    // Dependency result: uses parent display name
+    // dependency result: uses parent display name
     let diff = mock_diff_with_hash_edge_diffs();
     let mut buf = Vec::new();
     SarifRenderer
@@ -1074,7 +1074,7 @@ fn test_sarif_renderer_locations_present_and_well_formed() {
     assert_eq!(ll[0]["fullyQualifiedName"], "my-app@1.0");
     assert_eq!(ll[0]["kind"], "package");
 
-    // Metadata result: uses "metadata" with kind "module"
+    // metadata result: uses "metadata" with kind "module"
     let diff = mock_diff_with_metadata_change();
     let mut buf = Vec::new();
     SarifRenderer
@@ -1109,12 +1109,12 @@ fn test_sarif_renderer_shows_warnings() {
         .collect();
     assert_eq!(warnings.len(), 2);
 
-    // All warnings are note level
+    // all warnings are note level
     for w in &warnings {
         assert_eq!(w["level"], "note");
     }
 
-    // Check old-SBOM warning
+    // check old-SBOM warning
     let old_warning = warnings
         .iter()
         .find(|w| w["message"]["text"].as_str().unwrap().contains("old SBOM"))
@@ -1129,7 +1129,7 @@ fn test_sarif_renderer_shows_warnings() {
     assert_eq!(ll[0]["fullyQualifiedName"], "old-sbom");
     assert_eq!(ll[0]["kind"], "module");
 
-    // Check new-SBOM warning
+    // check new-SBOM warning
     let new_warning = warnings
         .iter()
         .find(|w| w["message"]["text"].as_str().unwrap().contains("new SBOM"))
@@ -1240,7 +1240,7 @@ fn test_sarif_renderer_no_metadata_when_all_none_subfields() {
 
 // --- CSV renderer tests ---
 
-/// Parse CSV output into a vec of rows, each row a vec of fields.
+/// parse CSV output into a vec of rows, each row a vec of fields.
 fn csv_parse(buf: &[u8]) -> Vec<Vec<String>> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -1280,7 +1280,7 @@ fn test_csv_renderer_empty_diff() {
         .render(&diff, &RenderOptions::default(), &mut buf)
         .unwrap();
     let rows = csv_parse(&buf);
-    // Only the header row
+    // only the header row
     assert_eq!(rows.len(), 1);
 }
 
@@ -1293,13 +1293,13 @@ fn test_csv_renderer_added_removed_changed() {
         .unwrap();
     let out = String::from_utf8(buf).unwrap();
 
-    // Header
+    // header
     assert!(out.starts_with("status,component,ecosystem,field,old_value,new_value\n"));
-    // Added row
+    // added row
     assert!(out.contains("added,"));
-    // Removed row
+    // removed row
     assert!(out.contains("removed,"));
-    // Changed row with version field
+    // changed row with version field
     assert!(out.contains("changed,"));
     assert!(out.contains("version,1.0,1.1"));
 }
@@ -1320,7 +1320,7 @@ fn test_csv_renderer_all_field_changes() {
     assert!(out.contains(",description,Old description,New description"));
     assert!(out.contains(",hashes,"));
     assert!(out.contains(",ecosystem,npm,cargo"));
-    // Edge diffs
+    // edge diffs
     assert!(out.contains("edge-added,"));
     assert!(out.contains("edge-removed,"));
 }
@@ -1334,7 +1334,7 @@ fn test_csv_renderer_edge_diffs() {
         .unwrap();
     let out = String::from_utf8(buf).unwrap();
 
-    // Should use resolved display names, not hash IDs
+    // should use resolved display names, not hash IDs
     assert!(out.contains("my-app@1.0"));
     assert!(out.contains("old-dep@0.1"));
     assert!(out.contains("new-dep@0.2"));
@@ -1354,7 +1354,7 @@ fn test_csv_renderer_metadata() {
 
     assert!(out.contains("metadata,,,timestamp,2024-01-01,2024-01-02"));
     assert!(out.contains("metadata,,,tools,syft,trivy"));
-    // Authors not changed, should not appear
+    // authors not changed, should not appear
     assert!(!out.contains("authors"));
 }
 
@@ -1422,7 +1422,7 @@ fn test_csv_summary_with_ecosystems() {
     CsvRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
     let out = String::from_utf8(buf).unwrap();
 
-    // Ecosystem breakdown section
+    // ecosystem breakdown section
     assert!(out.contains("ecosystem,added,removed,changed"));
     assert!(out.contains("npm,1,1,1"));
     assert!(out.contains("cargo,1,0,0"));
@@ -1451,11 +1451,11 @@ fn test_csv_renderer_group_by_ecosystem() {
     CsvRenderer.render(&diff, &opts, &mut buf).unwrap();
     let out = String::from_utf8(buf).unwrap();
 
-    // Full render always produces flat rows regardless of ecosystem grouping
+    // full render always produces flat rows regardless of ecosystem grouping
     assert!(out.contains("added,"));
     assert!(out.contains("removed,"));
     assert!(out.contains("changed,"));
-    // Ecosystem column should be populated
+    // ecosystem column should be populated
     assert!(out.contains(",npm,"));
     assert!(out.contains(",cargo,"));
 }

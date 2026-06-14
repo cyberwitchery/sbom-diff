@@ -16,7 +16,7 @@ fn write_text_added<W: Write>(writer: &mut W, components: &[Component]) -> std::
     Ok(())
 }
 
-/// Plain text renderer for terminal output.
+/// plain text renderer for terminal output.
 pub struct TextRenderer;
 
 impl FieldChangeFormatter for TextRenderer {

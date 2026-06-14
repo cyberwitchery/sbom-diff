@@ -118,7 +118,7 @@ fn markdown_renderer_golden_output_matches_fixture() {
 }
 
 // SPDX golden fixture tests — mirror the CycloneDX golden tests above.
-// The format-agnostic model should produce identical diffs regardless of
+// the format-agnostic model should produce identical diffs regardless of
 // input format, so we reuse the same expected output snapshots.
 
 #[test]
@@ -292,7 +292,7 @@ fn spdx_tv_markdown_renderer_golden_output_matches_fixture() {
     assert_eq!(actual, expected);
 }
 
-// Cross-format hash normalization: identical components parsed from
+// cross-format hash normalization: identical components parsed from
 // SPDX and CycloneDX should produce identical hash algorithm keys,
 // so diffing them yields no hash changes.
 
@@ -353,7 +353,7 @@ fn cross_format_identical_hashes_produce_no_diff() {
     let spdx_sbom = SpdxReader::read_json(spdx_json.as_bytes()).unwrap();
     let cdx_sbom = CycloneDxReader::read_json(cdx_json.as_bytes()).unwrap();
 
-    // Algorithm keys must match exactly between formats
+    // algorithm keys must match exactly between formats
     let spdx_hashes: BTreeMap<_, _> = spdx_sbom.components[0].hashes.clone();
     let cdx_hashes: BTreeMap<_, _> = cdx_sbom.components[0].hashes.clone();
     assert_eq!(
@@ -362,7 +362,7 @@ fn cross_format_identical_hashes_produce_no_diff() {
         "hash algorithm names should be identical across SPDX and CycloneDX"
     );
 
-    // Diffing SPDX-old against CycloneDX-new should yield no changes
+    // diffing SPDX-old against CycloneDX-new should yield no changes
     let diff = Differ::diff(&spdx_sbom, &cdx_sbom, None);
     assert!(
         diff.changed.is_empty(),
