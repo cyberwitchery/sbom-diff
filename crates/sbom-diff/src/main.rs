@@ -166,7 +166,15 @@ fn main() -> anyhow::Result<()> {
         true
     };
 
-    let (filtered_old_total, filtered_new_total) = if eco_filter_active {
+    let (filtered_old_total, filtered_new_total, component_ecosystems) = if eco_filter_active {
+        // build ecosystem map from both SBOMs before diff_owned consumes them
+        let mut eco_map = std::collections::BTreeMap::new();
+        for (id, comp) in old_sbom.components.iter() {
+            eco_map.insert(id.clone(), comp.ecosystem.clone());
+        }
+        for (id, comp) in new_sbom.components.iter() {
+            eco_map.insert(id.clone(), comp.ecosystem.clone());
+        }
         (
             old_sbom
                 .components
@@ -178,9 +186,10 @@ fn main() -> anyhow::Result<()> {
                 .values()
                 .filter(|c| eco_matches(c.ecosystem.as_deref()))
                 .count(),
+            eco_map,
         )
     } else {
-        (0, 0)
+        (0, 0, std::collections::BTreeMap::new())
     };
 
     let only_fields: Vec<sbom_diff::Field> = args
@@ -209,7 +218,12 @@ fn main() -> anyhow::Result<()> {
     );
 
     if eco_filter_active {
-        diff.filter_by_ecosystem(eco_matches, filtered_old_total, filtered_new_total);
+        diff.filter_by_ecosystem(
+            &eco_matches,
+            filtered_old_total,
+            filtered_new_total,
+            &component_ecosystems,
+        );
     }
 
     let fail_on_violation = check_fail_on(&diff, &args.fail_on);

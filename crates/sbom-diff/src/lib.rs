@@ -154,15 +154,40 @@ impl Diff {
     /// `filtered_old_total` and `filtered_new_total` are the pre-counted
     /// number of components in each SBOM that pass the predicate. These must
     /// be computed before [`Differ::diff_owned`] consumes the SBOMs.
+    ///
+    /// `component_ecosystems` maps component IDs to their ecosystem, built
+    /// from both SBOMs before they are consumed. This is used to filter
+    /// edge diffs by the parent component's ecosystem.
     pub fn filter_by_ecosystem<F: Fn(Option<&str>) -> bool>(
         &mut self,
-        matches: F,
+        matches: &F,
         filtered_old_total: usize,
         filtered_new_total: usize,
+        component_ecosystems: &BTreeMap<ComponentId, Option<String>>,
     ) {
         self.added.retain(|c| matches(c.ecosystem.as_deref()));
         self.removed.retain(|c| matches(c.ecosystem.as_deref()));
         self.changed.retain(|c| matches(c.new.ecosystem.as_deref()));
+
+        // filter edge diffs by parent ecosystem; keep edges whose parent is
+        // unknown (not in the map) as a conservative default.
+        self.edge_diffs.retain(|edge| {
+            component_ecosystems
+                .get(&edge.parent)
+                .map(|eco| matches(eco.as_deref()))
+                .unwrap_or(true)
+        });
+
+        // prune component_names to only IDs still referenced in edge diffs
+        let mut referenced_ids = BTreeSet::new();
+        for edge in &self.edge_diffs {
+            referenced_ids.insert(&edge.parent);
+            referenced_ids.extend(edge.added.keys());
+            referenced_ids.extend(edge.removed.keys());
+            referenced_ids.extend(edge.kind_changed.keys());
+        }
+        self.component_names
+            .retain(|id, _| referenced_ids.contains(id));
 
         self.old_total = filtered_old_total;
         self.new_total = filtered_new_total;
@@ -1794,9 +1819,10 @@ mod tests {
 
         // pre-filtered totals for npm: old has 1 npm (npm2), new has 2 npm (npm1, npm2)
         diff.filter_by_ecosystem(
-            |eco| eco == Some("npm"),
+            &|eco| eco == Some("npm"),
             1, // old npm count
             2, // new npm count
+            &BTreeMap::new(),
         );
 
         assert_eq!(diff.added.len(), 1); // npm1
@@ -1827,9 +1853,10 @@ mod tests {
         // exclude npm: should only see cargo changes
         let mut diff = Differ::diff(&old, &new, None);
         diff.filter_by_ecosystem(
-            |eco| eco != Some("npm"),
+            &|eco| eco != Some("npm"),
             1, // old non-npm count
             1, // new non-npm count
+            &BTreeMap::new(),
         );
 
         assert_eq!(diff.added.len(), 1); // cargo2
@@ -1855,9 +1882,10 @@ mod tests {
 
         // include "unknown" - should keep only the component without ecosystem
         diff.filter_by_ecosystem(
-            |eco| eco.is_none(),
+            &|eco| eco.is_none(),
             0,
             1, // one component without ecosystem in new
+            &BTreeMap::new(),
         );
 
         assert_eq!(diff.added.len(), 1);
@@ -1884,7 +1912,7 @@ mod tests {
         assert_eq!(diff.changed.len(), 1);
 
         // filter to npm: should keep the changed component (new ecosystem is npm)
-        diff.filter_by_ecosystem(|eco| eco == Some("npm"), 0, 1);
+        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 0, 1, &BTreeMap::new());
         assert_eq!(diff.changed.len(), 1);
 
         // filter to cargo: should exclude (new ecosystem is npm, not cargo)
@@ -1902,14 +1930,14 @@ mod tests {
             s
         };
         let mut diff = Differ::diff(&old2, &new2, None);
-        diff.filter_by_ecosystem(|eco| eco == Some("cargo"), 0, 0);
+        diff.filter_by_ecosystem(&|eco| eco == Some("cargo"), 0, 0, &BTreeMap::new());
         assert_eq!(diff.changed.len(), 0);
     }
 
     #[test]
     fn test_filter_by_ecosystem_empty_diff() {
         let mut diff = Diff::default();
-        diff.filter_by_ecosystem(|_| true, 0, 0);
+        diff.filter_by_ecosystem(&|_| true, 0, 0, &BTreeMap::new());
         assert!(diff.is_empty());
     }
 
@@ -1939,7 +1967,7 @@ mod tests {
         assert_eq!(diff.new_total, 2);
 
         // filter to npm only
-        diff.filter_by_ecosystem(|eco| eco == Some("npm"), 2, 2);
+        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 2, &BTreeMap::new());
 
         assert_eq!(diff.old_total, 2);
         assert_eq!(diff.new_total, 2);
@@ -1947,6 +1975,134 @@ mod tests {
         assert_eq!(diff.added.len(), 0);
         assert_eq!(diff.removed.len(), 0);
         assert_eq!(diff.changed.len(), 0);
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_filters_edge_diffs() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // npm parent with an edge change
+        let mut npm_parent = Component::new("npm-app".into(), Some("1.0".into()));
+        npm_parent.ecosystem = Some("npm".into());
+        let npm_child_old = Component::new("npm-dep-old".into(), Some("1.0".into()));
+        let npm_child_new = Component::new("npm-dep-new".into(), Some("1.0".into()));
+
+        // cargo parent with an edge change
+        let mut cargo_parent = Component::new("cargo-app".into(), Some("1.0".into()));
+        cargo_parent.ecosystem = Some("cargo".into());
+        let cargo_child = Component::new("cargo-dep".into(), Some("1.0".into()));
+
+        // old: both parents, npm-dep-old as child of npm-app
+        old.components
+            .insert(npm_parent.id.clone(), npm_parent.clone());
+        old.components
+            .insert(npm_child_old.id.clone(), npm_child_old.clone());
+        old.components
+            .insert(cargo_parent.id.clone(), cargo_parent.clone());
+
+        // new: both parents, npm-dep-new replaces npm-dep-old, cargo gets new dep
+        new.components
+            .insert(npm_parent.id.clone(), npm_parent.clone());
+        new.components
+            .insert(npm_child_new.id.clone(), npm_child_new.clone());
+        new.components
+            .insert(cargo_parent.id.clone(), cargo_parent.clone());
+        new.components
+            .insert(cargo_child.id.clone(), cargo_child.clone());
+
+        old.dependencies.insert(
+            npm_parent.id.clone(),
+            BTreeMap::from([(npm_child_old.id.clone(), DependencyKind::Runtime)]),
+        );
+        new.dependencies.insert(
+            npm_parent.id.clone(),
+            BTreeMap::from([(npm_child_new.id.clone(), DependencyKind::Runtime)]),
+        );
+        new.dependencies.insert(
+            cargo_parent.id.clone(),
+            BTreeMap::from([(cargo_child.id.clone(), DependencyKind::Runtime)]),
+        );
+
+        // build ecosystem map
+        let mut eco_map: BTreeMap<ComponentId, Option<String>> = BTreeMap::new();
+        for (id, comp) in old.components.iter().chain(new.components.iter()) {
+            eco_map.insert(id.clone(), comp.ecosystem.clone());
+        }
+
+        let mut diff = Differ::diff(&old, &new, None);
+        // before filtering: should have edge diffs for both ecosystems
+        assert!(diff.edge_diffs.len() >= 2);
+
+        // filter to npm only
+        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 1, 1, &eco_map);
+
+        // should only have the npm parent's edge diff
+        assert_eq!(diff.edge_diffs.len(), 1);
+        assert_eq!(diff.edge_diffs[0].parent, npm_parent.id);
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_prunes_component_names() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // npm parent (hash-based IDs → entries in component_names)
+        let mut npm_parent = Component::new("npm-app".into(), Some("1.0".into()));
+        npm_parent.ecosystem = Some("npm".into());
+        let npm_child = Component::new("npm-dep".into(), Some("1.0".into()));
+
+        // cargo parent
+        let mut cargo_parent = Component::new("cargo-app".into(), Some("1.0".into()));
+        cargo_parent.ecosystem = Some("cargo".into());
+        let cargo_child = Component::new("cargo-dep".into(), Some("1.0".into()));
+
+        old.components
+            .insert(npm_parent.id.clone(), npm_parent.clone());
+        old.components
+            .insert(cargo_parent.id.clone(), cargo_parent.clone());
+
+        new.components
+            .insert(npm_parent.id.clone(), npm_parent.clone());
+        new.components
+            .insert(npm_child.id.clone(), npm_child.clone());
+        new.components
+            .insert(cargo_parent.id.clone(), cargo_parent.clone());
+        new.components
+            .insert(cargo_child.id.clone(), cargo_child.clone());
+
+        new.dependencies.insert(
+            npm_parent.id.clone(),
+            BTreeMap::from([(npm_child.id.clone(), DependencyKind::Runtime)]),
+        );
+        new.dependencies.insert(
+            cargo_parent.id.clone(),
+            BTreeMap::from([(cargo_child.id.clone(), DependencyKind::Runtime)]),
+        );
+
+        let mut eco_map: BTreeMap<ComponentId, Option<String>> = BTreeMap::new();
+        for (id, comp) in old.components.iter().chain(new.components.iter()) {
+            eco_map.insert(id.clone(), comp.ecosystem.clone());
+        }
+
+        let mut diff = Differ::diff(&old, &new, None);
+        let names_before = diff.component_names.len();
+        assert!(names_before > 0, "should have component names for hash IDs");
+
+        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 1, 1, &eco_map);
+
+        // component_names should not contain IDs only from the cargo edge diff
+        assert!(diff.component_names.len() <= names_before);
+        for id in diff.component_names.keys() {
+            // every remaining name should be referenced by a remaining edge diff
+            let referenced = diff.edge_diffs.iter().any(|e| {
+                &e.parent == id
+                    || e.added.contains_key(id)
+                    || e.removed.contains_key(id)
+                    || e.kind_changed.contains_key(id)
+            });
+            assert!(referenced, "stale component_name entry for {}", id);
+        }
     }
 
     #[test]
