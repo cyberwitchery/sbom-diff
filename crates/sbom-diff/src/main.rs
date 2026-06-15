@@ -97,6 +97,8 @@ enum FailOn {
     SupplierChanged,
     /// fail if any changed component's strongest hash algorithm is weaker than before.
     HashAlgorithmDowngrade,
+    /// fail if the new SBOM's dependency graph contains cycles.
+    CyclicDependency,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -140,6 +142,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
+    let cycle_violation = check_cyclic_dependencies(&new_sbom, &args.fail_on);
 
     // build ecosystem filter and pre-count filtered totals before diff_owned
     // consumes the SBOMs.
@@ -257,7 +260,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     }
 
-    if fail_on_violation {
+    if fail_on_violation || cycle_violation {
         std::process::exit(3);
     }
 
@@ -301,6 +304,26 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
         }
     }
     violation
+}
+
+fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
+    if !fail_on.contains(&FailOn::CyclicDependency) {
+        return false;
+    }
+
+    let cycles = sbom.detect_cycles();
+    if cycles.is_empty() {
+        return false;
+    }
+
+    for cycle in &cycles {
+        let names: Vec<_> = cycle.iter().map(|id| id.to_string()).collect();
+        eprintln!(
+            "error: dependency cycle detected: {} (--fail-on cyclic-dependency)",
+            names.join(" -> ")
+        );
+    }
+    true
 }
 
 fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
@@ -486,6 +509,8 @@ fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
                     }
                 }
             }
+            // handled separately in check_cyclic_dependencies before diff
+            FailOn::CyclicDependency => {}
         }
     }
 
@@ -1933,5 +1958,100 @@ mod tests {
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
         // HashAlgorithmDowngrade should fire
         assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+    }
+
+    // -----------------------------------------------------------------------
+    // --fail-on cyclic-dependency
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_check_cyclic_dependencies_with_cycle() {
+        use sbom_model::DependencyKind;
+
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let c2 = Component::new("b".into(), Some("1".into()));
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        sbom.components.insert(id1.clone(), c1);
+        sbom.components.insert(id2.clone(), c2);
+
+        // a -> b -> a
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id2.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(id2.clone())
+            .or_default()
+            .insert(id1.clone(), DependencyKind::Runtime);
+
+        assert!(check_cyclic_dependencies(
+            &sbom,
+            &[FailOn::CyclicDependency]
+        ));
+    }
+
+    #[test]
+    fn test_check_cyclic_dependencies_no_cycle() {
+        use sbom_model::DependencyKind;
+
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let c2 = Component::new("b".into(), Some("1".into()));
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        sbom.components.insert(id1.clone(), c1);
+        sbom.components.insert(id2.clone(), c2);
+
+        // a -> b (no cycle)
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id2.clone(), DependencyKind::Runtime);
+
+        assert!(!check_cyclic_dependencies(
+            &sbom,
+            &[FailOn::CyclicDependency]
+        ));
+    }
+
+    #[test]
+    fn test_check_cyclic_dependencies_not_requested() {
+        use sbom_model::DependencyKind;
+
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let c2 = Component::new("b".into(), Some("1".into()));
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        sbom.components.insert(id1.clone(), c1);
+        sbom.components.insert(id2.clone(), c2);
+
+        // a -> b -> a (cycle exists but gate not requested)
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id2.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(id2.clone())
+            .or_default()
+            .insert(id1.clone(), DependencyKind::Runtime);
+
+        // not in fail_on list — should return false
+        assert!(!check_cyclic_dependencies(
+            &sbom,
+            &[FailOn::AddedComponents]
+        ));
+    }
+
+    #[test]
+    fn test_check_cyclic_dependencies_does_not_trigger_other_gates() {
+        use sbom_diff::Diff;
+
+        // cyclic-dependency is checked on the SBOM, not the diff,
+        // so it should never trigger via check_fail_on
+        let diff = Diff::default();
+        assert!(!check_fail_on(&diff, &[FailOn::CyclicDependency]));
     }
 }

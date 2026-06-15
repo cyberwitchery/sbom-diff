@@ -1199,3 +1199,79 @@ fn mixed_eco_include_unknown_text() {
     assert!(stdout.contains("Removed:          0"));
     assert!(stdout.contains("Changed:          0"));
 }
+
+// ---------------------------------------------------------------------------
+// --fail-on cyclic-dependency
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fail_on_cyclic_dependency_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("cyclic-dep-old.json"))
+        .arg(fixture("cyclic-dep-new.json"))
+        .arg("--fail-on")
+        .arg("cyclic-dependency")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on cyclic-dependency"),
+        "stderr should mention the violated condition"
+    );
+    assert!(
+        stderr.contains("dependency cycle detected"),
+        "stderr should describe the cycle"
+    );
+}
+
+#[test]
+fn fail_on_cyclic_dependency_no_cycle_exits_0() {
+    // use the old fixture for both sides — no cycles in either
+    let out = sbom_diff()
+        .arg(fixture("cyclic-dep-old.json"))
+        .arg(fixture("cyclic-dep-old.json"))
+        .arg("--fail-on")
+        .arg("cyclic-dependency")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_cyclic_dependency_quiet_suppresses_output() {
+    let out = sbom_diff()
+        .arg(fixture("cyclic-dep-old.json"))
+        .arg(fixture("cyclic-dep-new.json"))
+        .arg("--fail-on")
+        .arg("cyclic-dependency")
+        .arg("--quiet")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.is_empty(), "stdout should be empty in quiet mode");
+    // stderr should still show the error
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("dependency cycle detected"));
+}
+
+#[test]
+fn fail_on_cyclic_dependency_combined_with_other_conditions() {
+    let out = sbom_diff()
+        .arg(fixture("cyclic-dep-old.json"))
+        .arg(fixture("cyclic-dep-new.json"))
+        .arg("--fail-on")
+        .arg("cyclic-dependency")
+        .arg("--fail-on")
+        .arg("deps")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--fail-on cyclic-dependency"));
+}
