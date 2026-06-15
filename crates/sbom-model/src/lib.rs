@@ -328,6 +328,59 @@ impl Sbom {
         let id = ComponentId::new(Some(purl), &[]);
         self.components.get(&id)
     }
+
+    /// detects dependency cycles in the SBOM's dependency graph.
+    ///
+    /// uses depth-first search with three-color marking (white/gray/black)
+    /// to find all distinct cycles. each returned vector contains the
+    /// component IDs forming a cycle, starting and ending with the same ID.
+    ///
+    /// returns an empty vector if the graph is acyclic.
+    pub fn detect_cycles(&self) -> Vec<Vec<ComponentId>> {
+        let mut visited = BTreeSet::new();
+        let mut on_stack = BTreeSet::new();
+        let mut path = Vec::new();
+        let mut cycles = Vec::new();
+
+        for node in self.dependencies.keys() {
+            if !visited.contains(node) {
+                self.dfs_cycles(node, &mut visited, &mut on_stack, &mut path, &mut cycles);
+            }
+        }
+
+        cycles
+    }
+
+    fn dfs_cycles(
+        &self,
+        node: &ComponentId,
+        visited: &mut BTreeSet<ComponentId>,
+        on_stack: &mut BTreeSet<ComponentId>,
+        path: &mut Vec<ComponentId>,
+        cycles: &mut Vec<Vec<ComponentId>>,
+    ) {
+        visited.insert(node.clone());
+        on_stack.insert(node.clone());
+        path.push(node.clone());
+
+        if let Some(children) = self.dependencies.get(node) {
+            for child in children.keys() {
+                if !visited.contains(child) {
+                    self.dfs_cycles(child, visited, on_stack, path, cycles);
+                } else if on_stack.contains(child) {
+                    // found a cycle — extract the portion of the path forming it
+                    if let Some(start) = path.iter().position(|n| n == child) {
+                        let mut cycle: Vec<_> = path[start..].to_vec();
+                        cycle.push(child.clone());
+                        cycles.push(cycle);
+                    }
+                }
+            }
+        }
+
+        path.pop();
+        on_stack.remove(node);
+    }
 }
 
 impl Component {
@@ -927,6 +980,121 @@ mod tests {
         ]
         .into();
         assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_detect_cycles_none() {
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let c2 = Component::new("b".into(), Some("1".into()));
+        let c3 = Component::new("c".into(), Some("1".into()));
+
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        let id3 = c3.id.clone();
+
+        sbom.components.insert(id1.clone(), c1);
+        sbom.components.insert(id2.clone(), c2);
+        sbom.components.insert(id3.clone(), c3);
+
+        // a -> b -> c (no cycle)
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id2.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(id2.clone())
+            .or_default()
+            .insert(id3.clone(), DependencyKind::Runtime);
+
+        assert!(sbom.detect_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_detect_cycles_simple() {
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let c2 = Component::new("b".into(), Some("1".into()));
+
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+
+        sbom.components.insert(id1.clone(), c1);
+        sbom.components.insert(id2.clone(), c2);
+
+        // a -> b -> a (cycle)
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id2.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(id2.clone())
+            .or_default()
+            .insert(id1.clone(), DependencyKind::Runtime);
+
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        // cycle should start and end with the same node
+        assert_eq!(cycles[0].first(), cycles[0].last());
+    }
+
+    #[test]
+    fn test_detect_cycles_self_loop() {
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let id1 = c1.id.clone();
+        sbom.components.insert(id1.clone(), c1);
+
+        // a -> a (self-loop)
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id1.clone(), DependencyKind::Runtime);
+
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), 2); // [a, a]
+    }
+
+    #[test]
+    fn test_detect_cycles_empty_graph() {
+        let sbom = Sbom::default();
+        assert!(sbom.detect_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_detect_cycles_three_node() {
+        let mut sbom = Sbom::default();
+        let c1 = Component::new("a".into(), Some("1".into()));
+        let c2 = Component::new("b".into(), Some("1".into()));
+        let c3 = Component::new("c".into(), Some("1".into()));
+
+        let id1 = c1.id.clone();
+        let id2 = c2.id.clone();
+        let id3 = c3.id.clone();
+
+        sbom.components.insert(id1.clone(), c1);
+        sbom.components.insert(id2.clone(), c2);
+        sbom.components.insert(id3.clone(), c3);
+
+        // a -> b -> c -> a (three-node cycle)
+        sbom.dependencies
+            .entry(id1.clone())
+            .or_default()
+            .insert(id2.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(id2.clone())
+            .or_default()
+            .insert(id3.clone(), DependencyKind::Runtime);
+        sbom.dependencies
+            .entry(id3.clone())
+            .or_default()
+            .insert(id1.clone(), DependencyKind::Runtime);
+
+        let cycles = sbom.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].first(), cycles[0].last());
+        assert_eq!(cycles[0].len(), 4); // [a, b, c, a]
     }
 
     #[test]
