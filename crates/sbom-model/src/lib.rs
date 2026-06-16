@@ -417,8 +417,9 @@ pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
 
 /// extracts individual license IDs from an SPDX expression.
 ///
-/// parses the expression and returns all license IDs found.
-/// if parsing fails, returns the original string as a single-element set.
+/// parses the expression and returns all license IDs found, including
+/// `LicenseRef-` identifiers. if parsing fails, returns the original
+/// string as a single-element set.
 ///
 /// # Example
 ///
@@ -428,14 +429,20 @@ pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
 /// let ids = parse_license_expression("MIT OR Apache-2.0");
 /// assert!(ids.contains("MIT"));
 /// assert!(ids.contains("Apache-2.0"));
+///
+/// let ids = parse_license_expression("LicenseRef-proprietary AND Apache-2.0");
+/// assert!(ids.contains("LicenseRef-proprietary"));
+/// assert!(ids.contains("Apache-2.0"));
 /// ```
 pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
     match spdx::Expression::parse(license) {
         Ok(expr) => {
             let ids: BTreeSet<String> = expr
                 .requirements()
-                .filter_map(|r| r.req.license.id())
-                .map(|id| id.name.to_string())
+                .map(|r| match &r.req.license {
+                    spdx::LicenseItem::Spdx { id, .. } => id.name.to_string(),
+                    other => other.to_string(),
+                })
                 .collect();
             if ids.is_empty() {
                 // expression parsed but no IDs found, keep original
@@ -629,9 +636,56 @@ mod tests {
         let ids = parse_license_expression("Custom License");
         assert_eq!(ids, BTreeSet::from(["Custom License".to_string()]));
 
-        // LicenseRef expressions parse but yield no standard IDs
+        // pure LicenseRef
         let ids = parse_license_expression("LicenseRef-proprietary");
         assert_eq!(ids, BTreeSet::from(["LicenseRef-proprietary".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_license_expression_licenseref_and_spdx() {
+        // mixed LicenseRef + SPDX-ID with AND: both must be extracted
+        let ids = parse_license_expression("LicenseRef-proprietary AND Apache-2.0");
+        assert!(ids.contains("LicenseRef-proprietary"));
+        assert!(ids.contains("Apache-2.0"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_license_expression_licenseref_or_spdx() {
+        // mixed LicenseRef + SPDX-ID with OR
+        let ids = parse_license_expression("LicenseRef-custom OR MIT");
+        assert!(ids.contains("LicenseRef-custom"));
+        assert!(ids.contains("MIT"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_license_expression_multiple_licenserefs() {
+        // multiple LicenseRef terms
+        let ids = parse_license_expression("LicenseRef-a AND LicenseRef-b");
+        assert!(ids.contains("LicenseRef-a"));
+        assert!(ids.contains("LicenseRef-b"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_license_expression_complex_mixed() {
+        // complex expression mixing LicenseRef and standard IDs
+        let ids = parse_license_expression("(MIT OR LicenseRef-custom) AND Apache-2.0");
+        assert!(ids.contains("MIT"));
+        assert!(ids.contains("LicenseRef-custom"));
+        assert!(ids.contains("Apache-2.0"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_license_expression_documentref() {
+        // DocumentRef-prefixed LicenseRef
+        let ids = parse_license_expression("DocumentRef-ext:LicenseRef-custom");
+        assert_eq!(
+            ids,
+            BTreeSet::from(["DocumentRef-ext:LicenseRef-custom".to_string()])
+        );
     }
 
     #[test]

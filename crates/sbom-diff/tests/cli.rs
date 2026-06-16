@@ -304,6 +304,58 @@ fn allow_license_all_match_exits_0() {
 }
 
 // ---------------------------------------------------------------------------
+// --deny-license with LicenseRef expressions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deny_license_catches_licenseref_in_mixed_expression() {
+    let out = sbom_diff()
+        .arg(fixture("cli-license-ref.json"))
+        .arg(fixture("cli-license-ref.json"))
+        .arg("--deny-license")
+        .arg("LicenseRef-proprietary")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("LicenseRef-proprietary"));
+}
+
+#[test]
+fn deny_license_catches_spdx_id_in_mixed_expression() {
+    let out = sbom_diff()
+        .arg(fixture("cli-license-ref.json"))
+        .arg(fixture("cli-license-ref.json"))
+        .arg("--deny-license")
+        .arg("Apache-2.0")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Apache-2.0"));
+}
+
+#[test]
+fn allow_license_requires_licenseref_in_mixed_expression() {
+    // allow only MIT and Apache-2.0 — LicenseRef-proprietary should trigger a violation.
+    let out = sbom_diff()
+        .arg(fixture("cli-license-ref.json"))
+        .arg(fixture("cli-license-ref.json"))
+        .arg("--allow-license")
+        .arg("MIT")
+        .arg("--allow-license")
+        .arg("Apache-2.0")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("LicenseRef-proprietary"));
+}
+
+// ---------------------------------------------------------------------------
 // exit code precedence: license (2) wins over fail-on (3)
 // ---------------------------------------------------------------------------
 
