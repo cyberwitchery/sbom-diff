@@ -561,6 +561,34 @@ mod tests {
     }
 
     #[test]
+    fn test_check_licenses_licenseref() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        // simulate a component whose license expression was
+        // "LicenseRef-proprietary AND Apache-2.0" — after parsing, both
+        // individual terms should be in the licenses set.
+        c.licenses.insert("LicenseRef-proprietary".into());
+        c.licenses.insert("Apache-2.0".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        // denying the LicenseRef term should trigger a violation
+        assert!(check_licenses(
+            &sbom,
+            &["LicenseRef-proprietary".into()],
+            &[]
+        ));
+        // denying the SPDX term should also trigger
+        assert!(check_licenses(&sbom, &["Apache-2.0".into()], &[]));
+        // allow-list must include both
+        assert!(check_licenses(&sbom, &[], &["Apache-2.0".into()]));
+        assert!(!check_licenses(
+            &sbom,
+            &[],
+            &["Apache-2.0".into(), "LicenseRef-proprietary".into()]
+        ));
+    }
+
+    #[test]
     fn test_render_summary() {
         use sbom_diff::Diff;
 
