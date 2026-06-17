@@ -8,7 +8,7 @@ use sbom_diff::{
         format_option, format_set, CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions,
         Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
-    Differ,
+    Differ, Field,
 };
 use sbom_model::is_hash_algorithm_downgrade;
 use sbom_model::versions::is_version_downgrade;
@@ -102,18 +102,6 @@ enum FailOn {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-pub enum Field {
-    Version,
-    License,
-    Supplier,
-    Purl,
-    Description,
-    Hashes,
-    Ecosystem,
-    Deps,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum Output {
     Text,
     Markdown,
@@ -195,28 +183,13 @@ fn main() -> anyhow::Result<()> {
         (0, 0, std::collections::BTreeMap::new())
     };
 
-    let only_fields: Vec<sbom_diff::Field> = args
-        .only
-        .iter()
-        .map(|f| match f {
-            Field::Version => sbom_diff::Field::Version,
-            Field::License => sbom_diff::Field::License,
-            Field::Supplier => sbom_diff::Field::Supplier,
-            Field::Purl => sbom_diff::Field::Purl,
-            Field::Description => sbom_diff::Field::Description,
-            Field::Hashes => sbom_diff::Field::Hashes,
-            Field::Ecosystem => sbom_diff::Field::Ecosystem,
-            Field::Deps => sbom_diff::Field::Deps,
-        })
-        .collect();
-
     let mut diff = Differ::diff_owned(
         old_sbom,
         new_sbom,
-        if only_fields.is_empty() {
+        if args.only.is_empty() {
             None
         } else {
-            Some(&only_fields)
+            Some(&args.only)
         },
     );
 

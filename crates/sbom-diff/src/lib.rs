@@ -320,7 +320,7 @@ pub enum FieldChange {
 /// fields that can be compared and filtered.
 ///
 /// use with [`Differ::diff`] to limit comparison to specific fields.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum Field {
     /// package version.
     Version,
