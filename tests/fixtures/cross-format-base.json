@@ -1,0 +1,88 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2024-01-01T00:00:00Z"
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "alpha",
+      "version": "2.0.0",
+      "purl": "pkg:npm/alpha@2.0.0",
+      "bom-ref": "alpha",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        }
+      ],
+      "licenses": [
+        { "license": { "id": "MIT" } }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "beta",
+      "version": "1.5.0",
+      "purl": "pkg:npm/beta@1.5.0",
+      "bom-ref": "beta",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6b1b2"
+        }
+      ],
+      "licenses": [
+        { "license": { "id": "Apache-2.0" } }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "gamma",
+      "version": "3.0.0",
+      "purl": "pkg:cargo/gamma@3.0.0",
+      "bom-ref": "gamma",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c1c2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6c1c2"
+        },
+        {
+          "alg": "SHA-512",
+          "content": "c2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6c2c3c4"
+        }
+      ],
+      "licenses": [
+        { "license": { "id": "BSD-3-Clause" } }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "delta",
+      "version": "1.0.0",
+      "purl": "pkg:cargo/delta@1.0.0",
+      "bom-ref": "delta",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d1d2d3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6d1d2"
+        }
+      ],
+      "licenses": [
+        { "license": { "id": "MIT" } }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "alpha",
+      "dependsOn": ["beta"]
+    },
+    {
+      "ref": "gamma",
+      "dependsOn": ["delta"]
+    }
+  ]
+}

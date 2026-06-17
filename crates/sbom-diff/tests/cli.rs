@@ -1327,3 +1327,222 @@ fn fail_on_cyclic_dependency_combined_with_other_conditions() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--fail-on cyclic-dependency"));
 }
+
+// ---------------------------------------------------------------------------
+// cross-format diffing (CycloneDX vs SPDX)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cross_format_identity_no_changes() {
+    // the same logical SBOM in CycloneDX and SPDX formats — should produce
+    // zero diffs despite different serialisation and hash algorithm naming
+    // (CycloneDX "SHA-256" vs SPDX "SHA256").
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.json"))
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert_eq!(v["added"], 0, "no components should be added");
+    assert_eq!(v["removed"], 0, "no components should be removed");
+    assert_eq!(v["changed"], 0, "no components should be changed");
+    assert_eq!(v["unchanged"], 4, "all four components should be unchanged");
+}
+
+#[test]
+fn cross_format_identity_spdx_to_cdx() {
+    // same test but with SPDX as old and CycloneDX as new
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-base.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+    assert_eq!(v["changed"], 0);
+    assert_eq!(v["unchanged"], 4);
+}
+
+#[test]
+fn cross_format_identity_fail_on_gates_pass() {
+    // all --fail-on gates should pass when diffing identical SBOMs
+    // across formats — this is the strongest test that canonicalisation
+    // (hashes, licenses, identity) works end-to-end.
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.json"))
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg("--fail-on")
+        .arg("added-components")
+        .arg("--fail-on")
+        .arg("removed-components")
+        .arg("--fail-on")
+        .arg("changed-components")
+        .arg("--fail-on")
+        .arg("deps")
+        .arg("--fail-on")
+        .arg("license-changed")
+        .arg("--fail-on")
+        .arg("hash-algorithm-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "identical cross-format SBOMs should pass all gates, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn cross_format_modification_detected() {
+    // diff SPDX base (old) against modified CycloneDX (new):
+    // alpha: version 2.0.0 → 2.1.0
+    // beta: license Apache-2.0 → GPL-3.0-only, hash changed
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-modified.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert_eq!(v["changed"], 2, "alpha and beta should be changed");
+    assert_eq!(v["unchanged"], 2, "gamma and delta should be unchanged");
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+}
+
+#[test]
+fn cross_format_modification_full_json() {
+    // verify the exact field changes in the JSON detail output
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-modified.json"))
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+
+    let changed = v["changed"].as_array().expect("changed should be an array");
+    assert_eq!(changed.len(), 2);
+
+    // collect changed component names for flexible assertion order
+    let names: Vec<&str> = changed
+        .iter()
+        .map(|c| c["new"]["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"alpha"), "alpha should appear in changed");
+    assert!(names.contains(&"beta"), "beta should appear in changed");
+}
+
+#[test]
+fn cross_format_fail_on_changed_components_exits_3() {
+    // modifications across formats should trigger --fail-on changed-components
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-modified.json"))
+        .arg("--fail-on")
+        .arg("changed-components")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on changed-components"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn cross_format_fail_on_license_changed_exits_3() {
+    // beta's license change (Apache-2.0 → GPL-3.0-only) should trigger
+    // --fail-on license-changed even across formats
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-modified.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on license-changed"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn cross_format_hash_canonicalisation_no_false_diff() {
+    // CycloneDX uses "SHA-256", SPDX uses "SHA256" — after canonicalisation
+    // these must be identical. The identity diff must show zero hash changes.
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.json"))
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+
+    // no changed components at all — hashes must have been canonicalised
+    let changed = v["changed"].as_array().expect("changed should be an array");
+    assert!(
+        changed.is_empty(),
+        "hash algorithm naming differences (SHA-256 vs SHA256) should not \
+         produce false diffs after canonicalisation, got {} changes",
+        changed.len()
+    );
+}
+
+#[test]
+fn cross_format_ecosystem_filter_works() {
+    // filter to cargo ecosystem only — should see 2 unchanged (gamma, delta)
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-modified.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .arg("--include-ecosystem")
+        .arg("cargo")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert_eq!(v["changed"], 0, "cargo components are unchanged");
+    assert_eq!(v["unchanged"], 2, "gamma and delta are cargo");
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+}
