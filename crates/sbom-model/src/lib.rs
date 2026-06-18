@@ -66,8 +66,9 @@ pub struct Metadata {
 /// the semantic type of a dependency relationship.
 ///
 /// SPDX distinguishes between runtime, dev, build, test, optional, and
-/// provided dependencies. CycloneDX does not encode scope in its
-/// dependency graph, so all CycloneDX edges use [`Runtime`](DependencyKind::Runtime).
+/// provided dependencies via typed relationship names. CycloneDX encodes
+/// scope on the component itself (`required` / `optional` / `excluded`),
+/// which is mapped to the appropriate variant when constructing edges.
 ///
 /// the default is `Runtime`, which also covers generic relationships
 /// like `DEPENDS_ON` or `CONTAINS` that don't specify a scope.
