@@ -184,6 +184,21 @@ impl CycloneDxReader {
         }
     }
 
+    /// maps a CycloneDX component scope to a [`DependencyKind`].
+    ///
+    /// - `Required` (or absent) → `Runtime`
+    /// - `Optional` → `Optional`
+    /// - `Excluded` / unknown → `Runtime`
+    fn scope_to_dep_kind(
+        scope: Option<&cyclonedx_bom::models::component::Scope>,
+    ) -> DependencyKind {
+        use cyclonedx_bom::models::component::Scope;
+        match scope {
+            Some(Scope::Optional) => DependencyKind::Optional,
+            _ => DependencyKind::Runtime,
+        }
+    }
+
     fn bom_to_sbom(bom: cyclonedx_bom::prelude::Bom) -> Result<Sbom, Error> {
         let mut sbom = Sbom::default();
 
@@ -240,8 +255,10 @@ impl CycloneDxReader {
         }
 
         // 2. Process Components (recursively including sub-components)
+        // also collect bom-ref → DependencyKind derived from each component's scope.
+        let mut scope_map = BTreeMap::new();
         if let Some(components) = bom.components {
-            Self::collect_components(&components.0, &mut sbom, 0);
+            Self::collect_components(&components.0, &mut sbom, &mut scope_map, 0);
         }
 
         // 3. Process Dependencies
@@ -263,7 +280,11 @@ impl CycloneDxReader {
                     let mut children = BTreeMap::new();
                     for child_ref in dep.dependencies {
                         if let Some(child_id) = ref_map.get(&child_ref.to_string()) {
-                            children.insert(child_id.clone(), DependencyKind::Runtime);
+                            let kind = scope_map
+                                .get(&child_ref.to_string())
+                                .copied()
+                                .unwrap_or(DependencyKind::Runtime);
+                            children.insert(child_id.clone(), kind);
                         } else {
                             sbom.warnings.push(format!(
                                 "CycloneDX: dependency bom-ref '{}' (child of '{}') does not match any component",
@@ -289,6 +310,7 @@ impl CycloneDxReader {
     fn collect_components(
         cdx_components: &[cyclonedx_bom::models::component::Component],
         sbom: &mut Sbom,
+        scope_map: &mut BTreeMap<String, DependencyKind>,
         depth: usize,
     ) {
         if depth >= MAX_COMPONENT_DEPTH {
@@ -357,6 +379,10 @@ impl CycloneDxReader {
 
             if let Some(bom_ref) = &cdx_comp.bom_ref {
                 comp.source_ids.push(bom_ref.to_string());
+                scope_map.insert(
+                    bom_ref.to_string(),
+                    Self::scope_to_dep_kind(cdx_comp.scope.as_ref()),
+                );
             }
 
             if let Some(licenses) = &cdx_comp.licenses {
@@ -394,7 +420,7 @@ impl CycloneDxReader {
 
             // recurse into sub-components
             if let Some(sub) = &cdx_comp.components {
-                Self::collect_components(&sub.0, sbom, depth + 1);
+                Self::collect_components(&sub.0, sbom, scope_map, depth + 1);
             }
         }
     }
@@ -657,6 +683,136 @@ mod tests {
         assert_eq!(sbom.warnings.len(), 2);
         assert!(sbom.warnings[0].contains("ref-unknown"));
         assert!(sbom.warnings[1].contains("ref-also-unknown"));
+    }
+
+    #[test]
+    fn test_optional_scope_sets_dependency_kind() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "application",
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-app"
+                },
+                {
+                    "type": "library",
+                    "name": "required-lib",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-req",
+                    "scope": "required"
+                },
+                {
+                    "type": "library",
+                    "name": "optional-lib",
+                    "version": "2.0.0",
+                    "bom-ref": "ref-opt",
+                    "scope": "optional"
+                },
+                {
+                    "type": "library",
+                    "name": "no-scope-lib",
+                    "version": "3.0.0",
+                    "bom-ref": "ref-none"
+                }
+            ],
+            "dependencies": [
+                {
+                    "ref": "ref-app",
+                    "dependsOn": ["ref-req", "ref-opt", "ref-none"]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+
+        let app_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "my-app")
+            .unwrap()
+            .id
+            .clone();
+        let req_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "required-lib")
+            .unwrap()
+            .id
+            .clone();
+        let opt_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "optional-lib")
+            .unwrap()
+            .id
+            .clone();
+        let none_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "no-scope-lib")
+            .unwrap()
+            .id
+            .clone();
+
+        let deps = &sbom.dependencies[&app_id];
+        assert_eq!(deps[&req_id], DependencyKind::Runtime);
+        assert_eq!(deps[&opt_id], DependencyKind::Optional);
+        assert_eq!(deps[&none_id], DependencyKind::Runtime);
+    }
+
+    #[test]
+    fn test_excluded_scope_defaults_to_runtime() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "application",
+                    "name": "app",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-app"
+                },
+                {
+                    "type": "library",
+                    "name": "excluded-lib",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-excl",
+                    "scope": "excluded"
+                }
+            ],
+            "dependencies": [
+                {
+                    "ref": "ref-app",
+                    "dependsOn": ["ref-excl"]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+
+        let app_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "app")
+            .unwrap()
+            .id
+            .clone();
+        let excl_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "excluded-lib")
+            .unwrap()
+            .id
+            .clone();
+
+        // excluded has no DependencyKind equivalent; falls back to Runtime
+        assert_eq!(
+            sbom.dependencies[&app_id][&excl_id],
+            DependencyKind::Runtime
+        );
     }
 
     #[test]
