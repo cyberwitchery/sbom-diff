@@ -1,6 +1,6 @@
 # changelog
 
-## unreleased
+## [0.5.0] - 2026-06-18
 
 - warn when duplicate component IDs (purls or property hashes) cause silent overwriting in both CycloneDX and SPDX parsers; previously the parsers silently dropped the earlier occurrences with no diagnostic — now a warning is emitted naming both the existing and incoming component before the overwrite
 - derive CycloneDX dependency kinds from the component `scope` field instead of hardcoding `DependencyKind::Runtime`: components with `scope: "optional"` now produce `Optional` edges, `scope: "required"` (or absent) produces `Runtime`; fixes silent kind mismatches in mixed-format diffs and incorrect `--fail-on deps` output for optional dependencies
