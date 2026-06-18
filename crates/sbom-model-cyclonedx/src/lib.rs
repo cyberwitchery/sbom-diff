@@ -416,6 +416,13 @@ impl CycloneDxReader {
                 }
             }
 
+            if let Some(existing) = sbom.components.get(&id) {
+                sbom.warnings.push(format!(
+                    "CycloneDX: duplicate component id '{}' (name '{}'); \
+                     earlier entry '{}' will be overwritten",
+                    id, comp.name, existing.name,
+                ));
+            }
             sbom.components.insert(id, comp);
 
             // recurse into sub-components
@@ -1307,5 +1314,93 @@ mod tests {
             depth_warning.contains(&format!("at depth {}", super::MAX_COMPONENT_DEPTH)),
             "warning should include depth: {depth_warning}"
         );
+    }
+
+    #[test]
+    fn test_duplicate_purl_warns() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "purl": "pkg:npm/pkg-a@1.0.0"
+                },
+                {
+                    "type": "library",
+                    "name": "pkg-a-duplicate",
+                    "version": "1.0.0",
+                    "purl": "pkg:npm/pkg-a@1.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        // second entry overwrites the first
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a-duplicate");
+        // a warning should be emitted about the duplicate
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(
+            sbom.warnings[0].contains("duplicate"),
+            "expected duplicate warning, got: {}",
+            sbom.warnings[0]
+        );
+        assert!(sbom.warnings[0].contains("pkg-a"));
+    }
+
+    #[test]
+    fn test_duplicate_hash_id_warns() {
+        // components without purls can also collide when their property
+        // hash matches (same name + version + supplier).
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "dup",
+                    "version": "1.0.0"
+                },
+                {
+                    "type": "library",
+                    "name": "dup",
+                    "version": "1.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].contains("duplicate"));
+    }
+
+    #[test]
+    fn test_no_duplicate_warning_for_unique_components() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "purl": "pkg:npm/pkg-a@1.0.0"
+                },
+                {
+                    "type": "library",
+                    "name": "pkg-b",
+                    "version": "2.0.0",
+                    "purl": "pkg:npm/pkg-b@2.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+        assert!(sbom.warnings.is_empty());
     }
 }
