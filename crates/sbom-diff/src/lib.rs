@@ -381,6 +381,11 @@ impl Differ {
 
     /// consuming variant of [`diff`](Self::diff) that normalizes in place,
     /// avoiding two full SBOM clones.
+    ///
+    /// components are moved out of the SBOM maps rather than cloned: matched
+    /// pairs are drained via `swap_remove`, and unmatched remainders are
+    /// collected with `into_values()`. This eliminates all `Component::clone()`
+    /// calls in the diff path.
     pub fn diff_owned(mut old: Sbom, mut new: Sbom, only: Option<&[Field]>) -> Diff {
         // compare metadata before normalize() strips volatile fields
         let metadata_changed = {
@@ -411,12 +416,12 @@ impl Differ {
         old.normalize();
         new.normalize();
 
-        let mut added = Vec::new();
-        let mut removed = Vec::new();
-        let mut changed = Vec::new();
-
-        let mut processed_old = HashSet::new();
-        let mut processed_new = HashSet::new();
+        // Phase 1: Collect match decisions using only borrows — no component
+        // clones. We record (old_id, new_id, field_changes) triples for pairs
+        // that actually differ and track all matched IDs for later draining.
+        let mut changed_pairs: Vec<(ComponentId, ComponentId, Vec<FieldChange>)> = Vec::new();
+        let mut matched_old: HashSet<ComponentId> = HashSet::new();
+        let mut matched_new: HashSet<ComponentId> = HashSet::new();
 
         // track old_id -> new_id mappings for edge reconciliation
         let mut id_mapping: BTreeMap<ComponentId, ComponentId> = BTreeMap::new();
@@ -424,12 +429,13 @@ impl Differ {
         // 1. Match by ID
         for (id, new_comp) in &new.components {
             if let Some(old_comp) = old.components.get(id) {
-                processed_old.insert(id.clone());
-                processed_new.insert(id.clone());
+                matched_old.insert(id.clone());
+                matched_new.insert(id.clone());
                 id_mapping.insert(id.clone(), id.clone());
 
-                if let Some(change) = Self::compute_change(old_comp, new_comp, only) {
-                    changed.push(change);
+                let fields = Self::compute_fields(old_comp, new_comp, only);
+                if !fields.is_empty() {
+                    changed_pairs.push((id.clone(), id.clone(), fields));
                 }
             }
         }
@@ -445,7 +451,7 @@ impl Differ {
         let mut old_identity_map: BTreeMap<String, BTreeMap<Option<String>, Vec<ComponentId>>> =
             BTreeMap::new();
         for (id, comp) in &old.components {
-            if !processed_old.contains(id) {
+            if !matched_old.contains(id) {
                 old_identity_map
                     .entry(comp.name.clone())
                     .or_default()
@@ -456,7 +462,7 @@ impl Differ {
         }
 
         for (id, new_comp) in &new.components {
-            if processed_new.contains(id) {
+            if matched_new.contains(id) {
                 continue;
             }
 
@@ -484,35 +490,25 @@ impl Differ {
 
             if let Some(old_id) = matched_old_id {
                 if let Some(old_comp) = old.components.get(&old_id) {
-                    processed_old.insert(old_id.clone());
-                    processed_new.insert(id.clone());
+                    matched_old.insert(old_id.clone());
+                    matched_new.insert(id.clone());
                     id_mapping.insert(old_id.clone(), id.clone());
 
-                    if let Some(change) = Self::compute_change(old_comp, new_comp, only) {
-                        changed.push(change);
+                    let fields = Self::compute_fields(old_comp, new_comp, only);
+                    if !fields.is_empty() {
+                        changed_pairs.push((old_id, id.clone(), fields));
                     }
-                    continue;
                 }
             }
-
-            added.push(new_comp.clone());
-            processed_new.insert(id.clone());
         }
 
-        for (id, old_comp) in &old.components {
-            if !processed_old.contains(id) {
-                removed.push(old_comp.clone());
-            }
-        }
-
-        // 3. Compute totals
+        // 3. Compute totals (must happen before draining the maps)
         let old_total = old.components.len();
         let new_total = new.components.len();
-        // matched = all components in the old SBOM that were paired with a new one
-        let matched = processed_old.len();
-        let unchanged = matched - changed.len();
+        let matched = matched_old.len();
+        let unchanged = matched - changed_pairs.len();
 
-        // 4. Compute edge diffs (dependency graph changes)
+        // 4. Compute edge diffs (needs dependencies, not component values)
         let should_include_deps = only.is_none_or(|fields| fields.contains(&Field::Deps));
         let edge_diffs = if should_include_deps {
             Self::compute_edge_diffs(&old, &new, &id_mapping)
@@ -520,8 +516,37 @@ impl Differ {
             Vec::new()
         };
 
-        // 5. Build human-readable name map for hash-based IDs in edge diffs
+        // 5. Build human-readable name map (needs component maps intact)
         let component_names = Self::build_component_names(&old, &new, &edge_diffs);
+
+        // Phase 2: Drain components by moving them out of the maps, avoiding
+        // all Component::clone() calls.
+
+        // 6. Drain changed pairs — swap_remove moves values out of the IndexMap
+        let mut changed = Vec::with_capacity(changed_pairs.len());
+        for (old_id, new_id, fields) in changed_pairs {
+            let old_comp = old.components.swap_remove(&old_id).unwrap();
+            let new_comp = new.components.swap_remove(&new_id).unwrap();
+            changed.push(ComponentChange {
+                id: new_comp.id.clone(),
+                old: old_comp,
+                new: new_comp,
+                changes: fields,
+            });
+        }
+
+        // 7. Remove unchanged matched components (already drained changed ones
+        //    above, so swap_remove returns None for those — that's fine)
+        for id in &matched_old {
+            old.components.swap_remove(id);
+        }
+        for id in &matched_new {
+            new.components.swap_remove(id);
+        }
+
+        // 8. Drain remaining: everything left is unmatched
+        let added: Vec<Component> = new.components.into_values().collect();
+        let removed: Vec<Component> = old.components.into_values().collect();
 
         Diff {
             added,
@@ -680,11 +705,18 @@ impl Differ {
         names
     }
 
-    fn compute_change(
+    /// compares two components field-by-field, returning the list of
+    /// [`FieldChange`]s. An empty vector means the components are identical
+    /// (modulo fields excluded by `only`).
+    ///
+    /// this is a pure comparison — it does not construct a [`ComponentChange`]
+    /// or clone either component. The caller is responsible for building the
+    /// final struct from owned values.
+    fn compute_fields(
         old: &Component,
         new: &Component,
         only: Option<&[Field]>,
-    ) -> Option<ComponentChange> {
+    ) -> Vec<FieldChange> {
         let mut changes = Vec::new();
 
         let should_include = |f: Field| only.is_none_or(|fields| fields.contains(&f));
@@ -732,16 +764,7 @@ impl Differ {
             ));
         }
 
-        if changes.is_empty() {
-            None
-        } else {
-            Some(ComponentChange {
-                id: new.id.clone(),
-                old: old.clone(),
-                new: new.clone(),
-                changes,
-            })
-        }
+        changes
     }
 }
 

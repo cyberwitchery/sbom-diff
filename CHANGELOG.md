@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- eliminate redundant `Component::clone()` calls in `Differ::diff_owned()` by splitting the diff into a decide-then-drain pipeline: match decisions are collected using borrows only, then matched pairs are moved out of the SBOM maps via `swap_remove` and unmatched remainders are drained with `into_values()`, avoiding all component clones during identity matching and reconciliation
+
 ## [0.5.0] - 2026-06-18
 
 - warn when duplicate component IDs (purls or property hashes) cause silent overwriting in both CycloneDX and SPDX parsers; previously the parsers silently dropped the earlier occurrences with no diagnostic — now a warning is emitted naming both the existing and incoming component before the overwrite
