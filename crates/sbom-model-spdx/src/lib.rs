@@ -309,6 +309,13 @@ impl SpdxReader {
                 );
             }
 
+            if let Some(existing) = sbom.components.get(&id) {
+                sbom.warnings.push(format!(
+                    "SPDX: duplicate component id '{}' (name '{}'); \
+                     earlier entry '{}' will be overwritten",
+                    id, comp.name, existing.name,
+                ));
+            }
             sbom.components.insert(id, comp);
         }
 
@@ -1861,5 +1868,139 @@ PackageCopyrightText: NOASSERTION
                 "phantom warning should identify the injected creator: {w}"
             );
         }
+    }
+
+    #[test]
+    fn test_duplicate_purl_warns() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+                        }
+                    ]
+                },
+                {
+                    "name": "pkg-a-duplicate",
+                    "SPDXID": "SPDXRef-pkg-a-dup",
+                    "downloadLocation": "NONE",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+                        }
+                    ]
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        // second entry overwrites the first
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a-duplicate");
+        // a warning should be emitted about the duplicate
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(
+            sbom.warnings[0].contains("duplicate"),
+            "expected duplicate warning, got: {}",
+            sbom.warnings[0]
+        );
+        assert!(sbom.warnings[0].contains("pkg-a"));
+    }
+
+    #[test]
+    fn test_duplicate_hash_id_warns() {
+        // packages without purls can collide when name+version match.
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "dup",
+                    "SPDXID": "SPDXRef-dup1",
+                    "versionInfo": "1.0.0",
+                    "downloadLocation": "NONE"
+                },
+                {
+                    "name": "dup",
+                    "SPDXID": "SPDXRef-dup2",
+                    "versionInfo": "1.0.0",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].contains("duplicate"));
+    }
+
+    #[test]
+    fn test_no_duplicate_warning_for_unique_packages() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+                        }
+                    ]
+                },
+                {
+                    "name": "pkg-b",
+                    "SPDXID": "SPDXRef-pkg-b",
+                    "downloadLocation": "NONE",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:npm/pkg-b@2.0.0"
+                        }
+                    ]
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+        assert!(sbom.warnings.is_empty());
     }
 }
