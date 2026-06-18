@@ -2,7 +2,8 @@
 
 ## unreleased
 
-- warn when duplicate component IDs (purls or property hashes) cause silent overwriting in both CycloneDX and SPDX parsers; previously `HashMap::insert` silently dropped the first occurrence with no diagnostic — now a warning is emitted naming both the existing and incoming component before the overwrite
+- warn when duplicate component IDs (purls or property hashes) cause silent overwriting in both CycloneDX and SPDX parsers; previously the parsers silently dropped the earlier occurrences with no diagnostic — now a warning is emitted naming both the existing and incoming component before the overwrite
+- derive CycloneDX dependency kinds from the component `scope` field instead of hardcoding `DependencyKind::Runtime`: components with `scope: "optional"` now produce `Optional` edges, `scope: "required"` (or absent) produces `Runtime`; fixes silent kind mismatches in mixed-format diffs and incorrect `--fail-on deps` output for optional dependencies
 - fix `parse_license_expression` dropping `LicenseRef-` identifiers from mixed SPDX expressions: expressions like `LicenseRef-proprietary AND Apache-2.0` were collapsing to just `Apache-2.0`, causing `--deny-license` to miss LicenseRef terms and license diffs to be inaccurate; both standard SPDX IDs and LicenseRef identifiers are now correctly decomposed
 - add `--fail-on cyclic-dependency` CI gate: detects dependency cycles in the new SBOM's dependency graph using DFS-based cycle detection; reports each cycle with the full component path; add `Sbom::detect_cycles()` to sbom-model for programmatic use
 - fix `--include-ecosystem` and `--exclude-ecosystem` leaving `edge_diffs` unfiltered: dependency edge changes are now filtered by the parent component's ecosystem, and stale `component_names` entries are pruned after filtering; `Diff::filter_by_ecosystem()` signature now takes a `component_ecosystems` map to support edge diff filtering
