@@ -24,7 +24,7 @@ use std::str::FromStr;
 /// let component = Component::new("serde".into(), Some("1.0.0".into()));
 /// sbom.components.insert(component.id.clone(), component);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sbom {
     /// document-level metadata (creation time, tools, authors).
     pub metadata: Metadata,
@@ -32,10 +32,27 @@ pub struct Sbom {
     pub components: IndexMap<ComponentId, Component>,
     /// dependency graph as adjacency list: parent -> (child -> kind).
     pub dependencies: BTreeMap<ComponentId, BTreeMap<ComponentId, DependencyKind>>,
+    /// reverse dependency index: child -> set of parents.
+    ///
+    /// derived from `dependencies`; call [`rebuild_reverse_deps`](Sbom::rebuild_reverse_deps)
+    /// after modifying `dependencies` to keep it in sync.
+    #[serde(skip)]
+    pub reverse_deps: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
     /// non-fatal warnings produced during parsing (e.g. orphaned dependency refs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
+
+impl PartialEq for Sbom {
+    fn eq(&self, other: &Self) -> bool {
+        self.metadata == other.metadata
+            && self.components == other.components
+            && self.dependencies == other.dependencies
+            && self.warnings == other.warnings
+    }
+}
+
+impl Eq for Sbom {}
 
 impl Default for Sbom {
     fn default() -> Self {
@@ -43,6 +60,7 @@ impl Default for Sbom {
             metadata: Metadata::default(),
             components: IndexMap::new(),
             dependencies: BTreeMap::new(),
+            reverse_deps: BTreeMap::new(),
             warnings: Vec::new(),
         }
     }
@@ -244,20 +262,35 @@ impl Sbom {
         self.metadata.timestamp = None;
         self.metadata.tools.clear();
         self.metadata.authors.clear(); // Authors might be relevant, but often change slightly. Let's keep strict for now.
+
+        self.rebuild_reverse_deps();
+    }
+
+    /// rebuilds the reverse dependency index from the forward `dependencies` map.
+    ///
+    /// must be called after modifying `dependencies` for `rdeps()` and `roots()`
+    /// to return correct results. Parsers call this automatically; call it
+    /// explicitly when constructing an `Sbom` by hand.
+    pub fn rebuild_reverse_deps(&mut self) {
+        self.reverse_deps.clear();
+        for (parent, children) in &self.dependencies {
+            for child in children.keys() {
+                self.reverse_deps
+                    .entry(child.clone())
+                    .or_default()
+                    .insert(parent.clone());
+            }
+        }
     }
 
     /// returns root components (those not depended on by any other component).
     ///
     /// these are typically the top-level packages or applications in the SBOM.
+    /// uses the precomputed `reverse_deps` index for O(n) lookup.
     pub fn roots(&self) -> Vec<ComponentId> {
-        let targets: BTreeSet<_> = self
-            .dependencies
-            .values()
-            .flat_map(|children| children.keys())
-            .collect();
         self.components
             .keys()
-            .filter(|id| !targets.contains(id))
+            .filter(|id| self.reverse_deps.get(*id).is_none_or(BTreeSet::is_empty))
             .cloned()
             .collect()
     }
@@ -271,12 +304,12 @@ impl Sbom {
     }
 
     /// returns reverse dependencies (components that depend on the given component).
+    /// uses the precomputed `reverse_deps` index for O(1) lookup.
     pub fn rdeps(&self, id: &ComponentId) -> Vec<ComponentId> {
-        self.dependencies
-            .iter()
-            .filter(|(_, children)| children.contains_key(id))
-            .map(|(parent, _)| parent.clone())
-            .collect()
+        self.reverse_deps
+            .get(id)
+            .map(|parents| parents.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// returns all transitive dependencies of the given component.
@@ -727,6 +760,7 @@ mod tests {
             .entry(id2.clone())
             .or_default()
             .insert(id3.clone(), DependencyKind::Runtime);
+        sbom.rebuild_reverse_deps();
 
         assert_eq!(sbom.roots(), vec![id1.clone()]);
         assert_eq!(sbom.deps(&id1), vec![id2.clone()]);
