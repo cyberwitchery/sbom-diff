@@ -143,10 +143,6 @@ pub fn is_version_downgrade(old_ver: &str, new_ver: &str) -> bool {
 mod tests {
     use super::*;
 
-    // -------------------------------------------------------------------
-    // Version::parse_lenient
-    // -------------------------------------------------------------------
-
     #[test]
     fn parse_standard_semver() {
         let v = Version::parse_lenient("1.2.3");
@@ -323,10 +319,6 @@ mod tests {
         assert!(matches!(Version::parse_lenient(""), Version::Opaque(_)));
     }
 
-    // -------------------------------------------------------------------
-    // Version::is_downgrade — semver path
-    // -------------------------------------------------------------------
-
     #[test]
     fn downgrade_semver() {
         assert!(is_version_downgrade("2.0.0", "1.5.0"));
@@ -418,10 +410,6 @@ mod tests {
         assert!(!is_version_downgrade("v1.0", "v2.0"));
     }
 
-    // -------------------------------------------------------------------
-    // Version::is_downgrade — numeric fallback path
-    // -------------------------------------------------------------------
-
     #[test]
     fn downgrade_four_part() {
         assert!(is_version_downgrade("1.2.3.4", "1.2.3.3"));
@@ -453,10 +441,6 @@ mod tests {
         assert!(!is_version_downgrade("2024.1.15", "2024.1.15"));
     }
 
-    // -------------------------------------------------------------------
-    // Version::is_downgrade — cross-variant (Semver vs Numeric)
-    // -------------------------------------------------------------------
-
     #[test]
     fn downgrade_semver_vs_four_part() {
         // "1.2.3" → Semver, "1.2.3.4" → Numeric; cross-comparison extracts
@@ -467,16 +451,10 @@ mod tests {
 
     #[test]
     fn downgrade_v_prefix_vs_four_part() {
-        // unlike the old implementation (which bailed because the numeric
-        // fallback couldn't parse "v1"), the Version enum correctly handles
-        // cross-variant comparison after stripping the v-prefix during parse.
+        // cross-variant comparison works after stripping the v-prefix during parse.
         assert!(!is_version_downgrade("v1.2.3", "1.2.3.4"));
         assert!(is_version_downgrade("1.2.3.4", "v1.2.3"));
     }
-
-    // -------------------------------------------------------------------
-    // edge cases
-    // -------------------------------------------------------------------
 
     #[test]
     fn downgrade_empty_strings() {

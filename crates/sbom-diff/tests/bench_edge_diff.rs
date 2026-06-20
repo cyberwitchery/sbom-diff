@@ -59,12 +59,10 @@ fn make_sboms(n: usize) -> (Sbom, Sbom) {
 fn bench_diff(label: &str, n: usize, warmup: usize, iters: usize) {
     let (old, new) = make_sboms(n);
 
-    // warmup
     for _ in 0..warmup {
         let _ = Differ::diff(&old, &new, None);
     }
 
-    // timed runs
     let mut times = Vec::with_capacity(iters);
     for _ in 0..iters {
         let start = Instant::now();

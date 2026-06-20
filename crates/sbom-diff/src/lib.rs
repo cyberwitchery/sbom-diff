@@ -1268,14 +1268,11 @@ mod tests {
 
         let diff = Differ::diff(&old, &new, None);
 
-        // should NOT be add/remove
         assert_eq!(diff.added.len(), 0, "Should not have added components");
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
 
-        // should be a change
         assert_eq!(diff.changed.len(), 1, "Should have one changed component");
 
-        // should include both Version and Purl changes
         let changes = &diff.changed[0].changes;
         assert!(changes
             .iter()
@@ -1311,7 +1308,6 @@ mod tests {
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
         assert_eq!(diff.changed.len(), 1, "Should have one changed component");
 
-        // should have Purl change
         assert!(diff.changed[0]
             .changes
             .iter()
@@ -1368,7 +1364,6 @@ mod tests {
 
         let diff = Differ::diff(&old, &new, None);
 
-        // should be separate add/remove, NOT a change
         assert_eq!(diff.added.len(), 1, "pypi/utils should be added");
         assert_eq!(diff.removed.len(), 1, "npm/utils should be removed");
         assert_eq!(
@@ -1803,10 +1798,6 @@ mod tests {
         // no entry in component_names → falls back to raw ID
         assert_eq!(diff.display_name(&unknown_id), unknown_id.as_str());
     }
-
-    // -----------------------------------------------------------------------
-    // Diff::filter_by_ecosystem
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_filter_by_ecosystem_include() {

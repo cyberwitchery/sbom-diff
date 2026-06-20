@@ -759,8 +759,6 @@ fn test_json_summary_metadata_unchanged() {
     assert!(val.get("metadata_changes").is_none());
 }
 
-// --- SARIF renderer tests ---
-
 fn sarif_parse(buf: &[u8]) -> serde_json::Value {
     serde_json::from_slice(buf).unwrap()
 }
@@ -861,7 +859,6 @@ fn test_sarif_renderer_added_removed_changed() {
     let results = val["runs"][0]["results"].as_array().unwrap();
     assert_eq!(results.len(), 3); // 1 added + 1 removed + 1 changed
 
-    // check rule IDs
     let rule_ids: Vec<&str> = results
         .iter()
         .map(|r| r["ruleId"].as_str().unwrap())
@@ -1237,8 +1234,6 @@ fn test_sarif_renderer_no_metadata_when_all_none_subfields() {
         "MetadataChange with all-None subfields should not emit a result"
     );
 }
-
-// --- CSV renderer tests ---
 
 /// parse CSV output into a vec of rows, each row a vec of fields.
 fn csv_parse(buf: &[u8]) -> Vec<Vec<String>> {

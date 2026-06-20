@@ -7,8 +7,6 @@ use sbom_model::Component;
 use serde::Serialize;
 use std::io::Write;
 
-// --- SARIF 2.1.0 output ---
-
 const SARIF_SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
 

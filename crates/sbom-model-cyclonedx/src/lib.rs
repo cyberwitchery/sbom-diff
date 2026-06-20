@@ -202,7 +202,6 @@ impl CycloneDxReader {
     fn bom_to_sbom(bom: cyclonedx_bom::prelude::Bom) -> Result<Sbom, Error> {
         let mut sbom = Sbom::default();
 
-        // 1. Process Metadata
         if let Some(meta) = bom.metadata {
             if let Some(timestamp) = meta.timestamp {
                 sbom.metadata.timestamp = Some(timestamp.to_string());
@@ -254,18 +253,13 @@ impl CycloneDxReader {
             }
         }
 
-        // 2. Process Components (recursively including sub-components)
-        // also collect bom-ref → DependencyKind derived from each component's scope.
+        // collect bom-ref → DependencyKind derived from each component's scope.
         let mut scope_map = BTreeMap::new();
         if let Some(components) = bom.components {
             Self::collect_components(&components.0, &mut sbom, &mut scope_map, 0);
         }
 
-        // 3. Process Dependencies
-        // this is tricky because CDX uses bom-refs for dependency graph.
-        // we need to map bom-refs to our ComponentIds.
-
-        // build a map of bom-ref -> ComponentId
+        // CDX uses bom-refs for the dependency graph; map them to our ComponentIds.
         let mut ref_map = BTreeMap::new();
         for (id, comp) in &sbom.components {
             for src_id in &comp.source_ids {
@@ -360,7 +354,6 @@ impl CycloneDxReader {
             let purl = cdx_comp.purl.as_ref().map(|p| p.to_string());
             let purl_str = purl.as_deref();
 
-            // extract ecosystem from purl
             let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
             let id = ComponentId::new(purl_str, &props);

@@ -7,8 +7,6 @@ use sbom_model::Component;
 use std::collections::BTreeMap;
 use std::io::Write;
 
-// --- Markdown output helpers ---
-
 fn write_md_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io::Result<()> {
     for c in components {
         writeln!(writer, "- `{}`", c.purl.as_deref().unwrap_or(c.id.as_str()))?;

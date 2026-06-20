@@ -108,8 +108,6 @@ pub trait SummaryRenderer {
     ) -> anyhow::Result<()>;
 }
 
-// --- Shared helpers for field-change rendering ---
-
 pub(super) trait FieldChangeFormatter {
     fn field_change<W: Write>(
         &self,

@@ -286,10 +286,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -----------------------------------------------------------------------
-    // detect_format heuristics
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_detect_cyclonedx_json() {
         let input = br#"{"bomFormat": "CycloneDX", "specVersion": "1.4"}"#;
@@ -363,10 +359,6 @@ mod tests {
     fn test_detect_empty_input() {
         assert_eq!(detect_format(b""), DetectedFormat::Unknown);
     }
-
-    // -----------------------------------------------------------------------
-    // load_sbom edge cases
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_load_sbom_empty_file() {
@@ -442,10 +434,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // auto-detection with real fixtures
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_detect_format_real_cyclonedx_json() {
         let content = std::fs::read("../../tests/fixtures/old.json").unwrap();
@@ -469,10 +457,6 @@ mod tests {
         let content = std::fs::read("../../tests/fixtures/old.spdx").unwrap();
         assert_eq!(detect_format(&content), DetectedFormat::SpdxTv);
     }
-
-    // -----------------------------------------------------------------------
-    // helper function unit tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_strip_bom_and_whitespace() {

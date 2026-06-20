@@ -175,8 +175,6 @@ fn spdx_markdown_renderer_golden_output_matches_fixture() {
     assert_eq!(actual, expected);
 }
 
-// CycloneDX XML golden fixture tests
-
 #[test]
 fn cyclonedx_xml_fixture_diff_matches_json_diff() {
     let xml_old = load_cyclonedx_xml_fixture("golden-old.cdx.xml");
@@ -230,8 +228,6 @@ fn cyclonedx_xml_markdown_renderer_golden_output_matches_fixture() {
 
     assert_eq!(actual, expected);
 }
-
-// SPDX tag-value golden fixture tests
 
 fn load_spdx_tv_fixture(name: &str) -> Sbom {
     let bytes = fs::read(fixture_path(name)).expect("fixture should be readable");

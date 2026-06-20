@@ -11,10 +11,6 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-// ---------------------------------------------------------------------------
-// --fail-on exit codes (exit 3)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fail_on_added_components_exits_3() {
     let out = sbom_diff()
@@ -164,10 +160,6 @@ fn fail_on_multiple_conditions_all_checked() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// --fail-on license-changed (exit 3)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fail_on_license_changed_exits_3() {
     let out = sbom_diff()
@@ -185,13 +177,11 @@ fn fail_on_license_changed_exits_3() {
         "stderr should mention the violated condition, got: {}",
         stderr
     );
-    // should mention the changed license
     assert!(
         stderr.contains("license changed on component"),
         "stderr should report the changed component, got: {}",
         stderr
     );
-    // should mention the added component introducing licenses
     assert!(
         stderr.contains("introduces license(s)"),
         "stderr should report the added component's licenses, got: {}",
@@ -226,10 +216,6 @@ fn fail_on_license_changed_no_violation_exits_0() {
 
     assert_eq!(out.status.code(), Some(0));
 }
-
-// ---------------------------------------------------------------------------
-// --deny-license / --allow-license exit codes (exit 2)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn deny_license_match_exits_2() {
@@ -303,10 +289,6 @@ fn allow_license_all_match_exits_0() {
     assert_eq!(out.status.code(), Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// --deny-license with LicenseRef expressions
-// ---------------------------------------------------------------------------
-
 #[test]
 fn deny_license_catches_licenseref_in_mixed_expression() {
     let out = sbom_diff()
@@ -355,10 +337,6 @@ fn allow_license_requires_licenseref_in_mixed_expression() {
     assert!(stderr.contains("LicenseRef-proprietary"));
 }
 
-// ---------------------------------------------------------------------------
-// exit code precedence: license (2) wins over fail-on (3)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn license_violation_takes_precedence_over_fail_on() {
     // the golden fixtures have added components (fail-on → exit 3) AND
@@ -402,10 +380,6 @@ fn license_violation_takes_precedence_over_fail_on() {
     // golden fixtures have no licenses, so only fail-on fires → exit 3.
     assert_eq!(fail_on_only.status.code(), Some(3));
 }
-
-// ---------------------------------------------------------------------------
-// --quiet suppression
-// ---------------------------------------------------------------------------
 
 #[test]
 fn quiet_suppresses_stdout() {
@@ -458,10 +432,6 @@ fn quiet_preserves_fail_on_exit_code() {
     assert!(out.stdout.is_empty());
     assert_eq!(out.status.code(), Some(3));
 }
-
-// ---------------------------------------------------------------------------
-// format auto-detection
-// ---------------------------------------------------------------------------
 
 #[test]
 fn auto_detects_cyclonedx_json() {
@@ -567,10 +537,6 @@ fn wrong_explicit_format_fails() {
     assert_ne!(out.status.code(), Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// --summary flag
-// ---------------------------------------------------------------------------
-
 #[test]
 fn summary_text_is_compact() {
     let full = sbom_diff()
@@ -653,10 +619,6 @@ fn summary_with_quiet_produces_no_output() {
     assert_eq!(out.status.code(), Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// --fail-on version-downgrade (exit 3)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fail_on_version_downgrade_exits_3() {
     let out = sbom_diff()
@@ -713,10 +675,6 @@ fn fail_on_version_downgrade_no_change_exits_0() {
     assert_eq!(out.status.code(), Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// --fail-on supplier-changed (exit 3)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fail_on_supplier_changed_exits_3() {
     let out = sbom_diff()
@@ -764,10 +722,6 @@ fn fail_on_supplier_changed_no_change_exits_0() {
     assert_eq!(out.status.code(), Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// identity diff (no changes)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn identity_diff_exits_0_with_no_output_changes() {
     let out = sbom_diff()
@@ -786,10 +740,6 @@ fn identity_diff_exits_0_with_no_output_changes() {
     assert_eq!(v["removed"], 0);
     assert_eq!(v["changed"], 0);
 }
-
-// ---------------------------------------------------------------------------
-// --include-ecosystem / --exclude-ecosystem
-// ---------------------------------------------------------------------------
 
 #[test]
 fn include_ecosystem_filters_to_matching() {
@@ -944,10 +894,6 @@ fn include_ecosystem_with_fail_on_respects_filter() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// --fail-on hash-algorithm-downgrade (exit 3)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fail_on_hash_algorithm_downgrade_exits_3() {
     let out = sbom_diff()
@@ -1010,10 +956,6 @@ fn fail_on_hash_algorithm_downgrade_only_downgraded_component_reported() {
         stderr
     );
 }
-
-// ---------------------------------------------------------------------------
-// --include-ecosystem / --exclude-ecosystem with mixed-ecosystem fixtures
-// ---------------------------------------------------------------------------
 
 #[test]
 fn mixed_eco_include_npm_text() {
@@ -1252,10 +1194,6 @@ fn mixed_eco_include_unknown_text() {
     assert!(stdout.contains("Changed:          0"));
 }
 
-// ---------------------------------------------------------------------------
-// --fail-on cyclic-dependency
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fail_on_cyclic_dependency_exits_3() {
     let out = sbom_diff()
@@ -1327,10 +1265,6 @@ fn fail_on_cyclic_dependency_combined_with_other_conditions() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--fail-on cyclic-dependency"));
 }
-
-// ---------------------------------------------------------------------------
-// cross-format diffing (CycloneDX vs SPDX)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn cross_format_identity_no_changes() {

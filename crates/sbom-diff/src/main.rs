@@ -502,13 +502,9 @@ mod tests {
         c.licenses.insert("GPL-3.0-only".into());
         sbom.components.insert(c.id.clone(), c);
 
-        // exact match
         assert!(check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
-        // no match
         assert!(!check_licenses(&sbom, &["MIT".into()], &[]));
-        // not in allow list
         assert!(check_licenses(&sbom, &[], &["MIT".into()]));
-        // in allow list
         assert!(!check_licenses(&sbom, &[], &["GPL-3.0-only".into()]));
     }
 
@@ -667,7 +663,6 @@ mod tests {
             ..Diff::default()
         };
 
-        // both conditions checked
         assert!(check_fail_on(
             &diff,
             &[FailOn::AddedComponents, FailOn::MissingHashes]
@@ -730,10 +725,8 @@ mod tests {
             ..Diff::default()
         };
 
-        // no added components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
 
-        // with added component - violation
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
         assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
@@ -751,15 +744,12 @@ mod tests {
             ..Diff::default()
         };
 
-        // no added components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
 
-        // added component without hashes - violation
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
         assert!(check_fail_on(&diff, &[FailOn::MissingHashes]));
 
-        // added component with hashes - no violation
         diff.added[0].hashes.insert("sha256".into(), "abc".into());
         assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
     }
@@ -851,10 +841,8 @@ mod tests {
             ..Diff::default()
         };
 
-        // no edge changes - no violation
         assert!(!check_fail_on(&diff, &[FailOn::Deps]));
 
-        // with edge changes - violation
         diff.edge_diffs.push(EdgeDiff {
             parent: ComponentId::new(None, &[("name", "parent")]),
             added: BTreeMap::from([(
@@ -879,10 +867,8 @@ mod tests {
             ..Diff::default()
         };
 
-        // no removed components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
 
-        // with removed component - violation
         diff.removed
             .push(Component::new("old-pkg".into(), Some("1.0".into())));
         assert!(check_fail_on(&diff, &[FailOn::RemovedComponents]));
@@ -900,10 +886,8 @@ mod tests {
             ..Diff::default()
         };
 
-        // no changed components - no violation
         assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
 
-        // with changed component - violation
         let old = Component::new("pkg".into(), Some("1.0".into()));
         let new = Component::new("pkg".into(), Some("2.0".into()));
         diff.changed.push(ComponentChange {
@@ -1382,7 +1366,6 @@ mod tests {
             ..Diff::default()
         };
 
-        // both conditions should be checked
         assert!(check_fail_on(
             &diff,
             &[FailOn::AddedComponents, FailOn::LicenseChanged]
@@ -1470,16 +1453,11 @@ mod tests {
             ..Diff::default()
         };
 
-        // both should fire
         assert!(check_fail_on(
             &diff,
             &[FailOn::AddedComponents, FailOn::MetadataChanged]
         ));
     }
-
-    // -----------------------------------------------------------------------
-    // --fail-on version-downgrade
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_check_fail_on_version_downgrade() {
@@ -1611,10 +1589,6 @@ mod tests {
         // VersionDowngrade should fire
         assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
     }
-
-    // -----------------------------------------------------------------------
-    // --fail-on supplier-changed
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_check_fail_on_supplier_changed() {
@@ -1777,10 +1751,6 @@ mod tests {
         // SupplierChanged should fire
         assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
     }
-
-    // -----------------------------------------------------------------------
-    // --fail-on hash-algorithm-downgrade
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_check_fail_on_hash_algorithm_downgrade() {
@@ -1960,10 +1930,6 @@ mod tests {
         // HashAlgorithmDowngrade should fire
         assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
     }
-
-    // -----------------------------------------------------------------------
-    // --fail-on cyclic-dependency
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_check_cyclic_dependencies_with_cycle() {

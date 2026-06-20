@@ -220,7 +220,6 @@ impl SpdxReader {
     fn spdx_to_sbom(spdx_doc: spdx_rs::models::SPDX) -> Sbom {
         let mut sbom = Sbom::default();
 
-        // 1. Metadata
         let ci = spdx_doc.document_creation_information.creation_info;
         sbom.metadata.timestamp = Some(ci.created.to_string());
         for creator in ci.creators {
@@ -231,7 +230,6 @@ impl SpdxReader {
             }
         }
 
-        // 2. Components (Packages)
         for pkg in spdx_doc.package_information {
             let name = pkg.package_name;
             let version = pkg.package_version;
@@ -251,7 +249,6 @@ impl SpdxReader {
                 props.push(("supplier", s.as_str()));
             }
 
-            // Purl handling
             let mut purl = None;
             for r in &pkg.external_reference {
                 if r.reference_type == "purl" {
@@ -261,7 +258,6 @@ impl SpdxReader {
             }
             let purl_str = purl.as_deref();
 
-            // extract ecosystem from purl
             let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
             let id = ComponentId::new(purl_str, &props);
@@ -301,7 +297,6 @@ impl SpdxReader {
                     .extend(parse_license_expression(&l.to_string()));
             }
 
-            // hashes
             for checksum in pkg.package_checksum {
                 comp.hashes.insert(
                     canonical_algorithm_name(&format!("{:?}", checksum.algorithm)),
@@ -319,7 +314,6 @@ impl SpdxReader {
             sbom.components.insert(id, comp);
         }
 
-        // 3. Relationships
         // map SPDX IDs -> ComponentId
         let mut ref_map = BTreeMap::new();
         for (id, comp) in &sbom.components {
