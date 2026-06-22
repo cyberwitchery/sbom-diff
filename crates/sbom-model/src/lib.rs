@@ -365,55 +365,63 @@ impl Sbom {
 
     /// detects dependency cycles in the SBOM's dependency graph.
     ///
-    /// uses depth-first search with three-color marking (white/gray/black)
-    /// to find all distinct cycles. each returned vector contains the
-    /// component IDs forming a cycle, starting and ending with the same ID.
+    /// uses iterative stack-based depth-first search with three-color marking
+    /// (white/gray/black) to find all distinct cycles. each returned vector
+    /// contains the component IDs forming a cycle, starting and ending with
+    /// the same ID.
     ///
     /// returns an empty vector if the graph is acyclic.
     pub fn detect_cycles(&self) -> Vec<Vec<ComponentId>> {
+        enum Frame {
+            Enter(ComponentId),
+            Exit(ComponentId),
+        }
+
         let mut visited = BTreeSet::new();
         let mut on_stack = BTreeSet::new();
         let mut path = Vec::new();
         let mut cycles = Vec::new();
 
-        for node in self.dependencies.keys() {
-            if !visited.contains(node) {
-                self.dfs_cycles(node, &mut visited, &mut on_stack, &mut path, &mut cycles);
-            }
-        }
+        let mut stack: Vec<Frame> = self
+            .dependencies
+            .keys()
+            .rev()
+            .map(|k| Frame::Enter(k.clone()))
+            .collect();
 
-        cycles
-    }
-
-    fn dfs_cycles(
-        &self,
-        node: &ComponentId,
-        visited: &mut BTreeSet<ComponentId>,
-        on_stack: &mut BTreeSet<ComponentId>,
-        path: &mut Vec<ComponentId>,
-        cycles: &mut Vec<Vec<ComponentId>>,
-    ) {
-        visited.insert(node.clone());
-        on_stack.insert(node.clone());
-        path.push(node.clone());
-
-        if let Some(children) = self.dependencies.get(node) {
-            for child in children.keys() {
-                if !visited.contains(child) {
-                    self.dfs_cycles(child, visited, on_stack, path, cycles);
-                } else if on_stack.contains(child) {
-                    // found a cycle — extract the portion of the path forming it
-                    if let Some(start) = path.iter().position(|n| n == child) {
-                        let mut cycle: Vec<_> = path[start..].to_vec();
-                        cycle.push(child.clone());
-                        cycles.push(cycle);
+        while let Some(frame) = stack.pop() {
+            match frame {
+                Frame::Enter(node) => {
+                    if visited.contains(&node) {
+                        continue;
                     }
+                    visited.insert(node.clone());
+                    on_stack.insert(node.clone());
+                    path.push(node.clone());
+                    stack.push(Frame::Exit(node.clone()));
+
+                    if let Some(children) = self.dependencies.get(&node) {
+                        for child in children.keys().rev() {
+                            if !visited.contains(child) {
+                                stack.push(Frame::Enter(child.clone()));
+                            } else if on_stack.contains(child) {
+                                if let Some(start) = path.iter().position(|n| n == child) {
+                                    let mut cycle: Vec<_> = path[start..].to_vec();
+                                    cycle.push(child.clone());
+                                    cycles.push(cycle);
+                                }
+                            }
+                        }
+                    }
+                }
+                Frame::Exit(node) => {
+                    path.pop();
+                    on_stack.remove(&node);
                 }
             }
         }
 
-        path.pop();
-        on_stack.remove(node);
+        cycles
     }
 }
 
