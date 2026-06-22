@@ -773,6 +773,7 @@ mod tests {
                     FieldChange::Version(Some("1.0".into()), Some("1.1".into())),
                     FieldChange::Hashes(old.hashes.clone(), BTreeMap::new()),
                 ],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -799,6 +800,7 @@ mod tests {
                     FieldChange::Version(Some("1.0".into()), Some("1.1".into())),
                     FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()),
                 ],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -820,6 +822,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Version(Some("1.0".into()), Some("1.1".into()))],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -895,6 +898,7 @@ mod tests {
             old: old.clone(),
             new,
             changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
+            is_downgrade: false,
         });
         assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
     }
@@ -918,6 +922,7 @@ mod tests {
                     None,
                     Some("updated description".into()),
                 )],
+                is_downgrade: false,
             }],
             edge_diffs: vec![],
             ..Diff::default()
@@ -1253,6 +1258,7 @@ mod tests {
                     BTreeSet::from(["MIT".into()]),
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1273,6 +1279,7 @@ mod tests {
                 old,
                 new,
                 changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1335,6 +1342,7 @@ mod tests {
                     BTreeSet::from(["MIT".into()]),
                     BTreeSet::new(),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1362,6 +1370,7 @@ mod tests {
                     BTreeSet::from(["MIT".into()]),
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1475,6 +1484,7 @@ mod tests {
                     Some("2.0.0".into()),
                     Some("1.5.0".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1498,6 +1508,7 @@ mod tests {
                     Some("1.0.0".into()),
                     Some("2.0.0".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1530,6 +1541,7 @@ mod tests {
                     Some("Old Corp".into()),
                     Some("New Corp".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1551,6 +1563,7 @@ mod tests {
                 old,
                 new,
                 changes: vec![FieldChange::Version(None, Some("1.0.0".into()))],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1574,6 +1587,7 @@ mod tests {
                     Some("2.0.0".into()),
                     Some("1.0.0".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1608,6 +1622,7 @@ mod tests {
                     Some("Acme Corp".into()),
                     Some("Evil Corp".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1631,6 +1646,7 @@ mod tests {
                     Some("1.0.0".into()),
                     Some("2.0.0".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1660,6 +1676,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Supplier(None, Some("New Corp".into()))],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1681,6 +1698,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Supplier(Some("Old Corp".into()), None)],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1735,6 +1753,7 @@ mod tests {
                     Some("Acme Corp".into()),
                     Some("Evil Corp".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1767,6 +1786,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1789,6 +1809,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1811,6 +1832,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1843,6 +1865,7 @@ mod tests {
                     Some("1.0.0".into()),
                     Some("2.0.0".into()),
                 )],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1867,6 +1890,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1891,6 +1915,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), BTreeMap::new())],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1913,6 +1938,7 @@ mod tests {
                 old: old.clone(),
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
+                is_downgrade: false,
             }],
             ..Diff::default()
         };

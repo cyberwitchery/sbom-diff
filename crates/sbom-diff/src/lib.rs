@@ -1,5 +1,6 @@
 #![doc = include_str!("../readme.md")]
 
+use sbom_model::versions::is_version_downgrade;
 use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -282,6 +283,13 @@ pub struct ComponentChange {
     pub new: Component,
     /// list of specific field changes detected.
     pub changes: Vec<FieldChange>,
+    /// true when the version change is a downgrade (higher to lower).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_downgrade: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
 }
 
 /// a dependency edge change for a single parent component.
@@ -527,11 +535,18 @@ impl Differ {
         for (old_id, new_id, fields) in changed_pairs {
             let old_comp = old.components.swap_remove(&old_id).unwrap();
             let new_comp = new.components.swap_remove(&new_id).unwrap();
+            let downgrade = fields.iter().any(|f| match f {
+                FieldChange::Version(Some(old_ver), Some(new_ver)) => {
+                    is_version_downgrade(old_ver, new_ver)
+                }
+                _ => false,
+            });
             changed.push(ComponentChange {
                 id: new_comp.id.clone(),
                 old: old_comp,
                 new: new_comp,
                 changes: fields,
+                is_downgrade: downgrade,
             });
         }
 
@@ -2188,5 +2203,39 @@ mod tests {
         assert_eq!(diff.old_total, 3);
         assert_eq!(diff.new_total, 3);
         assert_eq!(diff.unchanged, 3);
+    }
+
+    #[test]
+    fn test_diff_detects_version_downgrade() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("pkg-a".to_string(), Some("2.0.0".to_string()));
+        let mut c2 = c1.clone();
+        c2.version = Some("1.0.0".to_string());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn test_diff_upgrade_not_marked_as_downgrade() {
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        let c1 = Component::new("pkg-a".to_string(), Some("1.0.0".to_string()));
+        let mut c2 = c1.clone();
+        c2.version = Some("2.0.0".to_string());
+
+        old.components.insert(c1.id.clone(), c1);
+        new.components.insert(c2.id.clone(), c2);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(!diff.changed[0].is_downgrade);
     }
 }

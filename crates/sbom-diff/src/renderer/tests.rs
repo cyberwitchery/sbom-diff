@@ -16,6 +16,7 @@ fn mock_diff() -> Diff {
             old: c1,
             new: c2,
             changes: vec![FieldChange::Version(Some("1.0".into()), Some("1.1".into()))],
+            is_downgrade: false,
         }],
         edge_diffs: vec![],
         ..Diff::default()
@@ -57,6 +58,7 @@ fn mock_diff_all_field_changes() -> Diff {
                 ),
                 FieldChange::Ecosystem(Some("npm".into()), Some("cargo".into())),
             ],
+            is_downgrade: false,
         }],
         edge_diffs: vec![crate::EdgeDiff {
             parent: ComponentId::new(None, &[("name", "parent")]),
@@ -256,6 +258,7 @@ fn mock_diff_with_ecosystems() -> Diff {
                 Some("17.0.0".into()),
                 Some("18.0.0".into()),
             )],
+            is_downgrade: false,
         }],
         edge_diffs: vec![],
         ..Diff::default()
@@ -1477,4 +1480,123 @@ fn test_csv_summary_metadata_unchanged() {
     let out = String::from_utf8(buf).unwrap();
 
     assert!(out.contains("metadata_changed,0"));
+}
+
+fn mock_diff_with_downgrade() -> Diff {
+    let c1 = Component::new("pkg-a".into(), Some("2.0.0".into()));
+    let mut c2 = c1.clone();
+    c2.version = Some("1.0.0".into());
+
+    Diff {
+        changed: vec![ComponentChange {
+            id: c2.id.clone(),
+            old: c1,
+            new: c2,
+            changes: vec![FieldChange::Version(
+                Some("2.0.0".into()),
+                Some("1.0.0".into()),
+            )],
+            is_downgrade: true,
+        }],
+        ..Diff::default()
+    }
+}
+
+#[test]
+fn test_text_renderer_downgrade() {
+    let diff = mock_diff_with_downgrade();
+    let mut buf = Vec::new();
+    TextRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("Version (downgrade): 2.0.0 -> 1.0.0"));
+}
+
+#[test]
+fn test_markdown_renderer_downgrade() {
+    let diff = mock_diff_with_downgrade();
+    let mut buf = Vec::new();
+    MarkdownRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("**Version (downgrade)**"));
+    assert!(out.contains("`2.0.0` &rarr; `1.0.0`"));
+}
+
+#[test]
+fn test_json_renderer_downgrade() {
+    let diff = mock_diff_with_downgrade();
+    let mut buf = Vec::new();
+    JsonRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+    assert_eq!(val["changed"][0]["is_downgrade"], true);
+}
+
+#[test]
+fn test_json_renderer_no_downgrade_field_when_false() {
+    let diff = mock_diff();
+    let mut buf = Vec::new();
+    JsonRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+    assert!(val["changed"][0].get("is_downgrade").is_none());
+}
+
+#[test]
+fn test_csv_renderer_downgrade() {
+    let diff = mock_diff_with_downgrade();
+    let mut buf = Vec::new();
+    CsvRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("version-downgrade"));
+    assert!(out.contains("2.0.0"));
+    assert!(out.contains("1.0.0"));
+}
+
+#[test]
+fn test_sarif_renderer_downgrade() {
+    let diff = mock_diff_with_downgrade();
+    let mut buf = Vec::new();
+    SarifRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+    let results = val["runs"][0]["results"].as_array().unwrap();
+    let changed = results
+        .iter()
+        .find(|r| r["ruleId"] == "component-changed")
+        .unwrap();
+    let msg = changed["message"]["text"].as_str().unwrap();
+    assert!(msg.contains("version (downgrade):"));
+    assert_eq!(changed["level"], "error");
+}
+
+#[test]
+fn test_sarif_renderer_upgrade_stays_warning() {
+    let diff = mock_diff();
+    let mut buf = Vec::new();
+    SarifRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+
+    let results = val["runs"][0]["results"].as_array().unwrap();
+    let changed = results
+        .iter()
+        .find(|r| r["ruleId"] == "component-changed")
+        .unwrap();
+    assert_eq!(changed["level"], "warning");
 }
