@@ -2,7 +2,6 @@
 
 ## Unreleased
 
-- convert `Sbom::detect_cycles()` from recursive to iterative stack-based DFS to prevent stack overflow on deep dependency graphs; behaviour and public API are unchanged
 - add persistent reverse dependency index (`reverse_deps`) to `Sbom`: `rdeps()` is now O(1) lookup instead of O(edges) full-graph scan, and `roots()` uses the index for O(n) instead of rebuilding a target set each call; the index is built automatically by parsers and `normalize()`, and can be rebuilt manually via `Sbom::rebuild_reverse_deps()` after modifying `dependencies`
 - eliminate redundant `Component::clone()` calls in `Differ::diff_owned()` by splitting the diff into a decide-then-drain pipeline: match decisions are collected using borrows only, then matched pairs are moved out of the SBOM maps via `swap_remove` and unmatched remainders are drained with `into_values()`, avoiding all component clones during identity matching and reconciliation
 
