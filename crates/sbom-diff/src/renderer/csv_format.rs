@@ -65,7 +65,7 @@ impl Renderer for CsvRenderer {
             let display = change.new.purl.as_deref().unwrap_or(change.id.as_str());
             let eco = change.new.ecosystem.as_deref().unwrap_or("");
             for fc in &change.changes {
-                let (field, old, new) = csv_field_change(fc);
+                let (field, old, new) = csv_field_change(fc, change.is_downgrade);
                 wtr.write_record(["changed", display, eco, field, &old, &new])?;
             }
         }
@@ -188,10 +188,14 @@ impl SummaryRenderer for CsvRenderer {
 }
 
 /// converts a [`FieldChange`] into `(field_name, old_value, new_value)` for CSV output.
-fn csv_field_change(fc: &FieldChange) -> (&'static str, String, String) {
+fn csv_field_change(fc: &FieldChange, is_downgrade: bool) -> (&'static str, String, String) {
     match fc {
         FieldChange::Version(old, new) => (
-            "version",
+            if is_downgrade {
+                "version-downgrade"
+            } else {
+                "version"
+            },
             format_option(old).to_string(),
             format_option(new).to_string(),
         ),

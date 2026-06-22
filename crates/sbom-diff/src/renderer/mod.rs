@@ -133,11 +133,17 @@ pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
     fmt: &F,
     writer: &mut W,
     changes: &[FieldChange],
+    is_downgrade: bool,
 ) -> std::io::Result<()> {
     for change in changes {
         match change {
             FieldChange::Version(old, new) => {
-                fmt.field_change(writer, "Version", format_option(old), format_option(new))?;
+                let label = if is_downgrade {
+                    "Version (downgrade)"
+                } else {
+                    "Version"
+                };
+                fmt.field_change(writer, label, format_option(old), format_option(new))?;
             }
             FieldChange::License(old, new) => {
                 fmt.field_change(writer, "License", &format_set(old), &format_set(new))?;
@@ -186,7 +192,7 @@ pub(super) fn write_changed<F: FieldChangeFormatter, W: Write>(
 ) -> std::io::Result<()> {
     for c in changes {
         fmt.component_header(writer, c.new.purl.as_deref().unwrap_or(c.id.as_str()))?;
-        write_field_changes(fmt, writer, &c.changes)?;
+        write_field_changes(fmt, writer, &c.changes, c.is_downgrade)?;
     }
     Ok(())
 }

@@ -173,10 +173,18 @@ impl SarifRenderer {
         }]
     }
 
-    fn format_field_change(fc: &FieldChange) -> String {
+    fn format_field_change(fc: &FieldChange, is_downgrade: bool) -> String {
         match fc {
             FieldChange::Version(old, new) => {
-                format!("version: {} -> {}", format_option(old), format_option(new))
+                if is_downgrade {
+                    format!(
+                        "version (downgrade): {} -> {}",
+                        format_option(old),
+                        format_option(new)
+                    )
+                } else {
+                    format!("version: {} -> {}", format_option(old), format_option(new))
+                }
             }
             FieldChange::License(old, new) => {
                 format!("license: {} -> {}", format_set(old), format_set(new))
@@ -269,16 +277,22 @@ impl SarifRenderer {
 
         for change in &diff.changed {
             let display = Self::component_display(&change.new);
+            let is_downgrade = change.is_downgrade;
             let field_changes: Vec<String> = change
                 .changes
                 .iter()
-                .map(Self::format_field_change)
+                .map(|fc| Self::format_field_change(fc, is_downgrade))
                 .collect();
 
+            let level = if is_downgrade {
+                "error"
+            } else {
+                SARIF_RULES[RULE_COMPONENT_CHANGED].level
+            };
             results.push(SarifResultEntry {
                 rule_id: SARIF_RULES[RULE_COMPONENT_CHANGED].id,
                 rule_index: RULE_COMPONENT_CHANGED,
-                level: SARIF_RULES[RULE_COMPONENT_CHANGED].level,
+                level,
                 message: SarifTextMessage {
                     text: format!(
                         "Component changed: {} ({})",
