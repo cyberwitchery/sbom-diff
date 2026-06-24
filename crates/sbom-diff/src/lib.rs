@@ -589,61 +589,42 @@ impl Differ {
     ) -> Vec<EdgeDiff> {
         let mut edge_diffs = Vec::new();
 
-        // build reverse mapping (new_id -> old_id) once upfront for O(1) lookups.
-        // the forward id_mapping is old_id -> new_id; we need the inverse for
-        // translating new parent IDs back to old parent IDs.
-        let reverse_mapping: BTreeMap<ComponentId, ComponentId> = id_mapping
+        // borrow references instead of cloning every ID pair
+        let reverse_mapping: BTreeMap<&ComponentId, &ComponentId> = id_mapping
             .iter()
-            .map(|(old_id, new_id)| (new_id.clone(), old_id.clone()))
+            .map(|(old_id, new_id)| (new_id, old_id))
             .collect();
 
-        // helper to translate old ID to new ID (if mapped) or keep as-is
-        let translate_id = |old_id: &ComponentId| -> ComponentId {
-            id_mapping
-                .get(old_id)
-                .cloned()
-                .unwrap_or_else(|| old_id.clone())
-        };
-
-        // collect all parent IDs from new SBOM's perspective
-        // we use new IDs as the canonical reference
-        let mut all_parents: BTreeSet<ComponentId> = new.dependencies.keys().cloned().collect();
-
-        // also include old parents (translated to new IDs)
+        // collect parent IDs as references — avoids cloning every key
+        let mut all_parents: BTreeSet<&ComponentId> = new.dependencies.keys().collect();
         for old_parent in old.dependencies.keys() {
-            all_parents.insert(translate_id(old_parent));
+            all_parents.insert(id_mapping.get(old_parent).unwrap_or(old_parent));
         }
 
+        let empty_deps = BTreeMap::new();
+
         for parent_id in all_parents {
-            // get new dependencies for this parent (child -> kind)
-            let new_children: BTreeMap<ComponentId, DependencyKind> = new
-                .dependencies
-                .get(&parent_id)
-                .cloned()
-                .unwrap_or_default();
+            // borrow the new dependency map instead of cloning it
+            let new_children = new.dependencies.get(parent_id).unwrap_or(&empty_deps);
 
-            // get old dependencies, translating both parent and child IDs
-            // look up the old parent ID via the reverse map
-            let old_parent_id = reverse_mapping
-                .get(&parent_id)
-                .cloned()
-                .unwrap_or_else(|| parent_id.clone());
+            let old_parent_id = reverse_mapping.get(parent_id).copied().unwrap_or(parent_id);
 
-            let old_children: BTreeMap<ComponentId, DependencyKind> = old
+            // old children needs translated keys, but use reference keys
+            let old_children: BTreeMap<&ComponentId, DependencyKind> = old
                 .dependencies
-                .get(&old_parent_id)
+                .get(old_parent_id)
                 .map(|children| {
                     children
                         .iter()
-                        .map(|(id, kind)| (translate_id(id), *kind))
+                        .map(|(id, &kind)| (id_mapping.get(id).unwrap_or(id), kind))
                         .collect()
                 })
                 .unwrap_or_default();
 
             let new_keys: BTreeSet<&ComponentId> = new_children.keys().collect();
-            let old_keys: BTreeSet<&ComponentId> = old_children.keys().collect();
+            let old_keys: BTreeSet<&ComponentId> = old_children.keys().copied().collect();
 
-            // compute added and removed edges with their kinds
+            // clone IDs only for entries that actually differ
             let added: BTreeMap<ComponentId, DependencyKind> = new_keys
                 .difference(&old_keys)
                 .map(|&id| (id.clone(), new_children[id]))
@@ -653,7 +634,6 @@ impl Differ {
                 .map(|&id| (id.clone(), old_children[id]))
                 .collect();
 
-            // detect kind changes for edges that exist in both
             let kind_changed: BTreeMap<ComponentId, (DependencyKind, DependencyKind)> = new_keys
                 .intersection(&old_keys)
                 .filter_map(|&id| {
@@ -669,7 +649,7 @@ impl Differ {
 
             if !added.is_empty() || !removed.is_empty() || !kind_changed.is_empty() {
                 edge_diffs.push(EdgeDiff {
-                    parent: parent_id,
+                    parent: parent_id.clone(),
                     added,
                     removed,
                     kind_changed,
