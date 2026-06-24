@@ -8,12 +8,13 @@ use sbom_diff::{
         format_option, format_set, CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions,
         Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
-    Differ, Field,
+    Differ, Field, FieldChange,
 };
 use sbom_model::is_hash_algorithm_downgrade;
 use sbom_model::versions::is_version_downgrade;
-use sbom_model::Sbom;
-use std::collections::HashSet;
+use sbom_model::{ComponentId, DependencyKind, Sbom};
+use std::collections::{BTreeSet, HashSet};
+use std::fmt;
 use std::io;
 
 #[derive(Parser, Debug)]
@@ -75,7 +76,7 @@ struct Args {
 }
 
 /// conditions that trigger a non-zero exit code.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, ValueEnum, Debug)]
 enum FailOn {
     /// fail if any added component lacks checksums or a changed component dropped all its checksums.
     MissingHashes,
@@ -108,6 +109,198 @@ enum Output {
     Json,
     Sarif,
     Csv,
+}
+
+/// a single policy violation detected by `--fail-on`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Violation {
+    AddedComponent {
+        id: ComponentId,
+    },
+    RemovedComponent {
+        id: ComponentId,
+    },
+    ChangedComponent {
+        id: ComponentId,
+    },
+    MissingHashesAdded {
+        id: ComponentId,
+    },
+    MissingHashesDropped {
+        id: ComponentId,
+    },
+    LicenseChanged {
+        id: ComponentId,
+        old: BTreeSet<String>,
+        new: BTreeSet<String>,
+    },
+    LicenseIntroduced {
+        id: ComponentId,
+        licenses: Vec<String>,
+    },
+    VersionDowngrade {
+        id: ComponentId,
+        old: String,
+        new: String,
+    },
+    SupplierChanged {
+        id: ComponentId,
+        old: Option<String>,
+        new: Option<String>,
+    },
+    SupplierIntroduced {
+        id: ComponentId,
+        supplier: String,
+    },
+    HashAlgorithmDowngrade {
+        id: ComponentId,
+        old_algos: Vec<String>,
+        new_algos: Vec<String>,
+    },
+    DepsAdded {
+        parent: ComponentId,
+        child: ComponentId,
+    },
+    DepsRemoved {
+        parent: ComponentId,
+        child: ComponentId,
+    },
+    DepsKindChanged {
+        parent: ComponentId,
+        child: ComponentId,
+        old_kind: DependencyKind,
+        new_kind: DependencyKind,
+    },
+    MetadataTimestampChanged,
+    MetadataToolsChanged,
+    MetadataAuthorsChanged,
+}
+
+impl fmt::Display for Violation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Violation::AddedComponent { id } => {
+                write!(f, "added component {} (--fail-on added-components)", id)
+            }
+            Violation::RemovedComponent { id } => {
+                write!(f, "removed component {} (--fail-on removed-components)", id)
+            }
+            Violation::ChangedComponent { id } => {
+                write!(f, "changed component {} (--fail-on changed-components)", id)
+            }
+            Violation::MissingHashesAdded { id } => {
+                write!(
+                    f,
+                    "added component {} has no hashes (--fail-on missing-hashes)",
+                    id
+                )
+            }
+            Violation::MissingHashesDropped { id } => {
+                write!(
+                    f,
+                    "changed component {} dropped all hashes (--fail-on missing-hashes)",
+                    id
+                )
+            }
+            Violation::LicenseChanged { id, old, new } => {
+                write!(
+                    f,
+                    "license changed on component {}: {} -> {} (--fail-on license-changed)",
+                    id,
+                    format_set(old),
+                    format_set(new)
+                )
+            }
+            Violation::LicenseIntroduced { id, licenses } => {
+                write!(
+                    f,
+                    "added component {} introduces license(s): {} (--fail-on license-changed)",
+                    id,
+                    licenses.join(", ")
+                )
+            }
+            Violation::VersionDowngrade { id, old, new } => {
+                write!(
+                    f,
+                    "version downgrade on component {}: {} -> {} (--fail-on version-downgrade)",
+                    id, old, new
+                )
+            }
+            Violation::SupplierChanged { id, old, new } => {
+                write!(
+                    f,
+                    "supplier changed on component {}: {} -> {} (--fail-on supplier-changed)",
+                    id,
+                    format_option(old),
+                    format_option(new)
+                )
+            }
+            Violation::SupplierIntroduced { id, supplier } => {
+                write!(
+                    f,
+                    "added component {} has supplier: {} (--fail-on supplier-changed)",
+                    id, supplier
+                )
+            }
+            Violation::HashAlgorithmDowngrade {
+                id,
+                old_algos,
+                new_algos,
+            } => {
+                write!(
+                    f,
+                    "hash algorithm downgrade on component {}: [{}] -> [{}] (--fail-on hash-algorithm-downgrade)",
+                    id,
+                    old_algos.join(", "),
+                    new_algos.join(", "),
+                )
+            }
+            Violation::DepsAdded { parent, child } => {
+                write!(
+                    f,
+                    "added dependency edge {} -> {} (--fail-on deps)",
+                    parent, child
+                )
+            }
+            Violation::DepsRemoved { parent, child } => {
+                write!(
+                    f,
+                    "removed dependency edge {} -> {} (--fail-on deps)",
+                    parent, child
+                )
+            }
+            Violation::DepsKindChanged {
+                parent,
+                child,
+                old_kind,
+                new_kind,
+            } => {
+                write!(
+                    f,
+                    "dependency edge {} -> {} changed kind: {} -> {} (--fail-on deps)",
+                    parent, child, old_kind, new_kind
+                )
+            }
+            Violation::MetadataTimestampChanged => {
+                write!(
+                    f,
+                    "document metadata timestamp changed (--fail-on metadata-changed)"
+                )
+            }
+            Violation::MetadataToolsChanged => {
+                write!(
+                    f,
+                    "document metadata tools changed (--fail-on metadata-changed)"
+                )
+            }
+            Violation::MetadataAuthorsChanged => {
+                write!(
+                    f,
+                    "document metadata authors changed (--fail-on metadata-changed)"
+                )
+            }
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -202,7 +395,10 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    let fail_on_violation = check_fail_on(&diff, &args.fail_on);
+    let violations = collect_violations(&diff, &args.fail_on);
+    for v in &violations {
+        eprintln!("error: {v}");
+    }
 
     if !args.quiet {
         let stdout = io::stdout();
@@ -233,7 +429,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     }
 
-    if fail_on_violation || cycle_violation {
+    if !violations.is_empty() || cycle_violation {
         std::process::exit(3);
     }
 
@@ -299,195 +495,160 @@ fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
     true
 }
 
-fn check_fail_on(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> bool {
-    let mut violation = false;
+/// collects all policy violations from a diff in a single pass per collection.
+///
+/// instead of iterating `diff.changed` once per condition, builds a set of
+/// active conditions and checks all of them in one traversal. returns
+/// structured violations the caller can inspect, format, or count.
+fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violation> {
+    let active: HashSet<FailOn> = fail_on.iter().copied().collect();
+    if active.is_empty() {
+        return Vec::new();
+    }
 
-    for condition in fail_on {
-        match condition {
-            FailOn::AddedComponents => {
-                if !diff.added.is_empty() {
-                    for comp in &diff.added {
-                        eprintln!(
-                            "error: added component {} (--fail-on added-components)",
-                            comp.id
-                        );
-                    }
-                    violation = true;
-                }
-            }
-            FailOn::MissingHashes => {
-                for comp in &diff.added {
-                    if comp.hashes.is_empty() {
-                        eprintln!(
-                            "error: added component {} has no hashes (--fail-on missing-hashes)",
-                            comp.id
-                        );
-                        violation = true;
-                    }
-                }
-                for change in &diff.changed {
-                    if !change.old.hashes.is_empty() && change.new.hashes.is_empty() {
-                        eprintln!(
-                            "error: changed component {} dropped all hashes (--fail-on missing-hashes)",
-                            change.id
-                        );
-                        violation = true;
-                    }
-                }
-            }
-            FailOn::RemovedComponents => {
-                if !diff.removed.is_empty() {
-                    for comp in &diff.removed {
-                        eprintln!(
-                            "error: removed component {} (--fail-on removed-components)",
-                            comp.id
-                        );
-                    }
-                    violation = true;
-                }
-            }
-            FailOn::ChangedComponents => {
-                if !diff.changed.is_empty() {
-                    for change in &diff.changed {
-                        eprintln!(
-                            "error: changed component {} (--fail-on changed-components)",
-                            change.id
-                        );
-                    }
-                    violation = true;
-                }
-            }
-            FailOn::Deps => {
-                if !diff.edge_diffs.is_empty() {
-                    for edge in &diff.edge_diffs {
-                        for added in edge.added.keys() {
-                            eprintln!(
-                                "error: added dependency edge {} -> {} (--fail-on deps)",
-                                edge.parent, added
-                            );
-                        }
-                        for removed in edge.removed.keys() {
-                            eprintln!(
-                                "error: removed dependency edge {} -> {} (--fail-on deps)",
-                                edge.parent, removed
-                            );
-                        }
-                        for (child, (old_kind, new_kind)) in &edge.kind_changed {
-                            eprintln!(
-                                "error: dependency edge {} -> {} changed kind: {} -> {} (--fail-on deps)",
-                                edge.parent, child, old_kind, new_kind
-                            );
-                        }
-                    }
-                    violation = true;
-                }
-            }
-            FailOn::LicenseChanged => {
-                for change in &diff.changed {
-                    for fc in &change.changes {
-                        if let sbom_diff::FieldChange::License(old, new) = fc {
-                            eprintln!(
-                                "error: license changed on component {}: {} -> {} (--fail-on license-changed)",
-                                change.id, format_set(old), format_set(new)
-                            );
-                            violation = true;
-                        }
-                    }
-                }
-                for comp in &diff.added {
-                    if !comp.licenses.is_empty() {
-                        let licenses: Vec<_> = comp.licenses.iter().cloned().collect();
-                        eprintln!(
-                            "error: added component {} introduces license(s): {} (--fail-on license-changed)",
-                            comp.id, licenses.join(", ")
-                        );
-                        violation = true;
-                    }
-                }
-            }
-            FailOn::MetadataChanged => {
-                if let Some(mc) = &diff.metadata_changed {
-                    if mc.timestamp.is_some() {
-                        eprintln!(
-                            "error: document metadata timestamp changed (--fail-on metadata-changed)"
-                        );
-                    }
-                    if mc.tools.is_some() {
-                        eprintln!(
-                            "error: document metadata tools changed (--fail-on metadata-changed)"
-                        );
-                    }
-                    if mc.authors.is_some() {
-                        eprintln!(
-                            "error: document metadata authors changed (--fail-on metadata-changed)"
-                        );
-                    }
-                    violation = true;
-                }
-            }
-            FailOn::VersionDowngrade => {
-                for change in &diff.changed {
-                    for fc in &change.changes {
-                        if let sbom_diff::FieldChange::Version(Some(old_ver), Some(new_ver)) = fc {
-                            if is_version_downgrade(old_ver, new_ver) {
-                                eprintln!(
-                                    "error: version downgrade on component {}: {} -> {} (--fail-on version-downgrade)",
-                                    change.id, old_ver, new_ver
-                                );
-                                violation = true;
-                            }
-                        }
-                    }
-                }
-            }
-            FailOn::SupplierChanged => {
-                for change in &diff.changed {
-                    for fc in &change.changes {
-                        if let sbom_diff::FieldChange::Supplier(old_sup, new_sup) = fc {
-                            eprintln!(
-                                "error: supplier changed on component {}: {} -> {} (--fail-on supplier-changed)",
-                                change.id, format_option(old_sup), format_option(new_sup)
-                            );
-                            violation = true;
-                        }
-                    }
-                }
-                for comp in &diff.added {
-                    if comp.supplier.is_some() {
-                        eprintln!(
-                            "error: added component {} has supplier: {} (--fail-on supplier-changed)",
-                            comp.id,
-                            comp.supplier.as_deref().unwrap_or("<none>")
-                        );
-                        violation = true;
-                    }
-                }
-            }
-            FailOn::HashAlgorithmDowngrade => {
-                for change in &diff.changed {
-                    for fc in &change.changes {
-                        if let sbom_diff::FieldChange::Hashes(old_hashes, new_hashes) = fc {
-                            if is_hash_algorithm_downgrade(old_hashes, new_hashes) {
-                                let old_algos: Vec<_> = old_hashes.keys().cloned().collect();
-                                let new_algos: Vec<_> = new_hashes.keys().cloned().collect();
-                                eprintln!(
-                                    "error: hash algorithm downgrade on component {}: [{}] -> [{}] (--fail-on hash-algorithm-downgrade)",
-                                    change.id,
-                                    old_algos.join(", "),
-                                    new_algos.join(", "),
-                                );
-                                violation = true;
-                            }
-                        }
-                    }
-                }
-            }
-            // handled separately in check_cyclic_dependencies before diff
-            FailOn::CyclicDependency => {}
+    let mut violations = Vec::new();
+
+    let check_added = active.contains(&FailOn::AddedComponents);
+    let check_missing_hashes = active.contains(&FailOn::MissingHashes);
+    let check_license_changed = active.contains(&FailOn::LicenseChanged);
+    let check_supplier_changed = active.contains(&FailOn::SupplierChanged);
+
+    for comp in &diff.added {
+        if check_added {
+            violations.push(Violation::AddedComponent {
+                id: comp.id.clone(),
+            });
+        }
+        if check_missing_hashes && comp.hashes.is_empty() {
+            violations.push(Violation::MissingHashesAdded {
+                id: comp.id.clone(),
+            });
+        }
+        if check_license_changed && !comp.licenses.is_empty() {
+            violations.push(Violation::LicenseIntroduced {
+                id: comp.id.clone(),
+                licenses: comp.licenses.iter().cloned().collect(),
+            });
+        }
+        if check_supplier_changed && comp.supplier.is_some() {
+            violations.push(Violation::SupplierIntroduced {
+                id: comp.id.clone(),
+                supplier: comp.supplier.clone().unwrap(),
+            });
         }
     }
 
-    violation
+    if active.contains(&FailOn::RemovedComponents) {
+        for comp in &diff.removed {
+            violations.push(Violation::RemovedComponent {
+                id: comp.id.clone(),
+            });
+        }
+    }
+
+    let check_changed = active.contains(&FailOn::ChangedComponents);
+    let check_version_downgrade = active.contains(&FailOn::VersionDowngrade);
+    let check_hash_downgrade = active.contains(&FailOn::HashAlgorithmDowngrade);
+    let any_field_check = check_missing_hashes
+        || check_license_changed
+        || check_version_downgrade
+        || check_supplier_changed
+        || check_hash_downgrade;
+
+    for change in &diff.changed {
+        if check_changed {
+            violations.push(Violation::ChangedComponent {
+                id: change.id.clone(),
+            });
+        }
+        if check_missing_hashes && !change.old.hashes.is_empty() && change.new.hashes.is_empty() {
+            violations.push(Violation::MissingHashesDropped {
+                id: change.id.clone(),
+            });
+        }
+        if any_field_check {
+            for fc in &change.changes {
+                match fc {
+                    FieldChange::License(old, new) if check_license_changed => {
+                        violations.push(Violation::LicenseChanged {
+                            id: change.id.clone(),
+                            old: old.clone(),
+                            new: new.clone(),
+                        });
+                    }
+                    FieldChange::Version(Some(old_ver), Some(new_ver))
+                        if check_version_downgrade && is_version_downgrade(old_ver, new_ver) =>
+                    {
+                        violations.push(Violation::VersionDowngrade {
+                            id: change.id.clone(),
+                            old: old_ver.clone(),
+                            new: new_ver.clone(),
+                        });
+                    }
+                    FieldChange::Supplier(old_sup, new_sup) if check_supplier_changed => {
+                        violations.push(Violation::SupplierChanged {
+                            id: change.id.clone(),
+                            old: old_sup.clone(),
+                            new: new_sup.clone(),
+                        });
+                    }
+                    FieldChange::Hashes(old_hashes, new_hashes)
+                        if check_hash_downgrade
+                            && is_hash_algorithm_downgrade(old_hashes, new_hashes) =>
+                    {
+                        violations.push(Violation::HashAlgorithmDowngrade {
+                            id: change.id.clone(),
+                            old_algos: old_hashes.keys().cloned().collect(),
+                            new_algos: new_hashes.keys().cloned().collect(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if active.contains(&FailOn::Deps) {
+        for edge in &diff.edge_diffs {
+            for child in edge.added.keys() {
+                violations.push(Violation::DepsAdded {
+                    parent: edge.parent.clone(),
+                    child: child.clone(),
+                });
+            }
+            for child in edge.removed.keys() {
+                violations.push(Violation::DepsRemoved {
+                    parent: edge.parent.clone(),
+                    child: child.clone(),
+                });
+            }
+            for (child, (old_kind, new_kind)) in &edge.kind_changed {
+                violations.push(Violation::DepsKindChanged {
+                    parent: edge.parent.clone(),
+                    child: child.clone(),
+                    old_kind: *old_kind,
+                    new_kind: *new_kind,
+                });
+            }
+        }
+    }
+
+    if active.contains(&FailOn::MetadataChanged) {
+        if let Some(mc) = &diff.metadata_changed {
+            if mc.timestamp.is_some() {
+                violations.push(Violation::MetadataTimestampChanged);
+            }
+            if mc.tools.is_some() {
+                violations.push(Violation::MetadataToolsChanged);
+            }
+            if mc.authors.is_some() {
+                violations.push(Violation::MetadataAuthorsChanged);
+            }
+        }
+    }
+
+    // CyclicDependency is handled separately before diffing
+    violations
 }
 
 #[cfg(test)]
@@ -627,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_fail_on_deps_with_removed_edges() {
+    fn test_collect_violations_deps_with_removed_edges() {
         use sbom_diff::{Diff, EdgeDiff};
         use sbom_model::{ComponentId, DependencyKind};
         use std::collections::BTreeMap;
@@ -648,11 +809,15 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::Deps]));
+        let vs = collect_violations(&diff, &[FailOn::Deps]);
+        assert!(!vs.is_empty());
+        assert!(vs
+            .iter()
+            .any(|v| matches!(v, Violation::DepsRemoved { .. })));
     }
 
     #[test]
-    fn test_check_fail_on_multiple_conditions() {
+    fn test_collect_violations_multiple_conditions() {
         use sbom_diff::Diff;
 
         let diff = Diff {
@@ -663,10 +828,14 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(
-            &diff,
-            &[FailOn::AddedComponents, FailOn::MissingHashes]
-        ));
+        let vs = collect_violations(&diff, &[FailOn::AddedComponents, FailOn::MissingHashes]);
+        assert!(!vs.is_empty());
+        assert!(vs
+            .iter()
+            .any(|v| matches!(v, Violation::AddedComponent { .. })));
+        assert!(vs
+            .iter()
+            .any(|v| matches!(v, Violation::MissingHashesAdded { .. })));
     }
 
     #[test]
@@ -714,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_fail_on_added_components() {
+    fn test_collect_violations_added_components() {
         use sbom_diff::Diff;
 
         let mut diff = Diff {
@@ -725,15 +894,15 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
 
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
-        assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_missing_hashes() {
+    fn test_collect_violations_missing_hashes() {
         use sbom_diff::Diff;
 
         let mut diff = Diff {
@@ -744,18 +913,18 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
 
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
-        assert!(check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(!collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
 
         diff.added[0].hashes.insert("sha256".into(), "abc".into());
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_missing_hashes_changed_component_dropped() {
+    fn test_collect_violations_missing_hashes_changed_component_dropped() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeMap;
 
@@ -778,11 +947,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(!collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_missing_hashes_changed_component_kept() {
+    fn test_collect_violations_missing_hashes_changed_component_kept() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
@@ -805,11 +974,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_missing_hashes_changed_component_both_empty() {
+    fn test_collect_violations_missing_hashes_changed_component_both_empty() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0".into()));
@@ -827,11 +996,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_deps() {
+    fn test_collect_violations_deps() {
         use sbom_diff::{Diff, EdgeDiff};
         use sbom_model::{ComponentId, DependencyKind};
         use std::collections::BTreeMap;
@@ -844,7 +1013,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
+        assert!(collect_violations(&diff, &[FailOn::Deps]).is_empty());
 
         diff.edge_diffs.push(EdgeDiff {
             parent: ComponentId::new(None, &[("name", "parent")]),
@@ -855,11 +1024,11 @@ mod tests {
             removed: BTreeMap::new(),
             kind_changed: BTreeMap::new(),
         });
-        assert!(check_fail_on(&diff, &[FailOn::Deps]));
+        assert!(!collect_violations(&diff, &[FailOn::Deps]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_removed_components() {
+    fn test_collect_violations_removed_components() {
         use sbom_diff::Diff;
 
         let mut diff = Diff {
@@ -870,15 +1039,15 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
+        assert!(collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
 
         diff.removed
             .push(Component::new("old-pkg".into(), Some("1.0".into())));
-        assert!(check_fail_on(&diff, &[FailOn::RemovedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_changed_components() {
+    fn test_collect_violations_changed_components() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut diff = Diff {
@@ -889,7 +1058,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
 
         let old = Component::new("pkg".into(), Some("1.0".into()));
         let new = Component::new("pkg".into(), Some("2.0".into()));
@@ -900,7 +1069,7 @@ mod tests {
             changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
             is_downgrade: false,
         });
-        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
     }
 
     #[test]
@@ -928,7 +1097,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(
+        assert!(collect_violations(
             &diff,
             &[
                 FailOn::AddedComponents,
@@ -937,9 +1106,10 @@ mod tests {
                 FailOn::Deps,
                 FailOn::LicenseChanged,
             ]
-        ));
+        )
+        .is_empty());
         // but ChangedComponents *should* trigger on description changes
-        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
     }
 
     #[test]
@@ -1240,7 +1410,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_on_changed_component() {
+    fn test_collect_violations_license_changed_on_changed_component() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
@@ -1263,11 +1433,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_no_license_change() {
+    fn test_collect_violations_license_changed_no_license_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0".into()));
@@ -1284,11 +1454,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_added_component_with_license() {
+    fn test_collect_violations_license_changed_added_component_with_license() {
         use sbom_diff::Diff;
 
         let mut added = Component::new("new-pkg".into(), Some("1.0".into()));
@@ -1299,11 +1469,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_added_component_without_license() {
+    fn test_collect_violations_license_changed_added_component_without_license() {
         use sbom_diff::Diff;
 
         let added = Component::new("new-pkg".into(), Some("1.0".into()));
@@ -1313,19 +1483,19 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_empty_diff() {
+    fn test_collect_violations_license_changed_empty_diff() {
         use sbom_diff::Diff;
 
         let diff = Diff::default();
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_license_dropped() {
+    fn test_collect_violations_license_changed_license_dropped() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
@@ -1347,11 +1517,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_license_changed_combined_with_other_conditions() {
+    fn test_collect_violations_license_changed_combined_with_other_conditions() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
@@ -1375,18 +1545,18 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(
-            &diff,
-            &[FailOn::AddedComponents, FailOn::LicenseChanged]
-        ));
+        assert!(
+            !collect_violations(&diff, &[FailOn::AddedComponents, FailOn::LicenseChanged])
+                .is_empty()
+        );
         // LicenseChanged alone should fire (changed license)
-        assert!(check_fail_on(&diff, &[FailOn::LicenseChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
         // AddedComponents alone should fire (new-pkg)
-        assert!(check_fail_on(&diff, &[FailOn::AddedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_metadata_changed() {
+    fn test_collect_violations_metadata_changed() {
         use sbom_diff::{Diff, MetadataChange};
 
         let diff = Diff {
@@ -1398,19 +1568,19 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_metadata_changed_no_change() {
+    fn test_collect_violations_metadata_changed_no_change() {
         use sbom_diff::Diff;
 
         let diff = Diff::default();
-        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_metadata_changed_tools_only() {
+    fn test_collect_violations_metadata_changed_tools_only() {
         use sbom_diff::{Diff, MetadataChange};
 
         let diff = Diff {
@@ -1422,11 +1592,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_metadata_changed_does_not_trigger_other_gates() {
+    fn test_collect_violations_metadata_changed_does_not_trigger_other_gates() {
         use sbom_diff::{Diff, MetadataChange};
 
         let diff = Diff {
@@ -1439,17 +1609,17 @@ mod tests {
         };
 
         // only MetadataChanged should trigger, not other gates
-        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::ChangedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
-        assert!(check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::Deps]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_metadata_changed_combined() {
+    fn test_collect_violations_metadata_changed_combined() {
         use sbom_diff::{Diff, MetadataChange};
 
         let diff = Diff {
@@ -1462,14 +1632,14 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(
-            &diff,
-            &[FailOn::AddedComponents, FailOn::MetadataChanged]
-        ));
+        assert!(
+            !collect_violations(&diff, &[FailOn::AddedComponents, FailOn::MetadataChanged])
+                .is_empty()
+        );
     }
 
     #[test]
-    fn test_check_fail_on_version_downgrade() {
+    fn test_collect_violations_version_downgrade() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("2.0.0".into()));
@@ -1489,11 +1659,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(!collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_version_downgrade_upgrade_no_violation() {
+    fn test_collect_violations_version_downgrade_upgrade_no_violation() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1513,19 +1683,19 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_version_downgrade_empty_diff() {
+    fn test_collect_violations_version_downgrade_empty_diff() {
         use sbom_diff::Diff;
 
         let diff = Diff::default();
-        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_version_downgrade_no_version_change() {
+    fn test_collect_violations_version_downgrade_no_version_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         // only license changed, no version change
@@ -1546,11 +1716,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_version_downgrade_version_added() {
+    fn test_collect_violations_version_downgrade_version_added() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         // version went from None to Some — not a downgrade
@@ -1568,11 +1738,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_version_downgrade_does_not_trigger_other_gates() {
+    fn test_collect_violations_version_downgrade_does_not_trigger_other_gates() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("2.0.0".into()));
@@ -1592,20 +1762,20 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
-        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
-        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
+        assert!(collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::Deps]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
         // ChangedComponents should still fire
-        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
         // VersionDowngrade should fire
-        assert!(check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(!collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed() {
+    fn test_collect_violations_supplier_changed() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1627,11 +1797,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_no_change() {
+    fn test_collect_violations_supplier_changed_no_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1651,19 +1821,19 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_empty_diff() {
+    fn test_collect_violations_supplier_changed_empty_diff() {
         use sbom_diff::Diff;
 
         let diff = Diff::default();
-        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_supplier_added() {
+    fn test_collect_violations_supplier_changed_supplier_added() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1681,11 +1851,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_supplier_removed() {
+    fn test_collect_violations_supplier_changed_supplier_removed() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1703,11 +1873,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_added_component_with_supplier() {
+    fn test_collect_violations_supplier_changed_added_component_with_supplier() {
         use sbom_diff::Diff;
 
         let mut added = Component::new("new-pkg".into(), Some("1.0.0".into()));
@@ -1718,11 +1888,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_added_component_without_supplier() {
+    fn test_collect_violations_supplier_changed_added_component_without_supplier() {
         use sbom_diff::Diff;
 
         let added = Component::new("new-pkg".into(), Some("1.0.0".into()));
@@ -1732,11 +1902,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_supplier_changed_does_not_trigger_other_gates() {
+    fn test_collect_violations_supplier_changed_does_not_trigger_other_gates() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1758,21 +1928,21 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
-        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
-        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
-        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::Deps]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
         // ChangedComponents should still fire
-        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
         // SupplierChanged should fire
-        assert!(check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade() {
+    fn test_collect_violations_hash_algorithm_downgrade() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1791,11 +1961,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_upgrade_no_violation() {
+    fn test_collect_violations_hash_algorithm_downgrade_upgrade_no_violation() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1814,11 +1984,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_same_algorithm() {
+    fn test_collect_violations_hash_algorithm_downgrade_same_algorithm() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1837,19 +2007,19 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_empty_diff() {
+    fn test_collect_violations_hash_algorithm_downgrade_empty_diff() {
         use sbom_diff::Diff;
 
         let diff = Diff::default();
-        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_no_hash_change() {
+    fn test_collect_violations_hash_algorithm_downgrade_no_hash_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         // only version changed, no hash change
@@ -1870,11 +2040,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_dropped_strongest() {
+    fn test_collect_violations_hash_algorithm_downgrade_dropped_strongest() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         // old has SHA-256 + MD5, new has only MD5
@@ -1895,11 +2065,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_hashes_dropped_entirely() {
+    fn test_collect_violations_hash_algorithm_downgrade_hashes_dropped_entirely() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeMap;
 
@@ -1920,11 +2090,11 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
-    fn test_check_fail_on_hash_algorithm_downgrade_does_not_trigger_other_gates() {
+    fn test_collect_violations_hash_algorithm_downgrade_does_not_trigger_other_gates() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1943,18 +2113,18 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!check_fail_on(&diff, &[FailOn::AddedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::RemovedComponents]));
-        assert!(!check_fail_on(&diff, &[FailOn::MissingHashes]));
-        assert!(!check_fail_on(&diff, &[FailOn::Deps]));
-        assert!(!check_fail_on(&diff, &[FailOn::LicenseChanged]));
-        assert!(!check_fail_on(&diff, &[FailOn::MetadataChanged]));
-        assert!(!check_fail_on(&diff, &[FailOn::VersionDowngrade]));
-        assert!(!check_fail_on(&diff, &[FailOn::SupplierChanged]));
+        assert!(collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::Deps]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
         // ChangedComponents should still fire
-        assert!(check_fail_on(&diff, &[FailOn::ChangedComponents]));
+        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
         // HashAlgorithmDowngrade should fire
-        assert!(check_fail_on(&diff, &[FailOn::HashAlgorithmDowngrade]));
+        assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
     }
 
     #[test]
@@ -2043,8 +2213,8 @@ mod tests {
         use sbom_diff::Diff;
 
         // cyclic-dependency is checked on the SBOM, not the diff,
-        // so it should never trigger via check_fail_on
+        // so it should never trigger via collect_violations
         let diff = Diff::default();
-        assert!(!check_fail_on(&diff, &[FailOn::CyclicDependency]));
+        assert!(collect_violations(&diff, &[FailOn::CyclicDependency]).is_empty());
     }
 }
