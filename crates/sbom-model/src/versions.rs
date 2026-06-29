@@ -62,7 +62,7 @@ impl Version {
         }
 
         // try dot-separated numeric
-        let raw_parts: Vec<&str> = s.split('.').collect();
+        let raw_parts: Vec<&str> = stripped.split('.').collect();
         let mut segments = Vec::new();
         for part in &raw_parts {
             match part.parse::<u64>() {
@@ -286,6 +286,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_v_prefix_four_part_is_numeric() {
+        // the v-prefix must be stripped before the numeric fallback splits
+        assert_eq!(
+            Version::parse_lenient("v1.2.3.4"),
+            Version::Numeric(vec![1, 2, 3, 4])
+        );
+        assert_eq!(
+            Version::parse_lenient("V1.2.3.4"),
+            Version::Numeric(vec![1, 2, 3, 4])
+        );
+    }
+
+    #[test]
+    fn parse_v_prefix_date_based_is_numeric() {
+        assert_eq!(
+            Version::parse_lenient("v2024.01.15"),
+            Version::Numeric(vec![2024, 1, 15])
+        );
+    }
+
+    #[test]
     fn parse_leading_zeros_is_numeric() {
         assert_eq!(
             Version::parse_lenient("01.02.03"),
@@ -421,6 +442,21 @@ mod tests {
     fn downgrade_date_based() {
         assert!(is_version_downgrade("2024.01.15", "2023.12.01"));
         assert!(!is_version_downgrade("2023.12.01", "2024.01.15"));
+    }
+
+    #[test]
+    fn downgrade_v_prefix_four_part() {
+        // v-prefixed four-part versions parse to Numeric, so the downgrade
+        // gate sees them instead of silently treating them as Opaque
+        assert!(is_version_downgrade("v1.2.3.4", "v1.2.3.3"));
+        assert!(!is_version_downgrade("v1.2.3.3", "v1.2.3.4"));
+        assert!(!is_version_downgrade("v1.2.3.4", "v1.2.3.4"));
+    }
+
+    #[test]
+    fn downgrade_v_prefix_date_based() {
+        assert!(is_version_downgrade("v2024.01.15", "v2023.12.01"));
+        assert!(!is_version_downgrade("v2023.12.01", "v2024.01.15"));
     }
 
     #[test]
