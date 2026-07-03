@@ -3,7 +3,7 @@ use super::{
     SummaryRenderer,
 };
 use crate::{Diff, FieldChange};
-use sbom_model::Component;
+use sbom_model::{is_hash_algorithm_downgrade, Component};
 use serde::Serialize;
 use std::io::Write;
 
@@ -202,7 +202,27 @@ impl SarifRenderer {
                     format_option(new)
                 )
             }
-            FieldChange::Hashes(_, _) => "hashes changed".to_string(),
+            FieldChange::Hashes(old, new) => {
+                let mut parts = Vec::new();
+                for (algo, digest) in old {
+                    if !new.contains_key(algo) {
+                        parts.push(format!("removed {}={}", algo, digest));
+                    } else if new[algo] != *digest {
+                        parts.push(format!("changed {}: {} -> {}", algo, digest, new[algo]));
+                    }
+                }
+                for (algo, digest) in new {
+                    if !old.contains_key(algo) {
+                        parts.push(format!("added {}={}", algo, digest));
+                    }
+                }
+                let label = if is_hash_algorithm_downgrade(old, new) {
+                    "hashes (algorithm downgrade)"
+                } else {
+                    "hashes"
+                };
+                format!("{}: {}", label, parts.join(", "))
+            }
             FieldChange::Ecosystem(old, new) => {
                 format!(
                     "ecosystem: {} -> {}",
@@ -284,7 +304,12 @@ impl SarifRenderer {
                 .map(|fc| Self::format_field_change(fc, is_downgrade))
                 .collect();
 
-            let level = if is_downgrade {
+            let hash_downgrade = change.changes.iter().any(|fc| match fc {
+                FieldChange::Hashes(old, new) => is_hash_algorithm_downgrade(old, new),
+                _ => false,
+            });
+
+            let level = if is_downgrade || hash_downgrade {
                 "error"
             } else {
                 SARIF_RULES[RULE_COMPONENT_CHANGED].level

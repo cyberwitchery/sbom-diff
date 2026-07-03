@@ -917,7 +917,10 @@ fn test_sarif_renderer_all_field_changes() {
     assert!(msg.contains("supplier:"));
     assert!(msg.contains("purl:"));
     assert!(msg.contains("description:"));
-    assert!(msg.contains("hashes changed"));
+    // hashes render with per-algorithm detail (algorithm name + digests), not a
+    // bland "hashes changed"
+    assert!(msg.contains("hashes:"));
+    assert!(msg.contains("changed sha256: aaa -> bbb"));
     assert!(msg.contains("ecosystem:"));
 
     let dep = results
@@ -927,6 +930,82 @@ fn test_sarif_renderer_all_field_changes() {
     assert_eq!(dep["level"], "note");
     let dep_msg = dep["message"]["text"].as_str().unwrap();
     assert!(dep_msg.contains("Dependency changed:"));
+}
+
+fn mock_diff_hash_change(old: BTreeMap<String, String>, new: BTreeMap<String, String>) -> Diff {
+    let mut c1 = Component::new("pkg-a".into(), Some("1.0".into()));
+    c1.hashes = old.clone();
+    let mut c2 = c1.clone();
+    c2.hashes = new.clone();
+
+    Diff {
+        changed: vec![ComponentChange {
+            id: c2.id.clone(),
+            old: c1,
+            new: c2,
+            changes: vec![FieldChange::Hashes(old, new)],
+            is_downgrade: false,
+        }],
+        ..Diff::default()
+    }
+}
+
+#[test]
+fn test_sarif_renderer_hash_detail() {
+    // per-algorithm delta: one changed, one removed, one added.
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([
+            ("sha-256".into(), "oldsha".into()),
+            ("sha-1".into(), "gone".into()),
+        ]),
+        BTreeMap::from([
+            ("sha-256".into(), "newsha".into()),
+            ("md5".into(), "fresh".into()),
+        ]),
+    );
+    let mut buf = Vec::new();
+    SarifRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let val = sarif_parse(&buf);
+    let results = val["runs"][0]["results"].as_array().unwrap();
+    let changed = results
+        .iter()
+        .find(|r| r["ruleId"] == "component-changed")
+        .unwrap();
+    let msg = changed["message"]["text"].as_str().unwrap();
+
+    // algorithm names and digests are present, mirroring the other renderers.
+    assert!(msg.contains("changed sha-256: oldsha -> newsha"));
+    assert!(msg.contains("removed sha-1=gone"));
+    assert!(msg.contains("added md5=fresh"));
+    // strongest algorithm unchanged (SHA-256 -> SHA-256), so not a downgrade.
+    assert_eq!(changed["level"], "warning");
+}
+
+#[test]
+fn test_sarif_renderer_hash_algorithm_downgrade_is_error() {
+    // SHA-256 -> MD5 is a hash-algorithm downgrade and must escalate to error.
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("md5".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    SarifRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let val = sarif_parse(&buf);
+    let results = val["runs"][0]["results"].as_array().unwrap();
+    let changed = results
+        .iter()
+        .find(|r| r["ruleId"] == "component-changed")
+        .unwrap();
+
+    assert_eq!(changed["level"], "error");
+    let msg = changed["message"]["text"].as_str().unwrap();
+    assert!(msg.contains("algorithm downgrade"));
+    assert!(msg.contains("sha-256"));
+    assert!(msg.contains("md5"));
 }
 
 #[test]
