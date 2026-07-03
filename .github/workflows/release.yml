@@ -44,22 +44,26 @@ jobs:
           tool: cargo-cyclonedx,sbom-diff
 
       - name: generate sbom
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           for manifest in "$GITHUB_WORKSPACE"/crates/*/Cargo.toml; do
             crate="$(basename "$(dirname "$manifest")")"
             (cd /tmp && cargo cyclonedx --manifest-path "$manifest" \
               --format json \
-              --override-filename "sbom-${{ github.ref_name }}-${crate}.cdx" \
+              --override-filename "sbom-${REF_NAME}-${crate}.cdx" \
               --all-features)
           done
 
       - name: collect sbom files
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/sbom-diff-sbom
-          find /tmp -maxdepth 1 -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+          find /tmp -maxdepth 1 -type f -name "sbom-${REF_NAME}-*.cdx.json" \
             -exec mv {} /tmp/sbom-diff-sbom/ \;
-          find "$GITHUB_WORKSPACE" -type f -name "sbom-${{ github.ref_name }}-*.cdx.json" \
+          find "$GITHUB_WORKSPACE" -type f -name "sbom-${REF_NAME}-*.cdx.json" \
             -exec mv {} /tmp/sbom-diff-sbom/ \;
 
       - name: upload sbom
@@ -75,8 +79,10 @@ jobs:
           files: /tmp/sbom-diff-sbom/sbom-${{ github.ref_name }}-*.cdx.json
 
       - name: diff against previous release
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          current_sbom="/tmp/sbom-diff-sbom/sbom-${{ github.ref_name }}-sbom-diff.cdx.json"
+          current_sbom="/tmp/sbom-diff-sbom/sbom-${REF_NAME}-sbom-diff.cdx.json"
           prev_tag=$(git tag --sort=-v:refname | sed -n '2p')
           if [ -z "$prev_tag" ]; then
             echo "no previous release tag found, skipping diff"
