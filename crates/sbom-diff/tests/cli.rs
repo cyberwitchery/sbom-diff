@@ -1480,3 +1480,91 @@ fn cross_format_ecosystem_filter_works() {
     assert_eq!(v["added"], 0);
     assert_eq!(v["removed"], 0);
 }
+
+#[test]
+fn only_masking_fail_on_gate_warns_and_silently_passes() {
+    // --only license excludes the version field that --fail-on version-downgrade
+    // reads, so pkg-a's 2.0.0 -> 1.5.0 downgrade goes undetected and the gate
+    // exits 0. that silent bypass must be surfaced as a warning.
+    let out = sbom_diff()
+        .arg(fixture("version-downgrade-old.json"))
+        .arg(fixture("version-downgrade-new.json"))
+        .arg("--only")
+        .arg("license")
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on version-downgrade")
+            && stderr.contains("--only")
+            && stderr.contains("silently pass"),
+        "expected a masking warning, got: {stderr}"
+    );
+    // the gate is bypassed: no violation detected, exit 0 despite the downgrade
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn only_including_gate_field_emits_no_masking_warning() {
+    // --only version keeps the field the gate needs; no warning, and the
+    // downgrade is caught as usual.
+    let out = sbom_diff()
+        .arg(fixture("version-downgrade-old.json"))
+        .arg(fixture("version-downgrade-new.json"))
+        .arg("--only")
+        .arg("version")
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("silently pass"),
+        "expected no masking warning, got: {stderr}"
+    );
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn fail_on_without_only_emits_no_masking_warning() {
+    let out = sbom_diff()
+        .arg(fixture("version-downgrade-old.json"))
+        .arg(fixture("version-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("silently pass"),
+        "expected no masking warning, got: {stderr}"
+    );
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn only_masking_deps_gate_warns_and_silently_passes() {
+    // --only license excludes deps, so --fail-on deps computes no edge diffs and
+    // silently passes even though the parent's dependency edge changed.
+    let out = sbom_diff()
+        .arg(fixture("edge-change-old.json"))
+        .arg(fixture("edge-change-new.json"))
+        .arg("--only")
+        .arg("license")
+        .arg("--fail-on")
+        .arg("deps")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on deps") && stderr.contains("silently pass"),
+        "expected a deps masking warning, got: {stderr}"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}

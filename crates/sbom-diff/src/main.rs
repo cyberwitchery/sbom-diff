@@ -306,6 +306,10 @@ impl fmt::Display for Violation {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    for w in only_masked_gate_warnings(&args.only, &args.fail_on) {
+        eprintln!("warning: {w}");
+    }
+
     let old_sbom = load_sbom(&args.old, args.format).context("failed to load old sbom")?;
     let new_sbom = load_sbom(&args.new, args.format).context("failed to load new sbom")?;
 
@@ -651,10 +655,201 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     violations
 }
 
+/// the CLI value name of a `clap` enum variant (e.g. `Field::Version` -> "version").
+fn value_name<T: ValueEnum>(value: &T) -> String {
+    value
+        .to_possible_value()
+        .map(|pv| pv.get_name().to_owned())
+        .unwrap_or_default()
+}
+
+/// the diff fields a `--fail-on` gate must observe to fire. `--only` filters the
+/// fields the diff computes, so excluding one of these leaves the gate reading a
+/// diff with its evidence removed. gates that read structural collections
+/// (added/removed components, metadata, cycles) are unaffected and map to `&[]`.
+fn gate_field_dependencies(gate: FailOn) -> &'static [Field] {
+    match gate {
+        FailOn::VersionDowngrade => &[Field::Version],
+        FailOn::LicenseChanged => &[Field::License],
+        FailOn::SupplierChanged => &[Field::Supplier],
+        FailOn::HashAlgorithmDowngrade | FailOn::MissingHashes => &[Field::Hashes],
+        FailOn::Deps => &[Field::Deps],
+        // a component only counts as "changed" when one of its compared fields
+        // differs, so any excluded field can hide a change from this gate.
+        FailOn::ChangedComponents => &[
+            Field::Version,
+            Field::License,
+            Field::Supplier,
+            Field::Purl,
+            Field::Description,
+            Field::Hashes,
+            Field::Ecosystem,
+        ],
+        FailOn::AddedComponents
+        | FailOn::RemovedComponents
+        | FailOn::MetadataChanged
+        | FailOn::CyclicDependency => &[],
+    }
+}
+
+/// warns when an active `--only` filter excludes a field that an active
+/// `--fail-on` gate depends on. `--only` is documented as an output filter, but
+/// it also narrows what the diff computes, so a gate whose field is excluded
+/// reads a diff with no evidence and exits 0 — a silent CI/supply-chain bypass.
+/// returns one line per affected gate (empty when `--only` is unused or nothing
+/// conflicts); ordering is deterministic and gates are de-duplicated.
+fn only_masked_gate_warnings(only: &[Field], fail_on: &[FailOn]) -> Vec<String> {
+    if only.is_empty() {
+        return Vec::new();
+    }
+
+    // `only` holds at most one entry per field, so a linear membership check is
+    // cheaper than building a set (and `Field` is not `Hash`).
+    let active: BTreeSet<FailOn> = fail_on.iter().copied().collect();
+
+    let mut warnings = Vec::new();
+    for gate in active {
+        let excluded: Vec<Field> = gate_field_dependencies(gate)
+            .iter()
+            .copied()
+            .filter(|f| !only.contains(f))
+            .collect();
+        if excluded.is_empty() {
+            continue;
+        }
+        let noun = if excluded.len() == 1 {
+            "field"
+        } else {
+            "fields"
+        };
+        let names = excluded
+            .iter()
+            .map(value_name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(format!(
+            "--fail-on {} depends on the {} {} that --only excludes; the gate may silently pass",
+            value_name(&gate),
+            names,
+            noun,
+        ));
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sbom_model::Component;
+
+    #[test]
+    fn gate_field_dependencies_maps_every_variant() {
+        // field-dependent gates map to the field whose exclusion neuters them
+        assert_eq!(
+            gate_field_dependencies(FailOn::VersionDowngrade),
+            &[Field::Version]
+        );
+        assert_eq!(
+            gate_field_dependencies(FailOn::LicenseChanged),
+            &[Field::License]
+        );
+        assert_eq!(
+            gate_field_dependencies(FailOn::SupplierChanged),
+            &[Field::Supplier]
+        );
+        assert_eq!(
+            gate_field_dependencies(FailOn::HashAlgorithmDowngrade),
+            &[Field::Hashes]
+        );
+        assert_eq!(
+            gate_field_dependencies(FailOn::MissingHashes),
+            &[Field::Hashes]
+        );
+        assert_eq!(gate_field_dependencies(FailOn::Deps), &[Field::Deps]);
+        assert_eq!(gate_field_dependencies(FailOn::ChangedComponents).len(), 7);
+        // structural gates read added/removed/metadata/cycles, not filtered fields
+        assert!(gate_field_dependencies(FailOn::AddedComponents).is_empty());
+        assert!(gate_field_dependencies(FailOn::RemovedComponents).is_empty());
+        assert!(gate_field_dependencies(FailOn::MetadataChanged).is_empty());
+        assert!(gate_field_dependencies(FailOn::CyclicDependency).is_empty());
+    }
+
+    #[test]
+    fn no_only_filter_never_warns() {
+        assert!(only_masked_gate_warnings(&[], &[FailOn::VersionDowngrade]).is_empty());
+    }
+
+    #[test]
+    fn only_excluding_gate_field_warns() {
+        let w = only_masked_gate_warnings(&[Field::License], &[FailOn::VersionDowngrade]);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("--fail-on version-downgrade"));
+        assert!(w[0].contains("version"));
+        assert!(w[0].contains("--only"));
+        assert!(w[0].contains("silently pass"));
+    }
+
+    #[test]
+    fn only_including_gate_field_does_not_warn() {
+        assert!(
+            only_masked_gate_warnings(&[Field::Version], &[FailOn::VersionDowngrade]).is_empty()
+        );
+    }
+
+    #[test]
+    fn structural_gates_never_warn() {
+        let gates = [
+            FailOn::AddedComponents,
+            FailOn::RemovedComponents,
+            FailOn::MetadataChanged,
+            FailOn::CyclicDependency,
+        ];
+        assert!(only_masked_gate_warnings(&[Field::License], &gates).is_empty());
+    }
+
+    #[test]
+    fn deps_gate_warns_when_deps_excluded() {
+        let w = only_masked_gate_warnings(&[Field::License], &[FailOn::Deps]);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("--fail-on deps"));
+        assert!(w[0].contains("silently pass"));
+    }
+
+    #[test]
+    fn missing_hashes_warns_when_hashes_excluded_but_not_when_included() {
+        let excluded = only_masked_gate_warnings(&[Field::Version], &[FailOn::MissingHashes]);
+        assert_eq!(excluded.len(), 1);
+        assert!(excluded[0].contains("missing-hashes"));
+        assert!(excluded[0].contains("hashes"));
+        assert!(only_masked_gate_warnings(&[Field::Hashes], &[FailOn::MissingHashes]).is_empty());
+    }
+
+    #[test]
+    fn changed_components_lists_excluded_fields_only() {
+        let w = only_masked_gate_warnings(&[Field::License], &[FailOn::ChangedComponents]);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("changed-components"));
+        assert!(w[0].contains("fields")); // plural: several fields excluded
+        assert!(w[0].contains("version"));
+        // license is included, so it must not appear in the excluded list
+        assert!(!w[0].contains("license"));
+    }
+
+    #[test]
+    fn multiple_gates_warn_deduplicated_and_ordered() {
+        // a duplicate gate collapses to one warning; output is enum-order stable
+        let w = only_masked_gate_warnings(
+            &[Field::License],
+            &[
+                FailOn::VersionDowngrade,
+                FailOn::Deps,
+                FailOn::VersionDowngrade,
+            ],
+        );
+        assert_eq!(w.len(), 2);
+        assert!(w[0].contains("--fail-on deps"));
+        assert!(w[1].contains("--fail-on version-downgrade"));
+    }
 
     #[test]
     fn test_check_licenses() {
