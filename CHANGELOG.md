@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.6.0] - 2026-07-05
 
 - warn when `--only` excludes a field that an active `--fail-on` gate depends on: `--only` is documented as an output filter, but it also narrows what the diff computes, so a combination like `--only license --fail-on version-downgrade` silently bypasses the gate — the version changes are never computed, no violation is found, and the process exits 0 despite a real downgrade; a warning now names each masked gate and the excluded field(s) so the silent CI/supply-chain no-op becomes visible. Affects the field-dependent gates (`version-downgrade`, `license-changed`, `supplier-changed`, `hash-algorithm-downgrade`, `missing-hashes`, `changed-components`, `deps`); structural gates (`added-components`, `removed-components`, `metadata-changed`, `cyclic-dependency`) are unaffected. Gate exit-code semantics are unchanged — this only surfaces the conflict
 - make `--fail-on version-downgrade` correct for non-SemVer versions: build-metadata-only changes (e.g. `1.0.0+build.10` → `1.0.0+build.9`, or commit-hash metadata like `1.0.0+c144a98` → `1.0.0+bc17664`) are no longer flagged as downgrades — SemVer §10 excludes build metadata from precedence; and Debian/RPM-style versions carrying an epoch or revision (e.g. `2:1.0` → `1:9.0`, `5.1-3` → `5.1-2`), which dominate OS/container SBOMs and were previously treated as uncomparable and silently skipped, are now compared with the Debian version-ordering algorithm (epoch, then upstream version, then revision) so real epoch and revision downgrades are caught
