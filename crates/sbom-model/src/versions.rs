@@ -887,4 +887,77 @@ mod tests {
         assert!(!is_version_downgrade("2:1.0", "1.0.0"));
         assert!(!is_version_downgrade("1.0.0", "2:1.0"));
     }
+
+    #[test]
+    fn deb_canonical_ordering_vectors() {
+        use Ordering::{Equal, Greater, Less};
+
+        // Canonical dpkg (`verrevcmp`) orderings for the edge cases the other
+        // tests don't fully pin, each `expected` derived by hand from the
+        // `deb_order`/`verrevcmp` rules documented above. Every string pins an
+        // epoch so it forces `Deb` parsing — a bare `1.0`/`1.0~rc1` would parse
+        // as Semver/Numeric and exercise the wrong comparator (see
+        // `downgrade_absent_revision_equals_zero`). `expected` is how `a` orders
+        // relative to `b`; the harness drives each vector through the public
+        // `is_version_downgrade` in both directions.
+        let cases = [
+            // tilde chain: `~` < end-of-string < letters < other punctuation,
+            // so 1.0~~ < 1.0~~a < 1.0~ < 1.0 < 1.0a
+            ("1:1.0~~", "1:1.0~~a", Less),
+            ("1:1.0~~a", "1:1.0~", Less),
+            ("1:1.0~", "1:1.0", Less),
+            ("1:1.0", "1:1.0a", Less),
+            // tilde marks a pre-release: it sorts before the release, and
+            // pre-releases order among themselves
+            ("1:1.0~rc1", "1:1.0", Less),
+            ("1:1.0~rc1", "1:1.0~rc2", Less),
+            // digit runs compare numerically, not lexically: 10 > 9
+            ("1:1.10", "1:1.9", Greater),
+            // leading zeros don't change a digit run's value
+            ("1:1.0", "1:1.00", Equal),
+            ("1:1.01", "1:1.1", Equal),
+            // a letter outranks a digit at a component boundary...
+            ("1:1.a", "1:1.1", Greater),
+            // ...but a continuing digit run still outranks a letter suffix
+            ("1:1.0a", "1:1.01", Less),
+            // epoch dominates the upstream comparison
+            ("2:0.1", "1:9.9", Greater),
+            // upstream is compared before the revision
+            ("1:5.2-1", "1:5.1-9", Greater),
+            // an absent revision compares equal to an explicit "0"
+            ("1:2.0", "1:2.0-0", Equal),
+            // revision digit runs are numeric too: 10 > 9
+            ("1:2.0-10", "1:2.0-9", Greater),
+        ];
+
+        for (a, b, expected) in cases {
+            // guard the vector: if either side stops parsing as Deb, it would
+            // silently test a different comparator and prove nothing.
+            assert!(
+                matches!(Version::parse_lenient(a), Version::Deb { .. }),
+                "{a} no longer parses as Deb"
+            );
+            assert!(
+                matches!(Version::parse_lenient(b), Version::Deb { .. }),
+                "{b} no longer parses as Deb"
+            );
+            match expected {
+                // a < b: going b -> a is a downgrade, a -> b is not
+                Less => {
+                    assert!(is_version_downgrade(b, a), "expected {a} < {b}");
+                    assert!(!is_version_downgrade(a, b), "expected {a} < {b}");
+                }
+                // a > b: going a -> b is a downgrade, b -> a is not
+                Greater => {
+                    assert!(is_version_downgrade(a, b), "expected {a} > {b}");
+                    assert!(!is_version_downgrade(b, a), "expected {a} > {b}");
+                }
+                // a == b: neither direction is a downgrade
+                Equal => {
+                    assert!(!is_version_downgrade(a, b), "expected {a} == {b}");
+                    assert!(!is_version_downgrade(b, a), "expected {a} == {b}");
+                }
+            }
+        }
+    }
 }
