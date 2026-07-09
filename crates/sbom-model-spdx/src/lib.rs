@@ -101,9 +101,12 @@ impl SpdxReader {
         let mut buf = Vec::new();
         reader.read_to_end(&mut buf)?;
 
-        Self::check_spdx_version(&buf)?;
+        // strip a leading UTF-8 BOM; serde_json does not skip it.
+        let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
 
-        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(&buf)?;
+        Self::check_spdx_version(buf)?;
+
+        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(buf)?;
 
         Ok(Self::spdx_to_sbom(spdx_doc))
     }
@@ -125,6 +128,10 @@ impl SpdxReader {
 
         let input = std::str::from_utf8(&buf)
             .map_err(|e| Error::TagValue(format!("invalid UTF-8: {e}")))?;
+
+        // strip a leading BOM: str::trim() (used by the SPDXVersion pre-check
+        // and the parser) does not treat U+FEFF as whitespace.
+        let input = input.strip_prefix('\u{feff}').unwrap_or(input);
 
         Self::check_spdx_version_tag_value(input)?;
 
@@ -1997,5 +2004,58 @@ PackageCopyrightText: NOASSERTION
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 2);
         assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_read_json_with_bom() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let mut with_bom = vec![0xef, 0xbb, 0xbf]; // UTF-8 BOM
+        with_bom.extend_from_slice(json.as_bytes());
+        let sbom = SpdxReader::read_json(with_bom.as_slice()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+    }
+
+    #[test]
+    fn test_read_tag_value_with_bom() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+";
+        let with_bom = format!("\u{feff}{tv}");
+        let sbom = SpdxReader::read_tag_value(with_bom.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+        assert_eq!(sbom.components[0].version, Some("1.0.0".to_string()));
     }
 }

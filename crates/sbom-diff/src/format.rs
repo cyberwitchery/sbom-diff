@@ -142,6 +142,15 @@ pub fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
         file.read_to_end(&mut content)?;
     }
 
+    // strip a single leading UTF-8 BOM (EF BB BF) if present. BOM-prefixed
+    // SBOMs are common from Windows/.NET tooling, and most of the underlying
+    // readers (serde_json, the SPDX tag-value pre-check) do not skip it, so
+    // without this they fail to parse. A BOM-only file becomes empty here and
+    // falls through to the "input is empty" check below.
+    if content.starts_with(b"\xef\xbb\xbf") {
+        content.drain(..3);
+    }
+
     if content.is_empty() {
         return Err(anyhow!("input is empty"));
     }
@@ -472,5 +481,76 @@ mod tests {
         assert_eq!(find_subsequence(b"hello", b"xyz"), None);
         assert_eq!(find_subsequence(b"", b"a"), None);
         assert_eq!(find_subsequence(b"abc", b"abc"), Some(0));
+    }
+
+    /// load `fixture` directly and again with a UTF-8 BOM prepended (via a
+    /// uniquely named temp file), asserting both parse to identical SBOMs.
+    fn assert_bom_roundtrip(fixture: &str, temp_name: &str) {
+        use std::io::Write;
+
+        let baseline = load_sbom(fixture, Format::Auto).unwrap();
+
+        let mut bytes = vec![0xef, 0xbb, 0xbf]; // UTF-8 BOM
+        bytes.extend_from_slice(&std::fs::read(fixture).unwrap());
+
+        let dir = std::env::temp_dir().join("sbom-diff-test-bom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(temp_name);
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+
+        let with_bom = load_sbom(path.to_str().unwrap(), Format::Auto).unwrap();
+
+        assert_eq!(
+            baseline, with_bom,
+            "BOM-prefixed {fixture} should parse identically to the BOM-free input"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_load_sbom_bom_spdx_tag_value() {
+        assert_bom_roundtrip("../../tests/fixtures/old.spdx", "old.spdx");
+    }
+
+    #[test]
+    fn test_load_sbom_bom_spdx_json() {
+        assert_bom_roundtrip("../../tests/fixtures/old.spdx.json", "old.spdx.json");
+    }
+
+    #[test]
+    fn test_load_sbom_bom_cyclonedx_json() {
+        assert_bom_roundtrip("../../tests/fixtures/old.json", "old.cdx.json");
+    }
+
+    #[test]
+    fn test_load_sbom_bom_cyclonedx_xml() {
+        // regression guard: CycloneDX XML already tolerated a leading BOM.
+        assert_bom_roundtrip(
+            "../../tests/fixtures/golden-old.cdx.xml",
+            "golden-old.cdx.xml",
+        );
+    }
+
+    #[test]
+    fn test_load_sbom_bom_only_file_is_empty() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("sbom-diff-test-bom-only");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bom-only.json");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&[0xef, 0xbb, 0xbf])
+            .unwrap();
+
+        let result = load_sbom(path.to_str().unwrap(), Format::Auto);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("empty"), "expected 'empty' in: {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
