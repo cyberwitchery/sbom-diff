@@ -30,6 +30,9 @@ sbom-diff old.json new.json --fail-on added-components
 sbom-diff old.json new.json --fail-on missing-hashes
 sbom-diff old.json new.json --fail-on deps
 
+# block a dependency turning copyleft, e.g. mit -> gpl-3.0-only (exit code 3)
+sbom-diff old.json new.json --fail-on copyleft-added
+
 # summary only (counts without details)
 sbom-diff old.json new.json --summary
 

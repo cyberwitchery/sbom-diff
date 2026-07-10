@@ -1548,6 +1548,103 @@ fn fail_on_without_only_emits_no_masking_warning() {
 }
 
 #[test]
+fn fail_on_copyleft_added_exits_3() {
+    // pkg-a: MIT -> GPL-3.0-only (changed component), pkg-c: new AGPL-3.0-only
+    // component (added component) — both paths must fire.
+    let out = sbom_diff()
+        .arg(fixture("license-changed-old.json"))
+        .arg(fixture("license-changed-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on copyleft-added"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("GPL-3.0-only"),
+        "stderr should name the copyleft license introduced on the changed component, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("AGPL-3.0-only"),
+        "stderr should name the copyleft license introduced by the added component, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_copyleft_added_no_change_exits_0() {
+    // same file on both sides: copyleft licenses are present but nothing is
+    // introduced, so the gate must not fire.
+    let out = sbom_diff()
+        .arg(fixture("license-changed-new.json"))
+        .arg(fixture("license-changed-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_copyleft_added_permissive_change_exits_0() {
+    // a genuine license change that stays permissive (MIT -> Apache-2.0) must
+    // not fire the copyleft gate.
+    let out = sbom_diff()
+        .arg(fixture("copyleft-added-permissive-old.json"))
+        .arg(fixture("copyleft-added-permissive-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+
+    // the change is still a license change, just not a copyleft one
+    let license_out = sbom_diff()
+        .arg(fixture("copyleft-added-permissive-old.json"))
+        .arg(fixture("copyleft-added-permissive-new.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+    assert_eq!(license_out.status.code(), Some(3));
+}
+
+#[test]
+fn cross_format_fail_on_copyleft_added_exits_3() {
+    // beta's license change (Apache-2.0 -> GPL-3.0-only) across formats
+    // introduces copyleft and must trip the gate.
+    let out = sbom_diff()
+        .arg(fixture("cross-format-base.spdx.json"))
+        .arg(fixture("cross-format-modified.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on copyleft-added"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("GPL-3.0-only"),
+        "stderr should name beta's introduced copyleft license, got: {}",
+        stderr
+    );
+}
+
+#[test]
 fn only_masking_deps_gate_warns_and_silently_passes() {
     // --only license excludes deps, so --fail-on deps computes no edge diffs and
     // silently passes even though the parent's dependency edge changed.

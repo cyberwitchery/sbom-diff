@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- add `--fail-on copyleft-added` CI gate: fails (exit 3) when a component update or a newly added component introduces a copyleft license (GPL, AGPL, LGPL, MPL, …) that was not present before. This targets the compliance-critical direction of license change — a dependency turning copyleft — that the broader `--fail-on license-changed` gate buries in noise, since that gate fires on any license-set delta (even `MIT` → `MIT OR Apache-2.0`). Copyleft is classified offline from the SPDX license list; `LicenseRef-` and unrecognized identifiers are conservatively treated as non-copyleft
 - fix BOM-prefixed SBOMs failing to load: a leading UTF-8 byte-order mark (bytes `EF BB BF`, commonly emitted by Windows/.NET tooling) is now stripped before parsing and format auto-detection, so SPDX tag-value, SPDX JSON, and CycloneDX JSON inputs that previously errored out (e.g. `no SPDXVersion tag found` or a JSON parse error) now load correctly; CycloneDX XML already tolerated a BOM and is unaffected. A file containing only a BOM is reported as empty input
 
 ## [0.6.0] - 2026-07-05
