@@ -142,11 +142,7 @@ pub fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
         file.read_to_end(&mut content)?;
     }
 
-    // strip a single leading UTF-8 BOM (EF BB BF) if present. BOM-prefixed
-    // SBOMs are common from Windows/.NET tooling, and most of the underlying
-    // readers (serde_json, the SPDX tag-value pre-check) do not skip it, so
-    // without this they fail to parse. A BOM-only file becomes empty here and
-    // falls through to the "input is empty" check below.
+    // strip a leading UTF-8 BOM (common from Windows/.NET tooling; serde_json and the SPDX pre-check reject it).
     if content.starts_with(b"\xef\xbb\xbf") {
         content.drain(..3);
     }

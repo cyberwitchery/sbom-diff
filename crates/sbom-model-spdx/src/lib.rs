@@ -129,8 +129,7 @@ impl SpdxReader {
         let input = std::str::from_utf8(&buf)
             .map_err(|e| Error::TagValue(format!("invalid UTF-8: {e}")))?;
 
-        // strip a leading BOM: str::trim() (used by the SPDXVersion pre-check
-        // and the parser) does not treat U+FEFF as whitespace.
+        // strip a leading BOM; str::trim() (used by the SPDXVersion pre-check) does not treat U+FEFF as whitespace.
         let input = input.strip_prefix('\u{feff}').unwrap_or(input);
 
         Self::check_spdx_version_tag_value(input)?;
