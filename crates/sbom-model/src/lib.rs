@@ -620,6 +620,56 @@ pub fn is_hash_algorithm_downgrade(
     }
 }
 
+/// classifies an SPDX license identifier as copyleft.
+///
+/// looks the ID up in the compile-time SPDX license list and returns whether
+/// it carries the copyleft flag (the GPL/AGPL/LGPL family, MPL, etc.).
+///
+/// returns `false` for anything SPDX doesn't recognize — `LicenseRef-`
+/// identifiers, full license expressions, and free-text names — a conservative
+/// default so unknown terms never trip a copyleft gate.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::is_copyleft_license;
+///
+/// assert!(is_copyleft_license("GPL-3.0-only"));
+/// assert!(is_copyleft_license("AGPL-3.0-only"));
+/// assert!(!is_copyleft_license("MIT"));
+/// assert!(!is_copyleft_license("LicenseRef-proprietary"));
+/// ```
+pub fn is_copyleft_license(id: &str) -> bool {
+    spdx::license_id(id)
+        .map(|l| l.is_copyleft())
+        .unwrap_or(false)
+}
+
+/// detects whether a copyleft license was newly introduced between two license sets.
+///
+/// returns `true` iff `new` contains a copyleft license (per
+/// [`is_copyleft_license`]) that is not present in `old`. A copyleft license
+/// carried over from `old` is not an introduction, and permissive-only changes
+/// never fire.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::copyleft_introduced;
+/// use std::collections::BTreeSet;
+///
+/// let old: BTreeSet<String> = ["MIT".into()].into();
+/// let new: BTreeSet<String> = ["GPL-3.0-only".into()].into();
+/// assert!(copyleft_introduced(&old, &new));
+///
+/// let permissive: BTreeSet<String> = ["Apache-2.0".into()].into();
+/// assert!(!copyleft_introduced(&old, &permissive));
+/// ```
+pub fn copyleft_introduced(old: &BTreeSet<String>, new: &BTreeSet<String>) -> bool {
+    new.iter()
+        .any(|id| is_copyleft_license(id) && !old.contains(id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,5 +1250,50 @@ mod tests {
         let old: BTreeMap<String, String> = [("TIGER".into(), "abc".into())].into();
         let new: BTreeMap<String, String> = [("WHIRLPOOL".into(), "def".into())].into();
         assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_is_copyleft_license() {
+        // GPL family and its relatives are copyleft
+        assert!(is_copyleft_license("GPL-3.0-only"));
+        assert!(is_copyleft_license("AGPL-3.0-only"));
+        assert!(is_copyleft_license("LGPL-3.0-only"));
+        // permissive licenses are not
+        assert!(!is_copyleft_license("MIT"));
+        assert!(!is_copyleft_license("Apache-2.0"));
+        assert!(!is_copyleft_license("BSD-3-Clause"));
+        // LicenseRef and unrecognized ids are conservatively not copyleft
+        assert!(!is_copyleft_license("LicenseRef-proprietary"));
+        assert!(!is_copyleft_license("NOT-A-LICENSE"));
+    }
+
+    #[test]
+    fn test_copyleft_introduced_permissive_to_copyleft() {
+        let old: BTreeSet<String> = ["MIT".into()].into();
+        let new: BTreeSet<String> = ["GPL-3.0-only".into()].into();
+        assert!(copyleft_introduced(&old, &new));
+    }
+
+    #[test]
+    fn test_copyleft_introduced_permissive_to_permissive() {
+        let old: BTreeSet<String> = ["MIT".into()].into();
+        let new: BTreeSet<String> = ["Apache-2.0".into()].into();
+        assert!(!copyleft_introduced(&old, &new));
+    }
+
+    #[test]
+    fn test_copyleft_introduced_carried_over_not_flagged() {
+        // a copyleft license already present in old is not a new introduction
+        let old: BTreeSet<String> = ["GPL-3.0-only".into()].into();
+        let new: BTreeSet<String> = ["GPL-3.0-only".into()].into();
+        assert!(!copyleft_introduced(&old, &new));
+    }
+
+    #[test]
+    fn test_copyleft_introduced_added_alongside_existing() {
+        // a second, newly added copyleft id fires even when old already had one
+        let old: BTreeSet<String> = ["GPL-3.0-only".into()].into();
+        let new: BTreeSet<String> = ["GPL-3.0-only".into(), "AGPL-3.0-only".into()].into();
+        assert!(copyleft_introduced(&old, &new));
     }
 }

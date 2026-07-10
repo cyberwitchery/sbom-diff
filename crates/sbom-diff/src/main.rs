@@ -10,8 +10,8 @@ use sbom_diff::{
     },
     Differ, Field, FieldChange,
 };
-use sbom_model::is_hash_algorithm_downgrade;
 use sbom_model::versions::is_version_downgrade;
+use sbom_model::{copyleft_introduced, is_copyleft_license, is_hash_algorithm_downgrade};
 use sbom_model::{ComponentId, DependencyKind, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
@@ -98,6 +98,8 @@ enum FailOn {
     SupplierChanged,
     /// fail if any changed component's strongest hash algorithm is weaker than before.
     HashAlgorithmDowngrade,
+    /// fail if a changed or added component introduces a copyleft license (e.g. GPL, AGPL) not present before.
+    CopyleftAdded,
     /// fail if the new SBOM's dependency graph contains cycles.
     CyclicDependency,
 }
@@ -135,6 +137,10 @@ enum Violation {
         new: BTreeSet<String>,
     },
     LicenseIntroduced {
+        id: ComponentId,
+        licenses: Vec<String>,
+    },
+    CopyleftAdded {
         id: ComponentId,
         licenses: Vec<String>,
     },
@@ -215,6 +221,14 @@ impl fmt::Display for Violation {
                 write!(
                     f,
                     "added component {} introduces license(s): {} (--fail-on license-changed)",
+                    id,
+                    licenses.join(", ")
+                )
+            }
+            Violation::CopyleftAdded { id, licenses } => {
+                write!(
+                    f,
+                    "copyleft license introduced on component {}: {} (--fail-on copyleft-added)",
                     id,
                     licenses.join(", ")
                 )
@@ -515,6 +529,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     let check_added = active.contains(&FailOn::AddedComponents);
     let check_missing_hashes = active.contains(&FailOn::MissingHashes);
     let check_license_changed = active.contains(&FailOn::LicenseChanged);
+    let check_copyleft_added = active.contains(&FailOn::CopyleftAdded);
     let check_supplier_changed = active.contains(&FailOn::SupplierChanged);
 
     for comp in &diff.added {
@@ -533,6 +548,22 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                 id: comp.id.clone(),
                 licenses: comp.licenses.iter().cloned().collect(),
             });
+        }
+        if check_copyleft_added {
+            // an added component has no prior licenses, so every copyleft id it
+            // carries is newly introduced.
+            let introduced: Vec<String> = comp
+                .licenses
+                .iter()
+                .filter(|&l| is_copyleft_license(l))
+                .cloned()
+                .collect();
+            if !introduced.is_empty() {
+                violations.push(Violation::CopyleftAdded {
+                    id: comp.id.clone(),
+                    licenses: introduced,
+                });
+            }
         }
         if check_supplier_changed && comp.supplier.is_some() {
             violations.push(Violation::SupplierIntroduced {
@@ -555,6 +586,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     let check_hash_downgrade = active.contains(&FailOn::HashAlgorithmDowngrade);
     let any_field_check = check_missing_hashes
         || check_license_changed
+        || check_copyleft_added
         || check_version_downgrade
         || check_supplier_changed
         || check_hash_downgrade;
@@ -573,12 +605,27 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
         if any_field_check {
             for fc in &change.changes {
                 match fc {
-                    FieldChange::License(old, new) if check_license_changed => {
-                        violations.push(Violation::LicenseChanged {
-                            id: change.id.clone(),
-                            old: old.clone(),
-                            new: new.clone(),
-                        });
+                    FieldChange::License(old, new)
+                        if check_license_changed || check_copyleft_added =>
+                    {
+                        if check_license_changed {
+                            violations.push(Violation::LicenseChanged {
+                                id: change.id.clone(),
+                                old: old.clone(),
+                                new: new.clone(),
+                            });
+                        }
+                        if check_copyleft_added && copyleft_introduced(old, new) {
+                            let introduced: Vec<String> = new
+                                .iter()
+                                .filter(|&l| is_copyleft_license(l) && !old.contains(l))
+                                .cloned()
+                                .collect();
+                            violations.push(Violation::CopyleftAdded {
+                                id: change.id.clone(),
+                                licenses: introduced,
+                            });
+                        }
                     }
                     FieldChange::Version(Some(old_ver), Some(new_ver))
                         if check_version_downgrade && is_version_downgrade(old_ver, new_ver) =>
@@ -671,6 +718,7 @@ fn gate_field_dependencies(gate: FailOn) -> &'static [Field] {
     match gate {
         FailOn::VersionDowngrade => &[Field::Version],
         FailOn::LicenseChanged => &[Field::License],
+        FailOn::CopyleftAdded => &[Field::License],
         FailOn::SupplierChanged => &[Field::Supplier],
         FailOn::HashAlgorithmDowngrade | FailOn::MissingHashes => &[Field::Hashes],
         FailOn::Deps => &[Field::Deps],
@@ -751,6 +799,10 @@ mod tests {
         );
         assert_eq!(
             gate_field_dependencies(FailOn::LicenseChanged),
+            &[Field::License]
+        );
+        assert_eq!(
+            gate_field_dependencies(FailOn::CopyleftAdded),
             &[Field::License]
         );
         assert_eq!(
@@ -1748,6 +1800,185 @@ mod tests {
         assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
         // AddedComponents alone should fire (new-pkg)
         assert!(!collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_copyleft_added_changed_component() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        let vs = collect_violations(&diff, &[FailOn::CopyleftAdded]);
+        assert!(vs.iter().any(|v| matches!(
+            v,
+            Violation::CopyleftAdded { licenses, .. } if licenses == &["GPL-3.0-only".to_string()]
+        )));
+    }
+
+    #[test]
+    fn test_collect_violations_copyleft_added_permissive_change_no_violation() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        // a genuine license change that stays permissive must not fire
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("Apache-2.0".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["Apache-2.0".into()]),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        assert!(collect_violations(&diff, &[FailOn::CopyleftAdded]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_copyleft_added_carried_over_no_violation() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        // copyleft license present on both sides is not a new introduction
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        old.licenses.insert("GPL-3.0-only".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["GPL-3.0-only".into(), "MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        assert!(collect_violations(&diff, &[FailOn::CopyleftAdded]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_copyleft_added_on_added_component() {
+        use sbom_diff::Diff;
+
+        let mut permissive = Component::new("perm-pkg".into(), Some("1.0".into()));
+        permissive.licenses.insert("MIT".into());
+        let mut copyleft = Component::new("copyleft-pkg".into(), Some("1.0".into()));
+        copyleft.licenses.insert("AGPL-3.0-only".into());
+
+        let diff = Diff {
+            added: vec![permissive, copyleft.clone()],
+            ..Diff::default()
+        };
+
+        let vs = collect_violations(&diff, &[FailOn::CopyleftAdded]);
+        // only the copyleft component fires
+        assert_eq!(vs.len(), 1);
+        assert!(matches!(
+            &vs[0],
+            Violation::CopyleftAdded { id, licenses }
+                if id == &copyleft.id && licenses == &["AGPL-3.0-only".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_collect_violations_copyleft_added_and_license_changed_both_fire() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        // both gates read FieldChange::License; with both active, each must fire
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        let vs = collect_violations(&diff, &[FailOn::LicenseChanged, FailOn::CopyleftAdded]);
+        assert!(vs
+            .iter()
+            .any(|v| matches!(v, Violation::LicenseChanged { .. })));
+        assert!(vs
+            .iter()
+            .any(|v| matches!(v, Violation::CopyleftAdded { .. })));
+    }
+
+    #[test]
+    fn test_collect_violations_copyleft_added_does_not_trigger_other_gates() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use std::collections::BTreeSet;
+
+        let mut old = Component::new("pkg".into(), Some("1.0".into()));
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("pkg".into(), Some("1.0".into()));
+        new.licenses.insert("GPL-3.0-only".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["GPL-3.0-only".into()]),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
+        // ChangedComponents still fires on any change
+        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        // CopyleftAdded fires
+        assert!(!collect_violations(&diff, &[FailOn::CopyleftAdded]).is_empty());
     }
 
     #[test]
