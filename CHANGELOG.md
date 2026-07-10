@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix BOM-prefixed SBOMs failing to load: a leading UTF-8 byte-order mark (bytes `EF BB BF`, commonly emitted by Windows/.NET tooling) is now stripped before parsing and format auto-detection, so SPDX tag-value, SPDX JSON, and CycloneDX JSON inputs that previously errored out (e.g. `no SPDXVersion tag found` or a JSON parse error) now load correctly; CycloneDX XML already tolerated a BOM and is unaffected. A file containing only a BOM is reported as empty input
+
 ## [0.6.0] - 2026-07-05
 
 - warn when `--only` excludes a field that an active `--fail-on` gate depends on: `--only` is documented as an output filter, but it also narrows what the diff computes, so a combination like `--only license --fail-on version-downgrade` silently bypasses the gate — the version changes are never computed, no violation is found, and the process exits 0 despite a real downgrade; a warning now names each masked gate and the excluded field(s) so the silent CI/supply-chain no-op becomes visible. Affects the field-dependent gates (`version-downgrade`, `license-changed`, `supplier-changed`, `hash-algorithm-downgrade`, `missing-hashes`, `changed-components`, `deps`); structural gates (`added-components`, `removed-components`, `metadata-changed`, `cyclic-dependency`) are unaffected. Gate exit-code semantics are unchanged — this only surfaces the conflict

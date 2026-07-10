@@ -74,9 +74,12 @@ impl CycloneDxReader {
         let mut buf = Vec::new();
         reader.read_to_end(&mut buf)?;
 
-        Self::check_cyclonedx_version(&buf)?;
+        // strip a leading UTF-8 BOM; the JSON parser does not skip it.
+        let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
 
-        let bom = cyclonedx_bom::prelude::Bom::parse_from_json(buf.as_slice())?;
+        Self::check_cyclonedx_version(buf)?;
+
+        let bom = cyclonedx_bom::prelude::Bom::parse_from_json(buf)?;
         Self::bom_to_sbom(bom)
     }
 
@@ -1396,5 +1399,27 @@ mod tests {
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 2);
         assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_read_json_with_bom() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "purl": "pkg:npm/pkg-a@1.0.0"
+                }
+            ]
+        }"#;
+        let mut with_bom = vec![0xef, 0xbb, 0xbf]; // UTF-8 BOM
+        with_bom.extend_from_slice(json.as_bytes());
+        let sbom = CycloneDxReader::read_json(with_bom.as_slice()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
     }
 }
