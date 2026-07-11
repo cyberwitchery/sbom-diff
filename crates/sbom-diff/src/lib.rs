@@ -192,10 +192,12 @@ impl Diff {
 
         self.old_total = filtered_old_total;
         self.new_total = filtered_new_total;
-        // unchanged = matched_filtered - changed
-        // matched_filtered = old_total_filtered - removed_filtered
-        self.unchanged = filtered_old_total
-            .saturating_sub(self.removed.len())
+        // derive unchanged from the NEW side, consistent with added/changed
+        // (both retained by new-side ecosystem). Deriving from the old side
+        // over-counts a matched pair whose ecosystem changes across the filter
+        // boundary, which can push unchanged above new_total.
+        self.unchanged = filtered_new_total
+            .saturating_sub(self.added.len())
             .saturating_sub(self.changed.len());
     }
 }
@@ -1984,6 +1986,90 @@ mod tests {
         assert_eq!(diff.added.len(), 0);
         assert_eq!(diff.removed.len(), 0);
         assert_eq!(diff.changed.len(), 0);
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_matched_pair_changes_ecosystem() {
+        // a matched pair (same name+version, no purl → same hash id) whose
+        // ecosystem changes npm → pypi lands in `changed`, retained by its
+        // NEW ecosystem. Filtering to npm drops it from `changed` (new is
+        // pypi) while it is still counted in the old total. Deriving
+        // `unchanged` from the old side would absorb this pair and push
+        // `unchanged` above `new_total`; the new-side derivation must not.
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // migrator: matched pair, ecosystem npm -> pypi (a real migration).
+        let mut mig_old = Component::new("migrator".into(), Some("1.0".into()));
+        mig_old.ecosystem = Some("npm".into());
+        let mut mig_new = Component::new("migrator".into(), Some("1.0".into()));
+        mig_new.ecosystem = Some("pypi".into());
+        assert_eq!(mig_old.id, mig_new.id, "same name+version share a hash id");
+
+        // left-pad: genuinely unchanged npm pair.
+        let mut lp = Component::new("left-pad".into(), Some("2.0".into()));
+        lp.ecosystem = Some("npm".into());
+
+        old.components.insert(mig_old.id.clone(), mig_old);
+        old.components.insert(lp.id.clone(), lp.clone());
+        new.components.insert(mig_new.id.clone(), mig_new);
+        new.components.insert(lp.id.clone(), lp);
+
+        let mut diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1); // migrator (ecosystem changed)
+        assert_eq!(diff.unchanged, 1); // left-pad
+
+        // filter to npm: old side has 2 npm (migrator-old, left-pad),
+        // new side has 1 npm (left-pad only; migrator-new is pypi).
+        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 1, &BTreeMap::new());
+
+        assert_eq!(diff.changed.len(), 0); // migrator dropped (new is pypi)
+        assert_eq!(diff.added.len(), 0);
+        assert_eq!(diff.removed.len(), 0);
+        assert_eq!(diff.unchanged, 1); // only left-pad remains on the npm side
+        assert_eq!(diff.new_total, 1);
+        // the core invariant: unchanged must never exceed new_total.
+        assert!(
+            diff.unchanged <= diff.new_total,
+            "unchanged ({}) exceeds new_total ({})",
+            diff.unchanged,
+            diff.new_total
+        );
+    }
+
+    #[test]
+    fn test_filter_by_ecosystem_no_ecosystem_change_unaffected() {
+        // control for the regression above: with no pair crossing the
+        // ecosystem boundary, the new-side derivation of `unchanged` agrees
+        // with the old-side one — the fix leaves ordinary results identical.
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+
+        // migrator: version bump but stays npm (changed pair, npm both sides).
+        let mut mig_old = Component::new("migrator".into(), Some("1.0".into()));
+        mig_old.ecosystem = Some("npm".into());
+        let mut mig_new = Component::new("migrator".into(), Some("1.1".into()));
+        mig_new.ecosystem = Some("npm".into());
+
+        // left-pad: genuinely unchanged npm pair.
+        let mut lp = Component::new("left-pad".into(), Some("2.0".into()));
+        lp.ecosystem = Some("npm".into());
+
+        old.components.insert(mig_old.id.clone(), mig_old);
+        old.components.insert(lp.id.clone(), lp.clone());
+        new.components.insert(mig_new.id.clone(), mig_new);
+        new.components.insert(lp.id.clone(), lp);
+
+        let mut diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+
+        // both old and new npm totals are 2 (nothing crosses the boundary).
+        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 2, &BTreeMap::new());
+
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.unchanged, 1); // left-pad; identical to old-side derivation
+        assert_eq!(diff.new_total, 2);
+        assert!(diff.unchanged <= diff.new_total);
     }
 
     #[test]
