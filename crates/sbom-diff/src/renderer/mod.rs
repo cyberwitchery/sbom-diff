@@ -20,8 +20,8 @@ pub use markdown::MarkdownRenderer;
 pub use sarif::SarifRenderer;
 pub use text::TextRenderer;
 
-use crate::{ComponentChange, Diff, EcosystemCounts, FieldChange};
-use sbom_model::DependencyKind;
+use crate::{ComponentChange, Diff, EcosystemCounts, EdgeDiff, FieldChange};
+use sbom_model::{Component, DependencyKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -228,6 +228,151 @@ pub(super) fn write_summary<F: SummaryFormatter, W: Write>(
         if !breakdown.is_empty() {
             fmt.write_ecosystem_breakdown(writer, &breakdown)?;
         }
+    }
+    Ok(())
+}
+
+/// which component section is being rendered.
+///
+/// used by [`FullFormatter::section_open`] to pick the correct heading.
+#[derive(Clone, Copy)]
+pub(super) enum SectionKind {
+    Added,
+    Removed,
+    Changed,
+}
+
+/// format-specific building blocks for the full (non-summary) diff output.
+///
+/// text and markdown renderers implement this trait; the shared
+/// [`write_full`] function walks the diff and calls these hooks in the
+/// correct order, so both formats share one section skeleton. each hook
+/// owns the exact bytes (including blank lines) for its piece of output.
+/// JSON/SARIF/CSV build serializable values or write records and are
+/// structurally different, so they implement [`Renderer`] directly.
+pub(super) trait FullFormatter: FieldChangeFormatter {
+    /// warnings block, only called when [`RenderOptions::has_warnings`].
+    fn full_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()>;
+    /// summary-count header plus its trailing blank line.
+    fn full_count_header<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()>;
+    /// per-ecosystem count table (only in `group_by_ecosystem` mode).
+    fn full_ecosystem_breakdown<W: Write>(
+        &self,
+        w: &mut W,
+        breakdown: &BTreeMap<String, EcosystemCounts>,
+    ) -> std::io::Result<()>;
+    /// heading introducing one ecosystem's sections.
+    fn full_ecosystem_header<W: Write>(&self, w: &mut W, ecosystem: &str) -> std::io::Result<()>;
+    /// opens an added/removed/changed section (heading only).
+    fn section_open<W: Write>(
+        &self,
+        w: &mut W,
+        kind: SectionKind,
+        count: usize,
+    ) -> std::io::Result<()>;
+    /// closes an added/removed/changed section, emitting the trailing blank line.
+    fn section_close<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
+    /// renders the component list body of an added or removed section.
+    fn component_list<W: Write>(&self, w: &mut W, components: &[Component]) -> std::io::Result<()>;
+    /// opens the edge-changes section.
+    fn edge_open<W: Write>(&self, w: &mut W, count: usize) -> std::io::Result<()>;
+    /// renders one parent's edge changes.
+    fn edge_entry<W: Write>(&self, w: &mut W, diff: &Diff, edge: &EdgeDiff) -> std::io::Result<()>;
+    /// closes the edge-changes section.
+    fn edge_close<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
+    /// opens the metadata-changes section.
+    fn metadata_open<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
+    /// closes the metadata-changes section.
+    fn metadata_close<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
+}
+
+pub(super) fn write_full<F: FullFormatter, W: Write>(
+    fmt: &F,
+    diff: &Diff,
+    opts: &RenderOptions,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    if opts.has_warnings() {
+        fmt.full_warnings(writer, opts)?;
+    }
+
+    fmt.full_count_header(writer, diff)?;
+
+    if opts.group_by_ecosystem {
+        let grouped = diff.group_by_ecosystem();
+        let breakdown = grouped.ecosystem_breakdown();
+        fmt.full_ecosystem_breakdown(writer, &breakdown)?;
+        for (ecosystem, eco_diff) in &grouped.by_ecosystem {
+            fmt.full_ecosystem_header(writer, ecosystem)?;
+            write_full_sections(
+                fmt,
+                writer,
+                &eco_diff.added,
+                &eco_diff.removed,
+                &eco_diff.changed,
+            )?;
+        }
+    } else {
+        write_full_sections(fmt, writer, &diff.added, &diff.removed, &diff.changed)?;
+    }
+
+    if !diff.edge_diffs.is_empty() {
+        fmt.edge_open(writer, diff.edge_diffs.len())?;
+        for edge in &diff.edge_diffs {
+            fmt.edge_entry(writer, diff, edge)?;
+        }
+        fmt.edge_close(writer)?;
+    }
+
+    if let Some(mc) = &diff.metadata_changed {
+        writeln!(writer)?;
+        fmt.metadata_open(writer)?;
+        if let Some((old, new)) = &mc.timestamp {
+            fmt.field_change(writer, "Timestamp", format_option(old), format_option(new))?;
+        }
+        if let Some((old, new)) = &mc.tools {
+            fmt.field_change(
+                writer,
+                "Tools",
+                &format_vec_or_none(old),
+                &format_vec_or_none(new),
+            )?;
+        }
+        if let Some((old, new)) = &mc.authors {
+            fmt.field_change(
+                writer,
+                "Authors",
+                &format_vec_or_none(old),
+                &format_vec_or_none(new),
+            )?;
+        }
+        fmt.metadata_close(writer)?;
+    }
+
+    Ok(())
+}
+
+fn write_full_sections<F: FullFormatter, W: Write>(
+    fmt: &F,
+    writer: &mut W,
+    added: &[Component],
+    removed: &[Component],
+    changed: &[ComponentChange],
+) -> std::io::Result<()> {
+    if !added.is_empty() {
+        fmt.section_open(writer, SectionKind::Added, added.len())?;
+        fmt.component_list(writer, added)?;
+        fmt.section_close(writer)?;
+    }
+    if !removed.is_empty() {
+        fmt.section_open(writer, SectionKind::Removed, removed.len())?;
+        fmt.component_list(writer, removed)?;
+        fmt.section_close(writer)?;
+    }
+    if !changed.is_empty() {
+        fmt.section_open(writer, SectionKind::Changed, changed.len())?;
+        write_changed(fmt, writer, changed)?;
+        fmt.section_close(writer)?;
     }
     Ok(())
 }

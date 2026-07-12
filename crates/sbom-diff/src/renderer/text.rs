@@ -1,18 +1,11 @@
 use super::{
-    format_vec_or_none, kind_suffix, write_changed, write_summary, FieldChangeFormatter,
-    RenderOptions, Renderer, SummaryFormatter, SummaryRenderer,
+    kind_suffix, write_full, write_summary, FieldChangeFormatter, FullFormatter, RenderOptions,
+    Renderer, SectionKind, SummaryFormatter, SummaryRenderer,
 };
-use crate::{Diff, EcosystemCounts, MetadataChange};
+use crate::{Diff, EcosystemCounts, EdgeDiff};
 use sbom_model::Component;
 use std::collections::BTreeMap;
 use std::io::Write;
-
-fn write_text_added<W: Write>(writer: &mut W, components: &[Component]) -> std::io::Result<()> {
-    for c in components {
-        writeln!(writer, "{}", c.purl.as_deref().unwrap_or(c.id.as_str()))?;
-    }
-    Ok(())
-}
 
 /// plain text renderer for terminal output.
 pub struct TextRenderer;
@@ -55,6 +48,120 @@ impl FieldChangeFormatter for TextRenderer {
     }
 }
 
+impl FullFormatter for TextRenderer {
+    fn full_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()> {
+        writeln!(w, "[!] Warnings")?;
+        writeln!(w, "------------")?;
+        for warning in &opts.old_warnings {
+            writeln!(w, "[old] {}", warning)?;
+        }
+        for warning in &opts.new_warnings {
+            writeln!(w, "[new] {}", warning)?;
+        }
+        writeln!(w)
+    }
+
+    fn full_count_header<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()> {
+        writeln!(w, "Diff Summary")?;
+        writeln!(w, "============")?;
+        self.write_counts(w, diff)?;
+        writeln!(w)
+    }
+
+    fn full_ecosystem_breakdown<W: Write>(
+        &self,
+        w: &mut W,
+        breakdown: &BTreeMap<String, EcosystemCounts>,
+    ) -> std::io::Result<()> {
+        writeln!(w, "By Ecosystem")?;
+        writeln!(w, "------------")?;
+        for (eco, counts) in breakdown {
+            writeln!(
+                w,
+                "{}: {} added, {} removed, {} changed",
+                eco, counts.added, counts.removed, counts.changed
+            )?;
+        }
+        writeln!(w)
+    }
+
+    fn full_ecosystem_header<W: Write>(&self, w: &mut W, ecosystem: &str) -> std::io::Result<()> {
+        writeln!(w, "[{}]", ecosystem)?;
+        writeln!(w)
+    }
+
+    fn section_open<W: Write>(
+        &self,
+        w: &mut W,
+        kind: SectionKind,
+        _count: usize,
+    ) -> std::io::Result<()> {
+        match kind {
+            SectionKind::Added => {
+                writeln!(w, "[+] Added")?;
+                writeln!(w, "---------")
+            }
+            SectionKind::Removed => {
+                writeln!(w, "[-] Removed")?;
+                writeln!(w, "-----------")
+            }
+            SectionKind::Changed => {
+                writeln!(w, "[~] Changed")?;
+                writeln!(w, "-----------")
+            }
+        }
+    }
+
+    fn section_close<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        writeln!(w)
+    }
+
+    fn component_list<W: Write>(&self, w: &mut W, components: &[Component]) -> std::io::Result<()> {
+        for c in components {
+            writeln!(w, "{}", c.purl.as_deref().unwrap_or(c.id.as_str()))?;
+        }
+        Ok(())
+    }
+
+    fn edge_open<W: Write>(&self, w: &mut W, _count: usize) -> std::io::Result<()> {
+        writeln!(w, "[~] Edge Changes")?;
+        writeln!(w, "----------------")
+    }
+
+    fn edge_entry<W: Write>(&self, w: &mut W, diff: &Diff, edge: &EdgeDiff) -> std::io::Result<()> {
+        writeln!(w, "{}", diff.display_name(&edge.parent))?;
+        for (removed, kind) in &edge.removed {
+            writeln!(w, "  - {}{}", diff.display_name(removed), kind_suffix(kind))?;
+        }
+        for (added, kind) in &edge.added {
+            writeln!(w, "  + {}{}", diff.display_name(added), kind_suffix(kind))?;
+        }
+        for (changed, (old_kind, new_kind)) in &edge.kind_changed {
+            writeln!(
+                w,
+                "  ~ {} ({} -> {})",
+                diff.display_name(changed),
+                old_kind,
+                new_kind
+            )?;
+        }
+        Ok(())
+    }
+
+    fn edge_close<W: Write>(&self, _w: &mut W) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn metadata_open<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
+        writeln!(w, "[~] Metadata Changes")?;
+        writeln!(w, "--------------------")
+    }
+
+    fn metadata_close<W: Write>(&self, _w: &mut W) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl Renderer for TextRenderer {
     fn render<W: Write>(
         &self,
@@ -62,168 +169,9 @@ impl Renderer for TextRenderer {
         opts: &RenderOptions,
         writer: &mut W,
     ) -> anyhow::Result<()> {
-        if opts.has_warnings() {
-            writeln!(writer, "[!] Warnings")?;
-            writeln!(writer, "------------")?;
-            for w in &opts.old_warnings {
-                writeln!(writer, "[old] {}", w)?;
-            }
-            for w in &opts.new_warnings {
-                writeln!(writer, "[new] {}", w)?;
-            }
-            writeln!(writer)?;
-        }
-
-        writeln!(writer, "Diff Summary")?;
-        writeln!(writer, "============")?;
-        writeln!(writer, "Old total:        {} components", diff.old_total)?;
-        writeln!(writer, "New total:        {} components", diff.new_total)?;
-        writeln!(writer, "Unchanged:        {}", diff.unchanged)?;
-        writeln!(writer, "Added:            {}", diff.added.len())?;
-        writeln!(writer, "Removed:          {}", diff.removed.len())?;
-        writeln!(writer, "Changed:          {}", diff.changed.len())?;
-        writeln!(writer, "Edge changes:     {}", diff.edge_diffs.len())?;
-        writeln!(
-            writer,
-            "Metadata changed: {}",
-            if diff.metadata_changed.is_some() {
-                "yes"
-            } else {
-                "no"
-            }
-        )?;
-        writeln!(writer)?;
-
-        if opts.group_by_ecosystem {
-            let grouped = diff.group_by_ecosystem();
-            let breakdown = grouped.ecosystem_breakdown();
-
-            writeln!(writer, "By Ecosystem")?;
-            writeln!(writer, "------------")?;
-            for (eco, counts) in &breakdown {
-                writeln!(
-                    writer,
-                    "{}: {} added, {} removed, {} changed",
-                    eco, counts.added, counts.removed, counts.changed
-                )?;
-            }
-            writeln!(writer)?;
-
-            for (eco, eco_diff) in &grouped.by_ecosystem {
-                writeln!(writer, "[{}]", eco)?;
-                writeln!(writer)?;
-                if !eco_diff.added.is_empty() {
-                    writeln!(writer, "[+] Added")?;
-                    writeln!(writer, "---------")?;
-                    write_text_added(writer, &eco_diff.added)?;
-                    writeln!(writer)?;
-                }
-                if !eco_diff.removed.is_empty() {
-                    writeln!(writer, "[-] Removed")?;
-                    writeln!(writer, "-----------")?;
-                    write_text_added(writer, &eco_diff.removed)?;
-                    writeln!(writer)?;
-                }
-                if !eco_diff.changed.is_empty() {
-                    writeln!(writer, "[~] Changed")?;
-                    writeln!(writer, "-----------")?;
-                    write_changed(self, writer, &eco_diff.changed)?;
-                    writeln!(writer)?;
-                }
-            }
-        } else {
-            if !diff.added.is_empty() {
-                writeln!(writer, "[+] Added")?;
-                writeln!(writer, "---------")?;
-                write_text_added(writer, &diff.added)?;
-                writeln!(writer)?;
-            }
-
-            if !diff.removed.is_empty() {
-                writeln!(writer, "[-] Removed")?;
-                writeln!(writer, "-----------")?;
-                write_text_added(writer, &diff.removed)?;
-                writeln!(writer)?;
-            }
-
-            if !diff.changed.is_empty() {
-                writeln!(writer, "[~] Changed")?;
-                writeln!(writer, "-----------")?;
-                write_changed(self, writer, &diff.changed)?;
-                writeln!(writer)?;
-            }
-        }
-
-        if !diff.edge_diffs.is_empty() {
-            writeln!(writer, "[~] Edge Changes")?;
-            writeln!(writer, "----------------")?;
-            for edge in &diff.edge_diffs {
-                writeln!(writer, "{}", diff.display_name(&edge.parent))?;
-                for (removed, kind) in &edge.removed {
-                    writeln!(
-                        writer,
-                        "  - {}{}",
-                        diff.display_name(removed),
-                        kind_suffix(kind)
-                    )?;
-                }
-                for (added, kind) in &edge.added {
-                    writeln!(
-                        writer,
-                        "  + {}{}",
-                        diff.display_name(added),
-                        kind_suffix(kind)
-                    )?;
-                }
-                for (changed, (old_kind, new_kind)) in &edge.kind_changed {
-                    writeln!(
-                        writer,
-                        "  ~ {} ({} -> {})",
-                        diff.display_name(changed),
-                        old_kind,
-                        new_kind
-                    )?;
-                }
-            }
-        }
-
-        if let Some(mc) = &diff.metadata_changed {
-            writeln!(writer)?;
-            write_text_metadata(writer, mc)?;
-        }
-
+        write_full(self, diff, opts, writer)?;
         Ok(())
     }
-}
-
-fn write_text_metadata<W: Write>(writer: &mut W, mc: &MetadataChange) -> std::io::Result<()> {
-    writeln!(writer, "[~] Metadata Changes")?;
-    writeln!(writer, "--------------------")?;
-    if let Some((ref old, ref new)) = mc.timestamp {
-        writeln!(
-            writer,
-            "  Timestamp: {} -> {}",
-            old.as_deref().unwrap_or("<none>"),
-            new.as_deref().unwrap_or("<none>")
-        )?;
-    }
-    if let Some((ref old, ref new)) = mc.tools {
-        writeln!(
-            writer,
-            "  Tools: {} -> {}",
-            format_vec_or_none(old),
-            format_vec_or_none(new)
-        )?;
-    }
-    if let Some((ref old, ref new)) = mc.authors {
-        writeln!(
-            writer,
-            "  Authors: {} -> {}",
-            format_vec_or_none(old),
-            format_vec_or_none(new)
-        )?;
-    }
-    Ok(())
 }
 
 impl SummaryFormatter for TextRenderer {
