@@ -723,6 +723,90 @@ fn fail_on_supplier_changed_no_change_exits_0() {
 }
 
 #[test]
+fn fail_on_purl_changed_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("purl-changed-old.json"))
+        .arg(fixture("purl-changed-new.json"))
+        .arg("--fail-on")
+        .arg("purl-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on purl-changed"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("purl changed on component"),
+        "stderr should report the changed component, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("pkg:npm/pkg-a@1.0.0 -> pkg:npm/pkg-a-fork@1.0.0"),
+        "stderr should show old and new purls, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_purl_changed_no_change_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("purl-changed-old.json"))
+        .arg(fixture("purl-changed-old.json"))
+        .arg("--fail-on")
+        .arg("purl-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_ecosystem_changed_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("ecosystem-changed-old.json"))
+        .arg(fixture("ecosystem-changed-new.json"))
+        .arg("--fail-on")
+        .arg("ecosystem-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on ecosystem-changed"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("ecosystem changed on component"),
+        "stderr should report the changed component, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("<none> -> npm"),
+        "stderr should show old and new ecosystems, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_ecosystem_changed_no_change_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("ecosystem-changed-old.json"))
+        .arg(fixture("ecosystem-changed-old.json"))
+        .arg("--fail-on")
+        .arg("ecosystem-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
 fn identity_diff_exits_0_with_no_output_changes() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))

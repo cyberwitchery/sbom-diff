@@ -102,6 +102,10 @@ enum FailOn {
     CopyleftAdded,
     /// fail if the new SBOM's dependency graph contains cycles.
     CyclicDependency,
+    /// fail if any changed component's package URL (purl) changed.
+    PurlChanged,
+    /// fail if any changed component's ecosystem changed.
+    EcosystemChanged,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -157,6 +161,16 @@ enum Violation {
     SupplierIntroduced {
         id: ComponentId,
         supplier: String,
+    },
+    PurlChanged {
+        id: ComponentId,
+        old: Option<String>,
+        new: Option<String>,
+    },
+    EcosystemChanged {
+        id: ComponentId,
+        old: Option<String>,
+        new: Option<String>,
     },
     HashAlgorithmDowngrade {
         id: ComponentId,
@@ -254,6 +268,24 @@ impl fmt::Display for Violation {
                     f,
                     "added component {} has supplier: {} (--fail-on supplier-changed)",
                     id, supplier
+                )
+            }
+            Violation::PurlChanged { id, old, new } => {
+                write!(
+                    f,
+                    "purl changed on component {}: {} -> {} (--fail-on purl-changed)",
+                    id,
+                    format_option(old),
+                    format_option(new)
+                )
+            }
+            Violation::EcosystemChanged { id, old, new } => {
+                write!(
+                    f,
+                    "ecosystem changed on component {}: {} -> {} (--fail-on ecosystem-changed)",
+                    id,
+                    format_option(old),
+                    format_option(new)
                 )
             }
             Violation::HashAlgorithmDowngrade {
@@ -531,6 +563,8 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     let check_license_changed = active.contains(&FailOn::LicenseChanged);
     let check_copyleft_added = active.contains(&FailOn::CopyleftAdded);
     let check_supplier_changed = active.contains(&FailOn::SupplierChanged);
+    let check_purl_changed = active.contains(&FailOn::PurlChanged);
+    let check_ecosystem_changed = active.contains(&FailOn::EcosystemChanged);
 
     for comp in &diff.added {
         if check_added {
@@ -589,7 +623,9 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
         || check_copyleft_added
         || check_version_downgrade
         || check_supplier_changed
-        || check_hash_downgrade;
+        || check_hash_downgrade
+        || check_purl_changed
+        || check_ecosystem_changed;
 
     for change in &diff.changed {
         if check_changed {
@@ -641,6 +677,20 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                             id: change.id.clone(),
                             old: old_sup.clone(),
                             new: new_sup.clone(),
+                        });
+                    }
+                    FieldChange::Purl(old_purl, new_purl) if check_purl_changed => {
+                        violations.push(Violation::PurlChanged {
+                            id: change.id.clone(),
+                            old: old_purl.clone(),
+                            new: new_purl.clone(),
+                        });
+                    }
+                    FieldChange::Ecosystem(old_eco, new_eco) if check_ecosystem_changed => {
+                        violations.push(Violation::EcosystemChanged {
+                            id: change.id.clone(),
+                            old: old_eco.clone(),
+                            new: new_eco.clone(),
                         });
                     }
                     FieldChange::Hashes(old_hashes, new_hashes)
@@ -720,6 +770,8 @@ fn gate_field_dependencies(gate: FailOn) -> &'static [Field] {
         FailOn::LicenseChanged => &[Field::License],
         FailOn::CopyleftAdded => &[Field::License],
         FailOn::SupplierChanged => &[Field::Supplier],
+        FailOn::PurlChanged => &[Field::Purl],
+        FailOn::EcosystemChanged => &[Field::Ecosystem],
         FailOn::HashAlgorithmDowngrade | FailOn::MissingHashes => &[Field::Hashes],
         FailOn::Deps => &[Field::Deps],
         // a component only counts as "changed" when one of its compared fields
@@ -808,6 +860,11 @@ mod tests {
         assert_eq!(
             gate_field_dependencies(FailOn::SupplierChanged),
             &[Field::Supplier]
+        );
+        assert_eq!(gate_field_dependencies(FailOn::PurlChanged), &[Field::Purl]);
+        assert_eq!(
+            gate_field_dependencies(FailOn::EcosystemChanged),
+            &[Field::Ecosystem]
         );
         assert_eq!(
             gate_field_dependencies(FailOn::HashAlgorithmDowngrade),
@@ -2365,6 +2422,112 @@ mod tests {
         assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
         // SupplierChanged should fire
         assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_purl_changed() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.purl = Some("pkg:npm/pkg@1.0.0".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.purl = Some("pkg:npm/pkg-typo@1.0.0".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Purl(
+                    Some("pkg:npm/pkg@1.0.0".into()),
+                    Some("pkg:npm/pkg-typo@1.0.0".into()),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        let violations = collect_violations(&diff, &[FailOn::PurlChanged]);
+        assert_eq!(violations.len(), 1);
+        assert!(matches!(violations[0], Violation::PurlChanged { .. }));
+    }
+
+    #[test]
+    fn test_collect_violations_purl_changed_no_change() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        // only the version changed — the purl gate must not fire
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Version(
+                    Some("1.0.0".into()),
+                    Some("2.0.0".into()),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        assert!(collect_violations(&diff, &[FailOn::PurlChanged]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_ecosystem_changed() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
+        old.ecosystem = Some("npm".into());
+        let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
+        new.ecosystem = Some("cargo".into());
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old: old.clone(),
+                new: new.clone(),
+                changes: vec![FieldChange::Ecosystem(
+                    Some("npm".into()),
+                    Some("cargo".into()),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        let violations = collect_violations(&diff, &[FailOn::EcosystemChanged]);
+        assert_eq!(violations.len(), 1);
+        assert!(matches!(violations[0], Violation::EcosystemChanged { .. }));
+    }
+
+    #[test]
+    fn test_collect_violations_ecosystem_changed_no_change() {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        // only the version changed — the ecosystem gate must not fire
+        let old = Component::new("pkg".into(), Some("1.0.0".into()));
+        let new = Component::new("pkg".into(), Some("2.0.0".into()));
+
+        let diff = Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes: vec![FieldChange::Version(
+                    Some("1.0.0".into()),
+                    Some("2.0.0".into()),
+                )],
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        };
+
+        assert!(collect_violations(&diff, &[FailOn::EcosystemChanged]).is_empty());
     }
 
     #[test]
