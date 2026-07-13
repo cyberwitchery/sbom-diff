@@ -33,6 +33,10 @@ sbom-diff old.json new.json --fail-on deps
 # block a dependency turning copyleft, e.g. mit -> gpl-3.0-only (exit code 3)
 sbom-diff old.json new.json --fail-on copyleft-added
 
+# block a component's coordinates being swapped, e.g. typosquat / dependency-confusion (exit code 3)
+sbom-diff old.json new.json --fail-on purl-changed
+sbom-diff old.json new.json --fail-on ecosystem-changed
+
 # summary only (counts without details)
 sbom-diff old.json new.json --summary
 
