@@ -12,6 +12,18 @@ fn csv_writer<W: Write>(writer: W) -> csv::Writer<W> {
         .from_writer(writer)
 }
 
+/// writes parser-warning rows using the `status,component,ecosystem,field,old_value,new_value`
+/// schema, shared by the full and summary renderers so both surface warnings identically.
+fn write_warning_rows<W: Write>(wtr: &mut csv::Writer<W>, opts: &RenderOptions) -> csv::Result<()> {
+    for w in &opts.old_warnings {
+        wtr.write_record(["warning", "old", "", "", w, ""])?;
+    }
+    for w in &opts.new_warnings {
+        wtr.write_record(["warning", "new", "", "", w, ""])?;
+    }
+    Ok(())
+}
+
 /// RFC 4180 CSV renderer for spreadsheets, CI dashboards, and data pipelines.
 ///
 /// full output produces one row per finding with columns:
@@ -39,12 +51,7 @@ impl Renderer for CsvRenderer {
         ])?;
 
         if opts.has_warnings() {
-            for w in &opts.old_warnings {
-                wtr.write_record(["warning", "old", "", "", w, ""])?;
-            }
-            for w in &opts.new_warnings {
-                wtr.write_record(["warning", "new", "", "", w, ""])?;
-            }
+            write_warning_rows(&mut wtr, opts)?;
         }
 
         for comp in &diff.added {
@@ -150,6 +157,25 @@ impl SummaryRenderer for CsvRenderer {
         } else {
             "0"
         };
+
+        // warnings are emitted as a leading block sharing the full renderer's
+        // schema, kept separate from the `metric,count` table (which has a
+        // different column count) by a blank line, like the ecosystem breakdown.
+        if opts.has_warnings() {
+            let mut wtr = csv_writer(&mut *writer);
+            wtr.write_record([
+                "status",
+                "component",
+                "ecosystem",
+                "field",
+                "old_value",
+                "new_value",
+            ])?;
+            write_warning_rows(&mut wtr, opts)?;
+            wtr.flush()?;
+            drop(wtr);
+            writeln!(writer)?;
+        }
 
         let mut wtr = csv_writer(&mut *writer);
         wtr.write_record(["metric", "count"])?;
