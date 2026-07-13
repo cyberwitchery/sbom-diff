@@ -1518,6 +1518,48 @@ fn test_csv_summary_without_ecosystems() {
 }
 
 #[test]
+fn test_csv_summary_warnings() {
+    let diff = mock_diff();
+    let opts = opts_with_warnings();
+    let mut buf = Vec::new();
+    CsvRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    // warnings share the full renderer's schema, not the metric/count schema
+    assert!(out.contains("status,component,ecosystem,field,old_value,new_value"));
+    assert!(out.contains("warning,old,,,SPDX: orphaned ref 'SPDXRef-foo',"));
+    assert!(out.contains("warning,new,,,CycloneDX: unknown bom-ref 'bar',"));
+    // the count table is still present alongside the warnings
+    assert!(out.contains("metric,count"));
+    assert!(out.contains("added,1"));
+}
+
+#[test]
+fn test_csv_summary_no_warnings_clean() {
+    let diff = mock_diff();
+
+    // default options: warnings disabled
+    let mut buf = Vec::new();
+    CsvRenderer
+        .render_summary(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+    assert!(!out.contains("warning,"));
+    assert!(out.starts_with("metric,count\n"));
+
+    // warnings enabled but none present: still clean
+    let opts = RenderOptions {
+        show_warnings: true,
+        ..Default::default()
+    };
+    let mut buf = Vec::new();
+    CsvRenderer.render_summary(&diff, &opts, &mut buf).unwrap();
+    let out = String::from_utf8(buf).unwrap();
+    assert!(!out.contains("warning,"));
+    assert!(out.starts_with("metric,count\n"));
+}
+
+#[test]
 fn test_csv_renderer_group_by_ecosystem() {
     let diff = mock_diff_with_ecosystems();
     let opts = RenderOptions {
