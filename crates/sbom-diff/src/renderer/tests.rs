@@ -1009,6 +1009,103 @@ fn test_sarif_renderer_hash_algorithm_downgrade_is_error() {
 }
 
 #[test]
+fn test_text_renderer_hash_algorithm_downgrade() {
+    // SHA-256 -> MD5: the hash block is labelled as a downgrade even though the
+    // component-level (version) is_downgrade flag is false.
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("md5".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    TextRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("Hashes (algorithm downgrade):"));
+}
+
+#[test]
+fn test_text_renderer_hash_no_downgrade() {
+    // SHA-256 -> SHA-512 strengthens the algorithm, so the neutral label is kept.
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("sha-512".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    TextRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("Hashes:"));
+    assert!(!out.contains("algorithm downgrade"));
+}
+
+#[test]
+fn test_markdown_renderer_hash_algorithm_downgrade() {
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("md5".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    MarkdownRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("**Hashes (algorithm downgrade)**:"));
+}
+
+#[test]
+fn test_markdown_renderer_hash_no_downgrade() {
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("sha-512".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    MarkdownRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains("**Hashes**:"));
+    assert!(!out.contains("algorithm downgrade"));
+}
+
+#[test]
+fn test_csv_renderer_hash_algorithm_downgrade() {
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("md5".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    CsvRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains(",hashes-downgrade,"));
+    assert!(!out.contains(",hashes,"));
+}
+
+#[test]
+fn test_csv_renderer_hash_no_downgrade() {
+    let diff = mock_diff_hash_change(
+        BTreeMap::from([("sha-256".into(), "abc".into())]),
+        BTreeMap::from([("sha-512".into(), "def".into())]),
+    );
+    let mut buf = Vec::new();
+    CsvRenderer
+        .render(&diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    let out = String::from_utf8(buf).unwrap();
+
+    assert!(out.contains(",hashes,"));
+    assert!(!out.contains("hashes-downgrade"));
+}
+
+#[test]
 fn test_sarif_renderer_rule_index() {
     let diff = mock_diff();
     let mut buf = Vec::new();
