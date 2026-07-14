@@ -1990,20 +1990,23 @@ mod tests {
 
     #[test]
     fn test_filter_by_ecosystem_matched_pair_changes_ecosystem() {
-        // a matched pair (same name+version, no purl → same hash id) whose
-        // ecosystem changes npm → pypi lands in `changed`, retained by its
-        // NEW ecosystem. Filtering to npm drops it from `changed` (new is
-        // pypi) while it is still counted in the old total. Deriving
+        // a matched pair (same name+version → same hash id) whose ecosystem
+        // goes npm → None because its purl was dropped. Two differently-schemed
+        // purls would get distinct ids and diff as add+remove, so a dropped (or
+        // added) purl — ecosystem Some↔None — is the reachable way a *matched*
+        // pair straddles the ecosystem filter. The pair lands in `changed`,
+        // retained by its NEW ecosystem (None); filtering to npm drops it from
+        // `changed` while it is still counted in the old total. Deriving
         // `unchanged` from the old side would absorb this pair and push
         // `unchanged` above `new_total`; the new-side derivation must not.
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
-        // migrator: matched pair, ecosystem npm -> pypi (a real migration).
+        // migrator: matched pair whose purl is dropped, so ecosystem npm -> None.
         let mut mig_old = Component::new("migrator".into(), Some("1.0".into()));
         mig_old.ecosystem = Some("npm".into());
         let mut mig_new = Component::new("migrator".into(), Some("1.0".into()));
-        mig_new.ecosystem = Some("pypi".into());
+        mig_new.ecosystem = None; // purl dropped on the new side
         assert_eq!(mig_old.id, mig_new.id, "same name+version share a hash id");
 
         // left-pad: genuinely unchanged npm pair.
@@ -2016,14 +2019,14 @@ mod tests {
         new.components.insert(lp.id.clone(), lp);
 
         let mut diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1); // migrator (ecosystem changed)
+        assert_eq!(diff.changed.len(), 1); // migrator (ecosystem npm -> None)
         assert_eq!(diff.unchanged, 1); // left-pad
 
         // filter to npm: old side has 2 npm (migrator-old, left-pad),
-        // new side has 1 npm (left-pad only; migrator-new is pypi).
+        // new side has 1 npm (left-pad only; migrator-new has no ecosystem).
         diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 1, &BTreeMap::new());
 
-        assert_eq!(diff.changed.len(), 0); // migrator dropped (new is pypi)
+        assert_eq!(diff.changed.len(), 0); // migrator dropped (new has no ecosystem)
         assert_eq!(diff.added.len(), 0);
         assert_eq!(diff.removed.len(), 0);
         assert_eq!(diff.unchanged, 1); // only left-pad remains on the npm side
