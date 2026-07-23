@@ -205,6 +205,9 @@ impl CycloneDxReader {
     fn bom_to_sbom(bom: cyclonedx_bom::prelude::Bom) -> Result<Sbom, Error> {
         let mut sbom = Sbom::default();
 
+        // collect bom-ref → DependencyKind derived from each component's scope.
+        let mut scope_map = BTreeMap::new();
+
         if let Some(meta) = bom.metadata {
             if let Some(timestamp) = meta.timestamp {
                 sbom.metadata.timestamp = Some(timestamp.to_string());
@@ -254,10 +257,12 @@ impl CycloneDxReader {
                     sbom.metadata.authors.push(s.trim().to_string());
                 }
             }
+            // the BOM's primary/root component (its subject: app, image, or container).
+            if let Some(root) = meta.component {
+                Self::collect_components(std::slice::from_ref(&root), &mut sbom, &mut scope_map, 0);
+            }
         }
 
-        // collect bom-ref → DependencyKind derived from each component's scope.
-        let mut scope_map = BTreeMap::new();
         if let Some(components) = bom.components {
             Self::collect_components(&components.0, &mut sbom, &mut scope_map, 0);
         }
@@ -1421,5 +1426,189 @@ mod tests {
         let sbom = CycloneDxReader::read_json(with_bom.as_slice()).unwrap();
         assert_eq!(sbom.components.len(), 1);
         assert_eq!(sbom.components[0].name, "pkg-a");
+    }
+
+    #[test]
+    fn test_metadata_component_collected() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "component": {
+                    "type": "application",
+                    "name": "my-app",
+                    "version": "3.2.1",
+                    "bom-ref": "root-ref",
+                    "purl": "pkg:cargo/my-app@3.2.1"
+                }
+            },
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+
+        let root = sbom
+            .components
+            .values()
+            .find(|c| c.name == "my-app")
+            .expect("metadata.component should be collected");
+        assert_eq!(root.version, Some("3.2.1".to_string()));
+        assert_eq!(root.purl, Some("pkg:cargo/my-app@3.2.1".to_string()));
+        assert_eq!(root.ecosystem, Some("cargo".to_string()));
+
+        // the root component is inserted before the component list
+        assert_eq!(sbom.components[0].name, "my-app");
+    }
+
+    #[test]
+    fn test_metadata_component_dependency_resolves() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "component": {
+                    "type": "application",
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "bom-ref": "root-ref"
+                }
+            },
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-a"
+                }
+            ],
+            "dependencies": [
+                {
+                    "ref": "root-ref",
+                    "dependsOn": ["ref-a"]
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+
+        let root_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "my-app")
+            .unwrap()
+            .id
+            .clone();
+        let a_id = sbom
+            .components
+            .values()
+            .find(|c| c.name == "pkg-a")
+            .unwrap()
+            .id
+            .clone();
+
+        assert!(sbom.dependencies[&root_id].contains_key(&a_id));
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("root-ref")),
+            "root-ref should resolve, got warnings: {:?}",
+            sbom.warnings
+        );
+    }
+
+    #[test]
+    fn test_metadata_component_nested_subcomponents_collected() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "component": {
+                    "type": "container",
+                    "name": "my-image",
+                    "version": "1.0.0",
+                    "bom-ref": "root-ref",
+                    "components": [
+                        {
+                            "type": "library",
+                            "name": "bundled-lib",
+                            "version": "0.1.0",
+                            "purl": "pkg:npm/bundled-lib@0.1.0"
+                        }
+                    ]
+                }
+            },
+            "components": []
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+        assert!(sbom.components.values().any(|c| c.name == "my-image"));
+
+        let sub = sbom
+            .components
+            .values()
+            .find(|c| c.name == "bundled-lib")
+            .expect("nested sub-component under metadata.component should be collected");
+        assert_eq!(sub.ecosystem, Some("npm".to_string()));
+    }
+
+    #[test]
+    fn test_metadata_component_duplicate_in_component_list_dedups() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "component": {
+                    "type": "application",
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "bom-ref": "root-ref",
+                    "purl": "pkg:cargo/my-app@1.0.0"
+                }
+            },
+            "components": [
+                {
+                    "type": "application",
+                    "name": "my-app",
+                    "version": "1.0.0",
+                    "bom-ref": "root-ref",
+                    "purl": "pkg:cargo/my-app@1.0.0"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.warnings.len(), 1);
+        assert!(sbom.warnings[0].contains("duplicate"));
+    }
+
+    #[test]
+    fn test_no_metadata_component_leaves_components_unchanged() {
+        let json = r#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+                "timestamp": "2023-01-01T00:00:00Z"
+            },
+            "components": [
+                {
+                    "type": "library",
+                    "name": "pkg-a",
+                    "version": "1.0.0",
+                    "bom-ref": "ref-a"
+                }
+            ]
+        }"#;
+        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+        assert!(sbom.warnings.is_empty());
     }
 }
