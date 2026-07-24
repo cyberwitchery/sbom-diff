@@ -2,6 +2,7 @@ use super::{
     format_option, format_set, format_vec_or_none, RenderOptions, Renderer, SummaryRenderer,
 };
 use crate::{Diff, FieldChange};
+use sbom_model::is_hash_algorithm_downgrade;
 use std::io::Write;
 
 /// creates a [`csv::Writer`] configured for this crate's output conventions
@@ -252,7 +253,12 @@ fn csv_field_change(fc: &FieldChange, is_downgrade: bool) -> (&'static str, Stri
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect::<Vec<_>>()
                 .join("; ");
-            ("hashes", old_str, new_str)
+            let field = if is_hash_algorithm_downgrade(old, new) {
+                "hashes-downgrade"
+            } else {
+                "hashes"
+            };
+            (field, old_str, new_str)
         }
         FieldChange::Ecosystem(old, new) => (
             "ecosystem",

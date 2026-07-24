@@ -21,7 +21,7 @@ pub use sarif::SarifRenderer;
 pub use text::TextRenderer;
 
 use crate::{ComponentChange, Diff, EcosystemCounts, EdgeDiff, FieldChange};
-use sbom_model::{Component, DependencyKind};
+use sbom_model::{is_hash_algorithm_downgrade, Component, DependencyKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -116,7 +116,7 @@ pub(super) trait FieldChangeFormatter {
         old: &str,
         new: &str,
     ) -> std::io::Result<()>;
-    fn hash_header<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
+    fn hash_header<W: Write>(&self, w: &mut W, downgrade: bool) -> std::io::Result<()>;
     fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()>;
     fn hash_changed<W: Write>(
         &self,
@@ -163,7 +163,7 @@ pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
                 )?;
             }
             FieldChange::Hashes(old, new) => {
-                fmt.hash_header(writer)?;
+                fmt.hash_header(writer, is_hash_algorithm_downgrade(old, new))?;
                 for (algo, digest) in old {
                     if !new.contains_key(algo) {
                         fmt.hash_removed(writer, algo, digest)?;

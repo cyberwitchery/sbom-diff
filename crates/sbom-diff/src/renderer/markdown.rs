@@ -23,8 +23,12 @@ impl FieldChangeFormatter for MarkdownRenderer {
         writeln!(w, "- **{}**: `{}` &rarr; `{}`", name, old, new)
     }
 
-    fn hash_header<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
-        writeln!(w, "- **Hashes**:")
+    fn hash_header<W: Write>(&self, w: &mut W, downgrade: bool) -> std::io::Result<()> {
+        if downgrade {
+            writeln!(w, "- **Hashes (algorithm downgrade)**:")
+        } else {
+            writeln!(w, "- **Hashes**:")
+        }
     }
 
     fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
