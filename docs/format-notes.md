@@ -59,6 +59,8 @@ both adapters produce:
 - supplier:
   - source: `package.supplier`
   - target: `Component.supplier`
+  - the `Organization: ` / `Person: ` prefix is stripped
+  - `NOASSERTION` and `NONE` are ignored
 - dependency relationships:
   - source: top-level `relationships`
   - only these relationship types become dependency edges:

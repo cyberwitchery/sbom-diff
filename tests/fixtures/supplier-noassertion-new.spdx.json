@@ -1,0 +1,55 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "Supplier NOASSERTION Test",
+  "documentNamespace": "http://spdx.org/spdxdocs/supplier-noassertion-new",
+  "creationInfo": {
+    "creators": ["Tool: manual"],
+    "created": "2023-01-01T00:00:00Z"
+  },
+  "packages": [
+    {
+      "name": "gains-sentinel",
+      "SPDXID": "SPDXRef-gains-sentinel",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/gains-sentinel@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "loses-sentinel",
+      "SPDXID": "SPDXRef-loses-sentinel",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/loses-sentinel@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "real-supplier",
+      "SPDXID": "SPDXRef-real-supplier",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "supplier": "Organization: Acme Corp",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/real-supplier@1.0.0"
+        }
+      ]
+    }
+  ],
+  "relationships": []
+}
