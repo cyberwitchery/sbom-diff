@@ -723,6 +723,37 @@ fn fail_on_supplier_changed_no_change_exits_0() {
 }
 
 #[test]
+fn fail_on_supplier_changed_spdx_noassertion_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("supplier-noassertion-old.spdx.json"))
+        .arg(fixture("supplier-noassertion-new.spdx.json"))
+        .arg("--fail-on")
+        .arg("supplier-changed")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "sentinel supplier must not trip the gate. stdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+    assert!(
+        !stdout.contains("Supplier"),
+        "no supplier change should be reported, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("NOASSERTION"),
+        "NOASSERTION should never reach the output, got: {}",
+        stdout
+    );
+}
+
+#[test]
 fn fail_on_purl_changed_exits_3() {
     let out = sbom_diff()
         .arg(fixture("purl-changed-old.json"))

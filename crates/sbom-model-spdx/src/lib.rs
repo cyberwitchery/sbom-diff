@@ -245,12 +245,17 @@ impl SpdxReader {
                 props.push(("version", v.as_str()));
             }
 
-            let supplier = pkg.package_supplier.clone().map(|s| {
-                s.strip_prefix("Organization: ")
-                    .or_else(|| s.strip_prefix("Person: "))
-                    .map(|stripped| stripped.to_string())
-                    .unwrap_or(s)
-            });
+            // NOASSERTION/NONE are "unknown supplier" sentinels, not supplier names.
+            let supplier = pkg
+                .package_supplier
+                .clone()
+                .filter(|s| s != "NOASSERTION" && s != "NONE")
+                .map(|s| {
+                    s.strip_prefix("Organization: ")
+                        .or_else(|| s.strip_prefix("Person: "))
+                        .map(|stripped| stripped.to_string())
+                        .unwrap_or(s)
+                });
             if let Some(ref s) = supplier {
                 props.push(("supplier", s.as_str()));
             }
@@ -567,6 +572,103 @@ mod tests {
         }"#;
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
+    }
+
+    #[test]
+    fn test_noassertion_supplier_filtered() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "noassertion-pkg",
+                    "SPDXID": "SPDXRef-noassertion",
+                    "downloadLocation": "NONE",
+                    "supplier": "NOASSERTION"
+                },
+                {
+                    "name": "none-pkg",
+                    "SPDXID": "SPDXRef-none",
+                    "downloadLocation": "NONE",
+                    "supplier": "NONE"
+                },
+                {
+                    "name": "org-pkg",
+                    "SPDXID": "SPDXRef-org",
+                    "downloadLocation": "NONE",
+                    "supplier": "Organization: Acme Corp"
+                },
+                {
+                    "name": "person-pkg",
+                    "SPDXID": "SPDXRef-person",
+                    "downloadLocation": "NONE",
+                    "supplier": "Person: alice"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+
+        let find = |name: &str| sbom.components.values().find(|c| c.name == name).unwrap();
+
+        assert_eq!(find("noassertion-pkg").supplier, None);
+        assert_eq!(find("none-pkg").supplier, None);
+        assert_eq!(
+            find("org-pkg").supplier,
+            Some("Acme Corp".to_string()),
+            "a real Organization supplier must still parse"
+        );
+        assert_eq!(
+            find("person-pkg").supplier,
+            Some("alice".to_string()),
+            "a real Person supplier must still parse"
+        );
+    }
+
+    #[test]
+    fn test_noassertion_supplier_does_not_change_component_id() {
+        let doc = |supplier_line: &str| {
+            format!(
+                r#"{{
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "test",
+                "documentNamespace": "http://spdx.org/spdxdocs/test",
+                "creationInfo": {{
+                    "creators": ["Tool: manual"],
+                    "created": "2023-01-01T00:00:00Z"
+                }},
+                "packages": [
+                    {{
+                        "name": "pkg-a",
+                        "SPDXID": "SPDXRef-pkg-a",
+                        "versionInfo": "1.0.0",
+                        "downloadLocation": "NONE"{supplier_line}
+                    }}
+                ],
+                "relationships": []
+            }}"#
+            )
+        };
+
+        // no purl, so the id is the property hash — supplier is one of the inputs.
+        let absent = SpdxReader::read_json(doc("").as_bytes()).unwrap();
+        let sentinel =
+            SpdxReader::read_json(doc(",\n\"supplier\": \"NOASSERTION\"").as_bytes()).unwrap();
+        let real = SpdxReader::read_json(doc(",\n\"supplier\": \"Organization: Acme\"").as_bytes())
+            .unwrap();
+
+        assert!(absent.components[0].id.as_str().starts_with("h:"));
+        assert_eq!(absent.components[0].id, sentinel.components[0].id);
+        assert_ne!(absent.components[0].id, real.components[0].id);
     }
 
     #[test]
