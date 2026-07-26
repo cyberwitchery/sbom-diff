@@ -88,7 +88,7 @@ impl Version {
         Version::Opaque(s.to_string())
     }
 
-    /// returns `true` if `new` is a downgrade from `self`.
+    /// orders two versions, returning `None` when the ordering is unknown.
     ///
     /// comparison strategy depends on the variant pair:
     /// - **Semver vs Semver**: semver *precedence* ordering (including
@@ -99,7 +99,55 @@ impl Version {
     /// - **Deb vs Deb**: epoch (numeric), then upstream, then revision, via the
     ///   Debian `dpkg` version-comparison algorithm
     /// - **Any other pair** (including any Opaque, or a Deb against a
-    ///   semver/numeric version): returns `false` (ordering unknown)
+    ///   semver/numeric version): `None`
+    ///
+    /// deliberately weaker than [`PartialOrd`]: even two identical
+    /// [`Opaque`](Version::Opaque) versions compare `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::Ordering;
+    /// use sbom_model::versions::Version;
+    ///
+    /// let a = Version::parse_lenient("2.0.0");
+    /// let b = Version::parse_lenient("1.5.0");
+    /// assert_eq!(a.partial_cmp_lenient(&b), Some(Ordering::Greater));
+    ///
+    /// let opaque = Version::parse_lenient("deadbeef");
+    /// assert_eq!(a.partial_cmp_lenient(&opaque), None);
+    /// ```
+    pub fn partial_cmp_lenient(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Version::Semver(a), Version::Semver(b)) => Some(a.cmp_precedence(b)),
+            (Version::Numeric(a), Version::Numeric(b)) => Some(numeric_cmp(a, b)),
+            (Version::Semver(a), Version::Numeric(b)) => {
+                Some(numeric_cmp(&[a.major, a.minor, a.patch], b))
+            }
+            (Version::Numeric(a), Version::Semver(b)) => {
+                Some(numeric_cmp(a, &[b.major, b.minor, b.patch]))
+            }
+            (
+                Version::Deb {
+                    epoch: ae,
+                    upstream: au,
+                    revision: arev,
+                },
+                Version::Deb {
+                    epoch: be,
+                    upstream: bu,
+                    revision: brev,
+                },
+            ) => Some(deb_cmp((*ae, au, arev), (*be, bu, brev))),
+            _ => None,
+        }
+    }
+
+    /// returns `true` if `new` is a downgrade from `self`.
+    ///
+    /// a pair whose ordering is unknown is not a downgrade; see
+    /// [`partial_cmp_lenient`](Self::partial_cmp_lenient) for the per-variant
+    /// comparison rules.
     ///
     /// # Examples
     ///
@@ -115,50 +163,21 @@ impl Version {
     /// assert!(!old.is_downgrade(&new));
     /// ```
     pub fn is_downgrade(&self, new: &Self) -> bool {
-        match (self, new) {
-            (Version::Semver(old), Version::Semver(new)) => {
-                new.cmp_precedence(old) == Ordering::Less
-            }
-            (Version::Numeric(old), Version::Numeric(new)) => numeric_downgrade(old, new),
-            (Version::Semver(old), Version::Numeric(new_segs)) => {
-                let old_segs = [old.major, old.minor, old.patch];
-                numeric_downgrade(&old_segs, new_segs)
-            }
-            (Version::Numeric(old_segs), Version::Semver(new)) => {
-                let new_segs = [new.major, new.minor, new.patch];
-                numeric_downgrade(old_segs, &new_segs)
-            }
-            (
-                Version::Deb {
-                    epoch: oe,
-                    upstream: ou,
-                    revision: orev,
-                },
-                Version::Deb {
-                    epoch: ne,
-                    upstream: nu,
-                    revision: nrev,
-                },
-            ) => deb_cmp((*ne, nu, nrev), (*oe, ou, orev)) == Ordering::Less,
-            _ => false,
-        }
+        self.partial_cmp_lenient(new) == Some(Ordering::Greater)
     }
 }
 
 /// segment-by-segment numeric comparison with implicit zero padding.
-fn numeric_downgrade(old: &[u64], new: &[u64]) -> bool {
-    let max_len = old.len().max(new.len());
+fn numeric_cmp(a: &[u64], b: &[u64]) -> Ordering {
+    let max_len = a.len().max(b.len());
     for i in 0..max_len {
-        let o = old.get(i).copied().unwrap_or(0);
-        let n = new.get(i).copied().unwrap_or(0);
-        if n < o {
-            return true;
-        }
-        if n > o {
-            return false;
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x.cmp(&y);
         }
     }
-    false
+    Ordering::Equal
 }
 
 /// parses dot-separated numeric segments (e.g. four-part or leading-zero
@@ -315,6 +334,15 @@ fn deb_order(c: u8) -> i32 {
 /// [`Version::is_downgrade`].
 pub fn is_version_downgrade(old_ver: &str, new_ver: &str) -> bool {
     Version::parse_lenient(old_ver).is_downgrade(&Version::parse_lenient(new_ver))
+}
+
+/// convenience function: orders two version strings, returning `None` when the
+/// ordering is unknown.
+///
+/// parses both strings with [`Version::parse_lenient`] and delegates to
+/// [`Version::partial_cmp_lenient`].
+pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+    Version::parse_lenient(a).partial_cmp_lenient(&Version::parse_lenient(b))
 }
 
 #[cfg(test)]
@@ -958,6 +986,62 @@ mod tests {
                     assert!(!is_version_downgrade(b, a), "expected {a} == {b}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn compare_orders_comparable_variant_pairs() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("2.0.0", "1.5.0", Greater),
+            ("1.0.0", "1.0.0", Equal),
+            ("1.2.3.4", "1.2.3.3", Greater),
+            ("1.2.3", "1.2.3.4", Less),
+            ("2:1.0-3", "1:9.0-1", Greater),
+            ("5.1-3", "5.1-3", Equal),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(expected), "{a} vs {b}");
+            assert_eq!(
+                compare_versions(b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn compare_leaves_opaque_and_mixed_variants_unordered() {
+        for (a, b) in [
+            ("deadbeef", "1.0.0"),
+            ("deadbeef", "cafebabe"),
+            ("deadbeef", "deadbeef"),
+            ("2:1.0-3", "1.0.0"),
+            ("5.1-3", "5.1.0.0"),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert_eq!(compare_versions(b, a), None, "{b} vs {a}");
+        }
+    }
+
+    #[test]
+    fn downgrade_agrees_with_compare() {
+        use Ordering::Greater;
+
+        for (a, b) in [
+            ("2.0.0", "1.5.0"),
+            ("1.0.0", "2.0.0"),
+            ("1.0.0", "1.0.0"),
+            ("2024.01.15", "2024.01.14"),
+            ("2:1.0-3", "1:9.0-1"),
+            ("1.0.0+build.10", "1.0.0+build.9"),
+            ("deadbeef", "1.0.0"),
+        ] {
+            assert_eq!(
+                is_version_downgrade(a, b),
+                compare_versions(a, b) == Some(Greater),
+                "{a} -> {b}"
+            );
         }
     }
 }

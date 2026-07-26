@@ -1,8 +1,9 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::versions::is_version_downgrade;
+use sbom_model::versions::{is_version_downgrade, Version};
 use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub mod renderer;
@@ -348,6 +349,10 @@ pub enum Field {
     Deps,
 }
 
+/// how many same-identity candidates a reconciliation bucket may hold before
+/// the version alignment gives up and pairs them by id.
+const MAX_ALIGNED_CANDIDATES: usize = 256;
+
 /// SBOM comparison engine.
 ///
 /// compares two SBOMs and produces a [`Diff`] describing the changes.
@@ -468,16 +473,50 @@ impl Differ {
                     .push(id.clone());
             }
         }
+        let mut new_identity_map: BTreeMap<String, BTreeMap<Option<String>, Vec<ComponentId>>> =
+            BTreeMap::new();
+        for (id, comp) in &new.components {
+            if !matched_new.contains(id) {
+                new_identity_map
+                    .entry(comp.name.clone())
+                    .or_default()
+                    .entry(comp.ecosystem.clone())
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
 
+        // 2a. exact (ecosystem, name) matches are resolved a whole bucket at a
+        // time, so several versions of one package pair up in version order.
+        let mut identity_pairs: Vec<(ComponentId, ComponentId)> = Vec::new();
+        for (name, new_eco_map) in &new_identity_map {
+            let Some(old_eco_map) = old_identity_map.get_mut(name) else {
+                continue;
+            };
+            for (ecosystem, new_ids) in new_eco_map {
+                let Some(old_ids) = old_eco_map.get_mut(ecosystem) else {
+                    continue;
+                };
+                let pairs = Self::align_by_version(old_ids, new_ids, &old, &new);
+                let consumed: HashSet<ComponentId> =
+                    pairs.iter().map(|(old_id, _)| old_id.clone()).collect();
+                old_ids.retain(|id| !consumed.contains(id));
+                identity_pairs.extend(pairs);
+            }
+        }
+        for (_, new_id) in &identity_pairs {
+            matched_new.insert(new_id.clone());
+        }
+
+        // 2b. whatever is still unmatched falls through the wildcard cases:
+        // 1. Exact match on (ecosystem, name)
+        // 2. If new has ecosystem but no exact match, try old with None ecosystem (same name)
+        // 3. If new has no ecosystem, try any old with same name
         for (id, new_comp) in &new.components {
             if matched_new.contains(id) {
                 continue;
             }
 
-            // try to find a matching old component:
-            // 1. Exact match on (ecosystem, name)
-            // 2. If new has ecosystem but no exact match, try old with None ecosystem (same name)
-            // 3. If new has no ecosystem, try any old with same name
             let matched_old_id = old_identity_map
                 .get_mut(&new_comp.name)
                 .and_then(|eco_map| {
@@ -497,16 +536,24 @@ impl Differ {
                 });
 
             if let Some(old_id) = matched_old_id {
-                if let Some(old_comp) = old.components.get(&old_id) {
-                    matched_old.insert(old_id.clone());
-                    matched_new.insert(id.clone());
-                    id_mapping.insert(old_id.clone(), id.clone());
+                identity_pairs.push((old_id, id.clone()));
+            }
+        }
 
-                    let fields = Self::compute_fields(old_comp, new_comp, only);
-                    if !fields.is_empty() {
-                        changed_pairs.push((old_id, id.clone(), fields));
-                    }
-                }
+        identity_pairs.sort_by(|a, b| a.1.cmp(&b.1));
+        for (old_id, new_id) in identity_pairs {
+            let (Some(old_comp), Some(new_comp)) =
+                (old.components.get(&old_id), new.components.get(&new_id))
+            else {
+                continue;
+            };
+            matched_old.insert(old_id.clone());
+            matched_new.insert(new_id.clone());
+            id_mapping.insert(old_id.clone(), new_id.clone());
+
+            let fields = Self::compute_fields(old_comp, new_comp, only);
+            if !fields.is_empty() {
+                changed_pairs.push((old_id, new_id, fields));
             }
         }
 
@@ -574,6 +621,122 @@ impl Differ {
             unchanged,
             component_names,
         }
+    }
+
+    /// pairs same-identity candidates by aligning them in version order, so that
+    /// pairings never cross; unequal counts and ties resolve to the smallest
+    /// total distance in the merged version order, then to the fewest downgrades.
+    ///
+    /// candidates whose versions admit no total order — absent, opaque, or of
+    /// mixed [`Version`] variants — are paired by id instead, as are buckets
+    /// above [`MAX_ALIGNED_CANDIDATES`].
+    fn align_by_version(
+        old_ids: &[ComponentId],
+        new_ids: &[ComponentId],
+        old: &Sbom,
+        new: &Sbom,
+    ) -> Vec<(ComponentId, ComponentId)> {
+        let by_id = || -> Vec<(ComponentId, ComponentId)> {
+            new_ids
+                .iter()
+                .zip(old_ids.iter().rev())
+                .map(|(new_id, old_id)| (old_id.clone(), new_id.clone()))
+                .collect()
+        };
+
+        if old_ids.is_empty() || new_ids.is_empty() {
+            return Vec::new();
+        }
+        if old_ids.len() > MAX_ALIGNED_CANDIDATES || new_ids.len() > MAX_ALIGNED_CANDIDATES {
+            return by_id();
+        }
+
+        let mut merged: Vec<(Version, u8, &ComponentId)> =
+            Vec::with_capacity(old_ids.len() + new_ids.len());
+        for (side, ids, sbom) in [(0u8, old_ids, old), (1u8, new_ids, new)] {
+            for id in ids {
+                let Some(version) = sbom.components.get(id).and_then(|c| c.version.as_deref())
+                else {
+                    return by_id();
+                };
+                merged.push((Version::parse_lenient(version), side, id));
+            }
+        }
+        merged.sort_by(|a, b| {
+            a.0.partial_cmp_lenient(&b.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(b.2))
+        });
+        // an incomparable adjacent pair means the bucket has no total order:
+        // comparability is transitive here, so checking neighbours suffices.
+        if merged.windows(2).any(|w| {
+            !matches!(
+                w[0].0.partial_cmp_lenient(&w[1].0),
+                Some(Ordering::Less | Ordering::Equal)
+            )
+        }) {
+            return by_id();
+        }
+
+        let (mut old_ranked, mut new_ranked) = (Vec::new(), Vec::new());
+        for (rank, (version, side, id)) in merged.iter().enumerate() {
+            if *side == 0 {
+                old_ranked.push((rank, *id, version));
+            } else {
+                new_ranked.push((rank, *id, version));
+            }
+        }
+
+        let (n, m) = (old_ranked.len(), new_ranked.len());
+        let cost = |i: usize, j: usize| {
+            (
+                old_ranked[i].0.abs_diff(new_ranked[j].0),
+                usize::from(old_ranked[i].2.is_downgrade(new_ranked[j].2)),
+            )
+        };
+        let better = |a: (usize, usize, usize), b: (usize, usize, usize)| {
+            a.0 > b.0 || (a.0 == b.0 && (a.1, a.2) < (b.1, b.2))
+        };
+        let paired_with = |(pairs, distance, downgrades): (usize, usize, usize), i, j| {
+            let (extra_distance, extra_downgrade) = cost(i, j);
+            (
+                pairs + 1,
+                distance + extra_distance,
+                downgrades + extra_downgrade,
+            )
+        };
+
+        // score[i][j]: best (pairs, total distance, downgrades) from candidates i and j on
+        let mut score = vec![vec![(0usize, 0usize, 0usize); m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                let mut best = paired_with(score[i + 1][j + 1], i, j);
+                if better(score[i + 1][j], best) {
+                    best = score[i + 1][j];
+                }
+                if better(score[i][j + 1], best) {
+                    best = score[i][j + 1];
+                }
+                score[i][j] = best;
+            }
+        }
+
+        let mut pairs = Vec::with_capacity(n.min(m));
+        let (mut i, mut j) = (0, 0);
+        while i < n && j < m {
+            let take = paired_with(score[i + 1][j + 1], i, j);
+            if !better(score[i + 1][j], take) && !better(score[i][j + 1], take) {
+                pairs.push((old_ranked[i].1.clone(), new_ranked[j].1.clone()));
+                i += 1;
+                j += 1;
+            } else if better(score[i + 1][j], score[i][j + 1]) {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        pairs
     }
 
     /// computes dependency edge differences between two SBOMs.
@@ -2217,5 +2380,225 @@ mod tests {
         let diff = Differ::diff(&old, &new, None);
         assert_eq!(diff.changed.len(), 1);
         assert!(!diff.changed[0].is_downgrade);
+    }
+
+    fn npm_component(name: &str, version: &str) -> Component {
+        let purl = format!("pkg:npm/{name}@{version}");
+        let mut comp = Component::new(name.to_string(), Some(version.to_string()));
+        comp.ecosystem = Some("npm".to_string());
+        comp.id = ComponentId::new(Some(&purl), &[]);
+        comp.purl = Some(purl);
+        comp
+    }
+
+    fn sbom_of(components: Vec<Component>) -> Sbom {
+        let mut sbom = Sbom::default();
+        for comp in components {
+            sbom.components.insert(comp.id.clone(), comp);
+        }
+        sbom
+    }
+
+    /// the `(old version, new version)` of every changed component, sorted.
+    fn version_pairs(diff: &Diff) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = diff
+            .changed
+            .iter()
+            .map(|c| {
+                (
+                    c.old.version.clone().unwrap_or_default(),
+                    c.new.version.clone().unwrap_or_default(),
+                )
+            })
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    fn expect_pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+        let mut pairs: Vec<(String, String)> = expected
+            .iter()
+            .map(|(o, n)| (o.to_string(), n.to_string()))
+            .collect();
+        pairs.sort();
+        pairs
+    }
+
+    #[test]
+    fn test_identity_reconciliation_pairs_same_version_line() {
+        for (old_versions, new_versions, expected) in [
+            (
+                ["9.0.0", "10.0.0"],
+                ["9.0.1", "10.0.1"],
+                [("9.0.0", "9.0.1"), ("10.0.0", "10.0.1")],
+            ),
+            (
+                ["1.0.0", "2.0.0"],
+                ["1.1.0", "2.1.0"],
+                [("1.0.0", "1.1.0"), ("2.0.0", "2.1.0")],
+            ),
+        ] {
+            let old = sbom_of(
+                old_versions
+                    .iter()
+                    .map(|v| npm_component("libfoo", v))
+                    .collect(),
+            );
+            let new = sbom_of(
+                new_versions
+                    .iter()
+                    .map(|v| npm_component("libfoo", v))
+                    .collect(),
+            );
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(version_pairs(&diff), expect_pairs(&expected));
+            assert_eq!(diff.added.len(), 0);
+            assert_eq!(diff.removed.len(), 0);
+            assert!(
+                !diff.changed.iter().any(|c| c.is_downgrade),
+                "upgrading both version lines must not report a downgrade, got {:?}",
+                version_pairs(&diff)
+            );
+        }
+    }
+
+    #[test]
+    fn test_identity_reconciliation_without_purls_pairs_same_version_line() {
+        let versions = |vs: [&str; 3]| {
+            sbom_of(
+                vs.iter()
+                    .map(|v| Component::new("libfoo".to_string(), Some(v.to_string())))
+                    .collect(),
+            )
+        };
+        let old = versions(["1.0.0", "2.0.0", "3.0.0"]);
+        let new = versions(["1.0.1", "2.0.1", "3.0.1"]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[("1.0.0", "1.0.1"), ("2.0.0", "2.0.1"), ("3.0.0", "3.0.1")])
+        );
+        assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+    }
+
+    #[test]
+    fn test_identity_reconciliation_more_old_than_new() {
+        for (survivor, expected) in [("3.0.1", ("3.0.0", "3.0.1")), ("1.0.1", ("1.0.0", "1.0.1"))] {
+            let old = sbom_of(
+                ["1.0.0", "2.0.0", "3.0.0"]
+                    .iter()
+                    .map(|v| npm_component("libfoo", v))
+                    .collect(),
+            );
+            let new = sbom_of(vec![npm_component("libfoo", survivor)]);
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(version_pairs(&diff), expect_pairs(&[expected]));
+            assert_eq!(diff.removed.len(), 2);
+            assert_eq!(diff.added.len(), 0);
+            assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+        }
+    }
+
+    #[test]
+    fn test_identity_reconciliation_more_new_than_old() {
+        for (survivor, others, expected) in [
+            ("1.0.0", ["1.0.1", "2.0.0", "3.0.0"], ("1.0.0", "1.0.1")),
+            ("3.0.0", ["1.0.0", "2.0.0", "3.0.1"], ("3.0.0", "3.0.1")),
+        ] {
+            let old = sbom_of(vec![npm_component("libfoo", survivor)]);
+            let new = sbom_of(others.iter().map(|v| npm_component("libfoo", v)).collect());
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(version_pairs(&diff), expect_pairs(&[expected]));
+            assert_eq!(diff.added.len(), 2);
+            assert_eq!(diff.removed.len(), 0);
+            assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+        }
+    }
+
+    #[test]
+    fn test_identity_reconciliation_opaque_versions_stay_deterministic() {
+        let old = sbom_of(vec![
+            npm_component("libfoo", "nightly-zeta"),
+            npm_component("libfoo", "nightly-alpha"),
+        ]);
+        let new = sbom_of(vec![
+            npm_component("libfoo", "nightly-omega"),
+            npm_component("libfoo", "nightly-beta"),
+        ]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[
+                ("nightly-zeta", "nightly-beta"),
+                ("nightly-alpha", "nightly-omega"),
+            ])
+        );
+        assert_eq!(diff.added.len(), 0);
+        assert_eq!(diff.removed.len(), 0);
+    }
+
+    #[test]
+    fn test_identity_reconciliation_ignores_insertion_order() {
+        for versions in [["9.0.0", "10.0.0"], ["nightly-zeta", "nightly-alpha"]] {
+            let forward = Differ::diff(
+                &sbom_of(vec![
+                    npm_component("libfoo", versions[0]),
+                    npm_component("libfoo", versions[1]),
+                ]),
+                &sbom_of(vec![
+                    npm_component("libfoo", "4.0.0"),
+                    npm_component("libfoo", "5.0.0"),
+                ]),
+                None,
+            );
+            let reversed = Differ::diff(
+                &sbom_of(vec![
+                    npm_component("libfoo", versions[1]),
+                    npm_component("libfoo", versions[0]),
+                ]),
+                &sbom_of(vec![
+                    npm_component("libfoo", "5.0.0"),
+                    npm_component("libfoo", "4.0.0"),
+                ]),
+                None,
+            );
+            assert_eq!(version_pairs(&forward), version_pairs(&reversed));
+        }
+    }
+
+    #[test]
+    fn test_edge_diff_with_two_versions_of_one_package() {
+        let child_a = Component::new("child-a".to_string(), Some("1.0.0".to_string()));
+        let child_b = Component::new("child-b".to_string(), Some("1.0.0".to_string()));
+
+        let build = |parent_versions: [&str; 2]| {
+            let parents = parent_versions.map(|v| npm_component("libfoo", v));
+            let mut sbom = sbom_of(vec![
+                parents[0].clone(),
+                parents[1].clone(),
+                child_a.clone(),
+                child_b.clone(),
+            ]);
+            for (parent, child) in parents.iter().zip([&child_a, &child_b]) {
+                sbom.dependencies
+                    .entry(parent.id.clone())
+                    .or_default()
+                    .insert(child.id.clone(), DependencyKind::Runtime);
+            }
+            sbom
+        };
+
+        let diff = Differ::diff(&build(["1.0.0", "2.0.0"]), &build(["1.0.1", "2.0.1"]), None);
+        assert_eq!(
+            diff.edge_diffs.len(),
+            0,
+            "both parents kept their dependency, got {:?}",
+            diff.edge_diffs
+        );
     }
 }
