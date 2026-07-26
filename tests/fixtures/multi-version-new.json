@@ -1,0 +1,19 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "libfoo",
+      "version": "9.0.1",
+      "purl": "pkg:npm/libfoo@9.0.1"
+    },
+    {
+      "type": "library",
+      "name": "libfoo",
+      "version": "10.0.1",
+      "purl": "pkg:npm/libfoo@10.0.1"
+    }
+  ]
+}

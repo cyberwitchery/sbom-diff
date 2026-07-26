@@ -663,6 +663,31 @@ fn fail_on_version_downgrade_upgrade_exits_0() {
 }
 
 #[test]
+fn fail_on_version_downgrade_multi_version_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("multi-version-old.json"))
+        .arg(fixture("multi-version-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "9.0.0/10.0.0 -> 9.0.1/10.0.1 upgrades both lines, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Version: 9.0.0 -> 9.0.1"), "got: {stdout}");
+    assert!(
+        stdout.contains("Version: 10.0.0 -> 10.0.1"),
+        "got: {stdout}"
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_no_change_exits_0() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))
