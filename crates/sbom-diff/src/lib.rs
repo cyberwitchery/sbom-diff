@@ -662,22 +662,23 @@ impl Differ {
                 merged.push((Version::parse_lenient(version), side, id));
             }
         }
+        // `sort_by` panics on a comparator that is not a total order; comparability
+        // is an equivalence here, so one class check against the first element covers
+        // the bucket.
+        let first = &merged[0].0;
+        if first.partial_cmp_lenient(first).is_none()
+            || merged
+                .iter()
+                .any(|(version, ..)| first.partial_cmp_lenient(version).is_none())
+        {
+            return by_id();
+        }
         merged.sort_by(|a, b| {
             a.0.partial_cmp_lenient(&b.0)
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| a.1.cmp(&b.1))
                 .then_with(|| a.2.cmp(b.2))
         });
-        // an incomparable adjacent pair means the bucket has no total order:
-        // comparability is transitive here, so checking neighbours suffices.
-        if merged.windows(2).any(|w| {
-            !matches!(
-                w[0].0.partial_cmp_lenient(&w[1].0),
-                Some(Ordering::Less | Ordering::Equal)
-            )
-        }) {
-            return by_id();
-        }
 
         let (mut old_ranked, mut new_ranked) = (Vec::new(), Vec::new());
         for (rank, (version, side, id)) in merged.iter().enumerate() {
@@ -2540,6 +2541,49 @@ mod tests {
         );
         assert_eq!(diff.added.len(), 0);
         assert_eq!(diff.removed.len(), 0);
+    }
+
+    /// the bucket must be big enough for std's sort to check its comparator; a
+    /// handful of candidates cannot trip it.
+    #[test]
+    fn test_identity_reconciliation_mixed_version_variants_do_not_panic() {
+        let deb_and_semver = |new: bool| -> Vec<Component> {
+            (0..14)
+                .map(|k| {
+                    let (i, suffix) = (2 * k + 1, u8::from(new));
+                    let version = if k % 2 == 0 {
+                        format!("{i}.0.{suffix}")
+                    } else {
+                        format!("{i}:{}.0-{suffix}", i + 1)
+                    };
+                    npm_component("libfoo", &version)
+                })
+                .collect()
+        };
+        let opaque_and_semver = |new: bool| -> Vec<Component> {
+            (0..14)
+                .map(|k| {
+                    let (i, side) = (2 * k + 1, if new { 'b' } else { 'a' });
+                    let version = if k % 2 == 0 {
+                        format!("{i}.0.{}", u8::from(new))
+                    } else {
+                        format!("{side}{i:07x}deadbeef")
+                    };
+                    npm_component("libfoo", &version)
+                })
+                .collect()
+        };
+
+        let builders: [&dyn Fn(bool) -> Vec<Component>; 2] = [&deb_and_semver, &opaque_and_semver];
+        for build in builders {
+            let old = sbom_of(build(false));
+            let new = sbom_of(build(true));
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(diff.changed.len(), 14);
+            assert_eq!(diff.added.len(), 0);
+            assert_eq!(diff.removed.len(), 0);
+        }
     }
 
     #[test]
