@@ -662,15 +662,27 @@ impl Differ {
                 merged.push((Version::parse_lenient(version), side, id));
             }
         }
-        // `sort_by` panics on a comparator that is not a total order; comparability
-        // is an equivalence here, so one class check against the first element covers
-        // the bucket.
+        // `sort_by` needs a strict weak ordering; comparability is an equivalence, so
+        // one class check against the first element rules out a mixed-class bucket.
         let first = &merged[0].0;
         if first.partial_cmp_lenient(first).is_none()
             || merged
                 .iter()
                 .any(|(version, ..)| first.partial_cmp_lenient(version).is_none())
         {
+            return by_id();
+        }
+        // comparability is not enough: `Semver` against `Numeric` drops the pre-release,
+        // so `Equal` stops being transitive once a bucket holds both.
+        let (mut numeric, mut prerelease) = (false, false);
+        for (version, ..) in &merged {
+            match version {
+                Version::Numeric(_) => numeric = true,
+                Version::Semver(v) => prerelease |= !v.pre.is_empty(),
+                _ => {}
+            }
+        }
+        if numeric && prerelease {
             return by_id();
         }
         merged.sort_by(|a, b| {
@@ -2583,6 +2595,34 @@ mod tests {
             assert_eq!(diff.changed.len(), 14);
             assert_eq!(diff.added.len(), 0);
             assert_eq!(diff.removed.len(), 0);
+        }
+    }
+
+    /// a four-part version and a pre-release are mutually comparable, so the
+    /// class check passes and only the ordering check can catch this.
+    #[test]
+    fn test_identity_reconciliation_prerelease_with_numeric_does_not_panic() {
+        for groups in [12, 26] {
+            let old = sbom_of(
+                (1..=groups)
+                    .flat_map(|i| {
+                        [
+                            npm_component("libfoo", &format!("{i}.2.3")),
+                            npm_component("libfoo", &format!("{i}.2.3.0")),
+                        ]
+                    })
+                    .collect(),
+            );
+            let new = sbom_of(
+                (1..=groups)
+                    .map(|i| npm_component("libfoo", &format!("{i}.2.3-rc.1")))
+                    .collect(),
+            );
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(diff.changed.len(), groups);
+            assert_eq!(diff.added.len(), 0);
+            assert_eq!(diff.removed.len(), groups);
         }
     }
 
