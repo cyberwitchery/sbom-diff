@@ -13,6 +13,7 @@ pub enum Format {
     CyclonedxXml,
     Spdx,
     SpdxTv,
+    SpdxXml,
 }
 
 /// format detected by content-based heuristics.
@@ -22,6 +23,7 @@ enum DetectedFormat {
     CyclonedxXml,
     SpdxJson,
     SpdxTv,
+    SpdxXml,
     Unknown,
 }
 
@@ -32,6 +34,7 @@ impl DetectedFormat {
             DetectedFormat::CyclonedxXml => "CycloneDX XML",
             DetectedFormat::SpdxJson => "SPDX JSON",
             DetectedFormat::SpdxTv => "SPDX tag-value",
+            DetectedFormat::SpdxXml => "SPDX XML",
             DetectedFormat::Unknown => "unknown",
         }
     }
@@ -50,6 +53,13 @@ fn detect_format(content: &[u8]) -> DetectedFormat {
         // XML-ish — look for the CycloneDX namespace.
         if find_subsequence(window, b"cyclonedx.org/schema/bom").is_some() {
             return DetectedFormat::CyclonedxXml;
+        }
+        // SPDX XML usually carries no namespace, so key off the element names.
+        if find_subsequence(window, b"<spdxVersion").is_some()
+            || find_subsequence(window, b"<SpdxDocument").is_some()
+            || find_subsequence(window, b"<Document").is_some()
+        {
+            return DetectedFormat::SpdxXml;
         }
         // could be some other XML, but not a format we support.
         return DetectedFormat::Unknown;
@@ -117,7 +127,7 @@ fn try_parse(
 
 type ParseFn = fn(&[u8]) -> Result<Sbom, Box<dyn std::fmt::Display>>;
 
-/// the four parsers in a fixed order, used for fallback iteration.
+/// the five parsers in a fixed order, used for fallback iteration.
 const ALL_PARSERS: &[(&str, ParseFn)] = &[
     ("cyclonedx json", |c| {
         CycloneDxReader::read_json(c).map_err(|e| Box::new(e) as _)
@@ -130,6 +140,9 @@ const ALL_PARSERS: &[(&str, ParseFn)] = &[
     }),
     ("spdx tag-value", |c| {
         SpdxReader::read_tag_value(c).map_err(|e| Box::new(e) as _)
+    }),
+    ("spdx xml", |c| {
+        SpdxReader::read_xml(c).map_err(|e| Box::new(e) as _)
     }),
 ];
 
@@ -156,7 +169,7 @@ pub fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
     if probe.contains(&0) {
         return Err(anyhow!(
             "input appears to be binary (contains null bytes); expected a text-based SBOM \
-             (CycloneDX JSON/XML or SPDX JSON/tag-value)"
+             (CycloneDX JSON/XML or SPDX JSON/XML/tag-value)"
         ));
     }
 
@@ -171,6 +184,9 @@ pub fn load_sbom(path: &str, format: Format) -> anyhow::Result<Sbom> {
         }
         Format::SpdxTv => SpdxReader::read_tag_value(&content[..])
             .map_err(|e| anyhow!("spdx tag-value error: {}", e)),
+        Format::SpdxXml => {
+            SpdxReader::read_xml(&content[..]).map_err(|e| anyhow!("spdx xml error: {}", e))
+        }
         Format::Auto => auto_detect_and_parse(&content),
     }
 }
@@ -184,6 +200,7 @@ fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
         DetectedFormat::CyclonedxXml => Some(1),
         DetectedFormat::SpdxJson => Some(2),
         DetectedFormat::SpdxTv => Some(3),
+        DetectedFormat::SpdxXml => Some(4),
         DetectedFormat::Unknown => None,
     };
 
@@ -212,7 +229,8 @@ fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
         DetectedFormat::Unknown => Err(anyhow!(
             "could not detect SBOM format; the input does not contain \
              any recognized format markers (\"bomFormat\", \"spdxVersion\", \
-             CycloneDX XML namespace, or SPDXVersion tag-value header).\n\
+             CycloneDX XML namespace, SPDX XML <Document> root, or \
+             SPDXVersion tag-value header).\n\
              Parser errors:\n{}",
             errors.join("\n")
         )),
@@ -286,6 +304,46 @@ mod tests {
     }
 
     #[test]
+    fn test_load_sbom_explicit_spdx_xml() {
+        let path = "../../tests/fixtures/old.spdx.xml";
+        let sbom = load_sbom(path, Format::SpdxXml).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_auto_spdx_xml() {
+        let path = "../../tests/fixtures/old.spdx.xml";
+        let sbom = load_sbom(path, Format::Auto).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_spdx_xml_matches_spdx_json() {
+        let from_xml = load_sbom("../../tests/fixtures/old.spdx.xml", Format::Auto).unwrap();
+        let from_json = load_sbom("../../tests/fixtures/old.spdx.json", Format::Auto).unwrap();
+        assert_eq!(from_xml, from_json);
+    }
+
+    #[test]
+    fn test_load_sbom_spdx_xml_version_3_reports_unsupported_version() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("sbom-diff-test-spdx3-xml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v3.spdx.xml");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b"<Document><spdxVersion>SPDX-3.0</spdxVersion></Document>")
+            .unwrap();
+
+        let err = load_sbom(path.to_str().unwrap(), Format::SpdxXml)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unsupported SPDX version"), "got {err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn test_load_sbom_auto_detection_failure() {
         let result = load_sbom("Cargo.toml", Format::Auto);
         assert!(result.is_err());
@@ -352,6 +410,25 @@ mod tests {
     fn test_detect_unknown_xml() {
         let input = br#"<?xml version="1.0"?><root xmlns="http://example.com"/>"#;
         assert_eq!(detect_format(input), DetectedFormat::Unknown);
+    }
+
+    #[test]
+    fn test_detect_spdx_xml() {
+        let input = br#"<?xml version="1.0"?><Document><spdxVersion>SPDX-2.3</spdxVersion>"#;
+        assert_eq!(detect_format(input), DetectedFormat::SpdxXml);
+    }
+
+    #[test]
+    fn test_detect_spdx_xml_with_spdxdocument_root() {
+        let input = br#"<?xml version="1.0"?><SpdxDocument><name>x</name>"#;
+        assert_eq!(detect_format(input), DetectedFormat::SpdxXml);
+    }
+
+    #[test]
+    fn test_detect_cyclonedx_xml_wins_over_spdx_xml() {
+        let input =
+            br#"<?xml version="1.0"?><bom xmlns="http://cyclonedx.org/schema/bom/1.5"><Document/>"#;
+        assert_eq!(detect_format(input), DetectedFormat::CyclonedxXml);
     }
 
     #[test]

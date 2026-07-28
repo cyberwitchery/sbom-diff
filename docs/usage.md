@@ -6,7 +6,7 @@ sbom-diff [flags] <old-file> <new-file>
 ```
 
 ### flags
-- `-f, --format <auto|cyclonedx|spdx>`: force input format (default: auto).
+- `-f, --format <auto|cyclonedx|cyclonedx-xml|spdx|spdx-tv|spdx-xml>`: force input format (default: auto).
 - `-o, --output <text|markdown|json>`: set output format (default: text).
 - `--only <fields>`: comma-separated list of fields to report (version, license, supplier, purl, hashes, deps).
 - `--deny-license <expr>`: fail (exit 2) if license is found in new sbom.

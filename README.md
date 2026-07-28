@@ -96,7 +96,6 @@ cargo install sbom-diff
 
 ## limitations
 
-- spdx xml not supported (only json)
 - read-only (no sbom generation or modification)
 
 ## docs
@@ -110,8 +109,8 @@ this project is a cargo workspace with four crates:
 ```
 sbom-diff/
 ├── sbom-model           # format-agnostic data model
-├── sbom-model-cyclonedx # cyclonedx json parser
-├── sbom-model-spdx      # spdx json parser
+├── sbom-model-cyclonedx # cyclonedx json/xml parser
+├── sbom-model-spdx      # spdx json/xml/tag-value parser
 └── sbom-diff            # diff engine + cli
 ```
 
@@ -119,7 +118,7 @@ sbom-diff/
 |-------|------|-------------|
 | [`sbom-model`](crates/sbom-model) | [docs.rs](https://docs.rs/sbom-model) | core `Sbom`, `Component`, `ComponentId` types and query api |
 | [`sbom-model-cyclonedx`](crates/sbom-model-cyclonedx) | [docs.rs](https://docs.rs/sbom-model-cyclonedx) | parse cyclonedx 1.4+ json and xml into `Sbom` |
-| [`sbom-model-spdx`](crates/sbom-model-spdx) | [docs.rs](https://docs.rs/sbom-model-spdx) | parse spdx 2.3 json into `Sbom` |
+| [`sbom-model-spdx`](crates/sbom-model-spdx) | [docs.rs](https://docs.rs/sbom-model-spdx) | parse spdx 2.3 json, xml, and tag-value into `Sbom` |
 | [`sbom-diff`](crates/sbom-diff) | [docs.rs](https://docs.rs/sbom-diff) | `Differ` engine, renderers, and cli binary |
 
 use the library crates directly if you want to build custom tooling:

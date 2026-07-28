@@ -43,6 +43,11 @@ both adapters produce:
 ## spdx -> model
 
 - parser: `sbom-model-spdx` using `spdx-rs` + `serde_json`
+- input formats: json, xml, and tag-value (2.x; 2.3 field names)
+- xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
+  - root element: `<Document>` or `<SpdxDocument>`
+  - repeated sibling elements become a json array; a field the schema types as an array becomes a one-element array even when it occurs once
+  - `filesAnalyzed` and the snippet range offsets are re-typed from text to boolean/integer
 - purl extraction:
   - source: package `externalRefs` where `referenceType == "purl"`
   - target: `Component.purl`
@@ -74,5 +79,5 @@ both adapters produce:
 
 ## notes
 
-- the cyclonedx adapter supports both json and xml; the spdx adapter is json-only.
+- the cyclonedx adapter supports json and xml; the spdx adapter supports json, xml, and tag-value. spdx rdf is not supported by either.
 - both adapters may leave some source-specific fields unmapped if no stable equivalent exists in the core model.
