@@ -2,7 +2,7 @@
 
 spdx adapter for [`sbom-model`](https://docs.rs/sbom-model).
 
-parses [spdx](https://spdx.dev/) json documents into the format-agnostic `Sbom` type.
+parses [spdx](https://spdx.dev/) 2.x documents — json, xml, and tag-value — into the format-agnostic `Sbom` type.
 
 ## usage
 
@@ -39,7 +39,8 @@ assert_eq!(sbom.components[0].name, "serde");
 
 ## supported features
 
-- spdx 2.3 json format (rdf/xml/tag-value not supported)
+- spdx 2.x json (`read_json`), xml (`read_xml`), and tag-value (`read_tag_value`); rdf is not supported
+- xml accepts both `<Document>` and `<SpdxDocument>` as the root element
 - packages with name, version, licenses, checksums
 - supplier information
 - purl extraction from external references
@@ -58,7 +59,7 @@ fn parse(data: &[u8]) -> Result<(), Error> {
 }
 ```
 
-the `Error` type wraps parse errors from `serde_json`.
+the `Error` type wraps parse errors from `serde_json`, the tag-value parser, and the xml reader, and reports an unsupported spec version (spdx 3.x) separately for every input format.
 
 ## related crates
 

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>Test Document</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test-doc</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <versionInfo>1.0.0</versionInfo>
+    <downloadLocation>NOASSERTION</downloadLocation>
+    <licenseConcluded>MIT</licenseConcluded>
+    <externalRefs>
+      <referenceCategory>PACKAGE-MANAGER</referenceCategory>
+      <referenceType>purl</referenceType>
+      <referenceLocator>pkg:npm/pkg-a@1.0.0</referenceLocator>
+    </externalRefs>
+  </packages>
+  <relationships>
+    <spdxElementId>SPDXRef-DOCUMENT</spdxElementId>
+    <relatedSpdxElement>SPDXRef-pkg-a</relatedSpdxElement>
+    <relationshipType>DESCRIBES</relationshipType>
+  </relationships>
+</Document>

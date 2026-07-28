@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
+mod xml;
+
 /// errors that can occur when parsing SPDX documents.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -28,6 +30,9 @@ pub enum Error {
     /// the tag-value input could not be parsed.
     #[error("SPDX tag-value parse error: {0}")]
     TagValue(String),
+    /// the XML input is not well-formed or is not an SPDX document.
+    #[error("SPDX XML parse error: {0}")]
+    Xml(String),
 }
 
 /// edge direction for a dependency relationship.
@@ -77,9 +82,10 @@ fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, Depen
     }
 }
 
-/// parser for SPDX JSON documents.
+/// parser for SPDX documents.
 ///
-/// converts SPDX 2.3 JSON into the format-agnostic [`Sbom`] type.
+/// converts SPDX 2.x JSON, XML, and tag-value input into the format-agnostic
+/// [`Sbom`] type.
 pub struct SpdxReader;
 
 impl SpdxReader {
@@ -107,6 +113,33 @@ impl SpdxReader {
         Self::check_spdx_version(buf)?;
 
         let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(buf)?;
+
+        Ok(Self::spdx_to_sbom(spdx_doc))
+    }
+
+    /// parses an SPDX XML document from a reader.
+    ///
+    /// accepts both `<Document>` and `<SpdxDocument>` as the root element.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use sbom_model_spdx::SpdxReader;
+    /// use std::fs::File;
+    ///
+    /// let file = File::open("sbom.spdx.xml").unwrap();
+    /// let sbom = SpdxReader::read_xml(file).unwrap();
+    /// ```
+    pub fn read_xml<R: Read>(mut reader: R) -> Result<Sbom, Error> {
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+
+        let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
+
+        let value = xml::xml_to_json(buf)?;
+        Self::check_version(value.get("spdxVersion").and_then(|v| v.as_str()))?;
+
+        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_value(value)?;
 
         Ok(Self::spdx_to_sbom(spdx_doc))
     }
@@ -407,13 +440,17 @@ impl SpdxReader {
             Err(_) => return Ok(()),
         };
 
-        match probe.spdx_version.as_deref() {
+        Self::check_version(probe.spdx_version.as_deref())
+    }
+
+    /// rejects any spec version outside SPDX 2.x; a missing version is left to
+    /// the full parser, which errors on the malformed document anyway.
+    fn check_version(version: Option<&str>) -> Result<(), Error> {
+        match version {
             Some(v) if v.starts_with("SPDX-2.") => Ok(()),
             Some(v) => Err(Error::UnsupportedVersion {
                 version: v.to_string(),
             }),
-            // missing version field — let the full parser produce its own
-            // error; the document is malformed either way.
             None => Ok(()),
         }
     }
@@ -2158,5 +2195,452 @@ PackageCopyrightText: NOASSERTION
         assert_eq!(sbom.components.len(), 1);
         assert_eq!(sbom.components[0].name, "pkg-a");
         assert_eq!(sbom.components[0].version, Some("1.0.0".to_string()));
+    }
+
+    /// asserts that the XML and JSON serializations of the same document map to
+    /// the same [`Sbom`].
+    fn assert_xml_matches_json(xml: &str, json: &str) {
+        let from_xml = SpdxReader::read_xml(xml.as_bytes()).unwrap();
+        let from_json = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(from_xml, from_json);
+    }
+
+    #[test]
+    fn test_read_xml_single_package_matches_json() {
+        assert_xml_matches_json(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <versionInfo>1.0.0</versionInfo>
+    <downloadLocation>NOASSERTION</downloadLocation>
+    <licenseConcluded>MIT</licenseConcluded>
+    <externalRefs>
+      <referenceCategory>PACKAGE-MANAGER</referenceCategory>
+      <referenceType>purl</referenceType>
+      <referenceLocator>pkg:npm/pkg-a@1.0.0</referenceLocator>
+    </externalRefs>
+  </packages>
+</Document>"#,
+            r#"{
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "test",
+                "documentNamespace": "http://spdx.org/spdxdocs/test",
+                "creationInfo": {
+                    "creators": ["Tool: manual"],
+                    "created": "2023-01-01T00:00:00Z"
+                },
+                "packages": [
+                    {
+                        "name": "pkg-a",
+                        "SPDXID": "SPDXRef-pkg-a",
+                        "versionInfo": "1.0.0",
+                        "downloadLocation": "NOASSERTION",
+                        "licenseConcluded": "MIT",
+                        "externalRefs": [
+                            {
+                                "referenceCategory": "PACKAGE-MANAGER",
+                                "referenceType": "purl",
+                                "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        );
+    }
+
+    #[test]
+    fn test_read_xml_single_package_extracts_purl_and_license() {
+        let xml = r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <versionInfo>1.0.0</versionInfo>
+    <downloadLocation>NOASSERTION</downloadLocation>
+    <licenseConcluded>MIT</licenseConcluded>
+    <supplier>Organization: acme</supplier>
+    <externalRefs>
+      <referenceCategory>PACKAGE-MANAGER</referenceCategory>
+      <referenceType>purl</referenceType>
+      <referenceLocator>pkg:npm/pkg-a@1.0.0</referenceLocator>
+    </externalRefs>
+  </packages>
+</Document>"#;
+        let sbom = SpdxReader::read_xml(xml.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        let comp = &sbom.components[0];
+        assert_eq!(comp.name, "pkg-a");
+        assert_eq!(comp.version, Some("1.0.0".to_string()));
+        assert_eq!(comp.purl, Some("pkg:npm/pkg-a@1.0.0".to_string()));
+        assert_eq!(comp.ecosystem, Some("npm".to_string()));
+        assert_eq!(comp.supplier, Some("acme".to_string()));
+        assert!(comp.licenses.contains("MIT"));
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_read_xml_multiple_packages_and_checksums_match_json() {
+        assert_xml_matches_json(
+            r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <creators>Person: bob</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+    <filesAnalyzed>false</filesAnalyzed>
+    <licenseConcluded>MIT</licenseConcluded>
+    <checksums>
+      <algorithm>SHA256</algorithm>
+      <checksumValue>abc</checksumValue>
+    </checksums>
+    <checksums>
+      <algorithm>SHA1</algorithm>
+      <checksumValue>def</checksumValue>
+    </checksums>
+  </packages>
+  <packages>
+    <name>pkg-b</name>
+    <SPDXID>SPDXRef-pkg-b</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+    <filesAnalyzed>true</filesAnalyzed>
+    <checksums>
+      <algorithm>SHA256</algorithm>
+      <checksumValue>012</checksumValue>
+    </checksums>
+  </packages>
+  <relationships>
+    <spdxElementId>SPDXRef-pkg-a</spdxElementId>
+    <relatedSpdxElement>SPDXRef-pkg-b</relatedSpdxElement>
+    <relationshipType>DEPENDS_ON</relationshipType>
+  </relationships>
+</Document>"#,
+            r#"{
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "test",
+                "documentNamespace": "http://spdx.org/spdxdocs/test",
+                "creationInfo": {
+                    "creators": ["Tool: manual", "Person: bob"],
+                    "created": "2023-01-01T00:00:00Z"
+                },
+                "packages": [
+                    {
+                        "name": "pkg-a",
+                        "SPDXID": "SPDXRef-pkg-a",
+                        "downloadLocation": "NONE",
+                        "filesAnalyzed": false,
+                        "licenseConcluded": "MIT",
+                        "checksums": [
+                            {"algorithm": "SHA256", "checksumValue": "abc"},
+                            {"algorithm": "SHA1", "checksumValue": "def"}
+                        ]
+                    },
+                    {
+                        "name": "pkg-b",
+                        "SPDXID": "SPDXRef-pkg-b",
+                        "downloadLocation": "NONE",
+                        "filesAnalyzed": true,
+                        "checksums": [{"algorithm": "SHA256", "checksumValue": "012"}]
+                    }
+                ],
+                "relationships": [
+                    {
+                        "spdxElementId": "SPDXRef-pkg-a",
+                        "relatedSpdxElement": "SPDXRef-pkg-b",
+                        "relationshipType": "DEPENDS_ON"
+                    }
+                ]
+            }"#,
+        );
+    }
+
+    #[test]
+    fn test_read_xml_dependency_edges_and_hashes() {
+        let xml = r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+    <checksums>
+      <algorithm>SHA256</algorithm>
+      <checksumValue>abc</checksumValue>
+    </checksums>
+  </packages>
+  <packages>
+    <name>pkg-b</name>
+    <SPDXID>SPDXRef-pkg-b</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+  </packages>
+  <relationships>
+    <spdxElementId>SPDXRef-pkg-a</spdxElementId>
+    <relatedSpdxElement>SPDXRef-pkg-b</relatedSpdxElement>
+    <relationshipType>DEPENDS_ON</relationshipType>
+  </relationships>
+</Document>"#;
+        let sbom = SpdxReader::read_xml(xml.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 2);
+        let a = sbom.components.keys().next().unwrap().clone();
+        assert_eq!(
+            sbom.components[&a].hashes.get("SHA-256"),
+            Some(&"abc".to_string())
+        );
+        assert_eq!(sbom.dependencies[&a].len(), 1);
+    }
+
+    #[test]
+    fn test_read_xml_inverse_relationship_matches_forward() {
+        let doc = |left: &str, right: &str, rel: &str| {
+            format!(
+                r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+  </packages>
+  <packages>
+    <name>pkg-b</name>
+    <SPDXID>SPDXRef-pkg-b</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+  </packages>
+  <relationships>
+    <spdxElementId>{left}</spdxElementId>
+    <relatedSpdxElement>{right}</relatedSpdxElement>
+    <relationshipType>{rel}</relationshipType>
+  </relationships>
+</Document>"#
+            )
+        };
+
+        let forward =
+            SpdxReader::read_xml(doc("SPDXRef-pkg-a", "SPDXRef-pkg-b", "DEPENDS_ON").as_bytes())
+                .unwrap();
+        let inverse =
+            SpdxReader::read_xml(doc("SPDXRef-pkg-b", "SPDXRef-pkg-a", "DEPENDENCY_OF").as_bytes())
+                .unwrap();
+        assert_eq!(forward.dependencies, inverse.dependencies);
+        assert!(!forward.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_read_xml_escaped_entities_match_json() {
+        assert_xml_matches_json(
+            r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>a &amp; b</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: man &lt;ual&gt;</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg &amp; co</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+    <licenseConcluded>MIT AND Apache-2.0</licenseConcluded>
+    <supplier>Organization: acme &amp; sons</supplier>
+  </packages>
+</Document>"#,
+            r#"{
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "a & b",
+                "documentNamespace": "http://spdx.org/spdxdocs/test",
+                "creationInfo": {
+                    "creators": ["Tool: man <ual>"],
+                    "created": "2023-01-01T00:00:00Z"
+                },
+                "packages": [
+                    {
+                        "name": "pkg & co",
+                        "SPDXID": "SPDXRef-pkg-a",
+                        "downloadLocation": "NONE",
+                        "licenseConcluded": "MIT AND Apache-2.0",
+                        "supplier": "Organization: acme & sons"
+                    }
+                ]
+            }"#,
+        );
+    }
+
+    #[test]
+    fn test_read_xml_without_packages_matches_json() {
+        assert_xml_matches_json(
+            r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages/>
+</Document>"#,
+            r#"{
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "test",
+                "documentNamespace": "http://spdx.org/spdxdocs/test",
+                "creationInfo": {
+                    "creators": ["Tool: manual"],
+                    "created": "2023-01-01T00:00:00Z"
+                },
+                "packages": []
+            }"#,
+        );
+    }
+
+    #[test]
+    fn test_read_xml_spdxdocument_root_matches_document_root() {
+        let body = r#"
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+  </packages>"#;
+        let document = SpdxReader::read_xml(format!("<Document>{body}</Document>").as_bytes());
+        let spdx_document =
+            SpdxReader::read_xml(format!("<SpdxDocument>{body}</SpdxDocument>").as_bytes());
+        assert_eq!(document.unwrap(), spdx_document.unwrap());
+    }
+
+    #[test]
+    fn test_read_xml_version_3_rejected() {
+        let xml = r#"<Document>
+  <spdxVersion>SPDX-3.0</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+</Document>"#;
+        let err = SpdxReader::read_xml(xml.as_bytes()).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedVersion { ref version } if version == "SPDX-3.0"));
+        assert!(err.to_string().contains("only SPDX 2.x is supported"));
+    }
+
+    #[test]
+    fn test_read_xml_malformed_rejected() {
+        let err = SpdxReader::read_xml(b"<Document><name>test</Document>".as_ref()).unwrap_err();
+        assert!(matches!(err, Error::Xml(_)), "got {err}");
+    }
+
+    #[test]
+    fn test_read_xml_non_spdx_root_rejected() {
+        let xml = r#"<bom xmlns="http://cyclonedx.org/schema/bom/1.4"><components/></bom>"#;
+        let err = SpdxReader::read_xml(xml.as_bytes()).unwrap_err();
+        assert!(
+            err.to_string().contains("unexpected root element 'bom'"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_xml_missing_required_field_rejected() {
+        let xml = r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+</Document>"#;
+        let err = SpdxReader::read_xml(xml.as_bytes()).unwrap_err();
+        assert!(matches!(err, Error::Parse(_)), "got {err}");
+    }
+
+    #[test]
+    fn test_read_xml_with_bom() {
+        let xml = r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages>
+    <name>pkg-a</name>
+    <SPDXID>SPDXRef-pkg-a</SPDXID>
+    <downloadLocation>NONE</downloadLocation>
+  </packages>
+</Document>"#;
+        let with_bom = format!("\u{feff}{xml}");
+        assert_eq!(
+            SpdxReader::read_xml(with_bom.as_bytes()).unwrap(),
+            SpdxReader::read_xml(xml.as_bytes()).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_read_xml_fixture_matches_json_fixture() {
+        let xml = std::fs::read("../../tests/fixtures/old.spdx.xml").unwrap();
+        let json = std::fs::read("../../tests/fixtures/old.spdx.json").unwrap();
+        assert_eq!(
+            SpdxReader::read_xml(&xml[..]).unwrap(),
+            SpdxReader::read_json(&json[..]).unwrap()
+        );
     }
 }

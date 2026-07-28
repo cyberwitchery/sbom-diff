@@ -506,6 +506,82 @@ fn auto_detects_spdx_tag_value() {
 }
 
 #[test]
+fn auto_detects_spdx_xml() {
+    let out = sbom_diff()
+        .arg(fixture("old.spdx.xml"))
+        .arg(fixture("new.spdx.xml"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+    assert_eq!(v["changed"], 1);
+}
+
+#[test]
+fn explicit_spdx_xml_format_matches_auto() {
+    let run = |format: Option<&str>| {
+        let mut cmd = sbom_diff();
+        cmd.arg(fixture("old.spdx.xml"))
+            .arg(fixture("new.spdx.xml"));
+        if let Some(f) = format {
+            cmd.arg("--format").arg(f);
+        }
+        let out = cmd.arg("--output").arg("json").output().unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    assert_eq!(run(Some("spdx-xml")), run(None));
+}
+
+#[test]
+fn spdx_xml_diffs_identically_to_spdx_json() {
+    let run = |old: &str, new: &str| {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .arg("--output")
+            .arg("json")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    assert_eq!(
+        run("old.spdx.xml", "new.spdx.xml"),
+        run("old.spdx.json", "new.spdx.json")
+    );
+}
+
+#[test]
+fn spdx_xml_errors_name_the_detected_format() {
+    let dir = std::env::temp_dir().join("sbom-diff-cli-test-spdx-xml");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("broken.spdx.xml");
+    std::fs::write(&path, b"<Document><spdxVersion>SPDX-2.3</Document>").unwrap();
+
+    let out = sbom_diff()
+        .arg(&path)
+        .arg(fixture("new.spdx.xml"))
+        .output()
+        .unwrap();
+
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("SPDX XML"), "got {stderr}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn explicit_format_overrides_auto() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))
