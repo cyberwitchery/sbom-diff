@@ -55,9 +55,9 @@ fn detect_format(content: &[u8]) -> DetectedFormat {
             return DetectedFormat::CyclonedxXml;
         }
         // SPDX XML usually carries no namespace, so key off the element names.
-        if find_subsequence(window, b"<spdxVersion").is_some()
-            || find_subsequence(window, b"<SpdxDocument").is_some()
-            || find_subsequence(window, b"<Document").is_some()
+        if contains_element(window, b"<spdxVersion")
+            || contains_element(window, b"<SpdxDocument")
+            || contains_element(window, b"<Document")
         {
             return DetectedFormat::SpdxXml;
         }
@@ -107,6 +107,20 @@ fn trim_ascii_start(data: &[u8]) -> &[u8] {
 /// naive subsequence search (good enough for small windows).
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// search for a `<name` start-tag marker whose element name ends where the
+/// marker does, so `<Document` does not match `<DocumentRoot>`.
+fn contains_element(haystack: &[u8], marker: &[u8]) -> bool {
+    let mut offset = 0;
+    while let Some(pos) = find_subsequence(&haystack[offset..], marker) {
+        let end = offset + pos + marker.len();
+        match haystack.get(end) {
+            Some(&b) if b == b'>' || b == b'/' || b.is_ascii_whitespace() => return true,
+            _ => offset += pos + 1,
+        }
+    }
+    false
 }
 
 /// try a single parser, returning `Ok(sbom)` or appending to `errors`.
@@ -425,6 +439,22 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_spdx_xml_root_with_attributes() {
+        let input = br#"<?xml version="1.0"?><Document xmlns="http://spdx.org/rdf/terms">"#;
+        assert_eq!(detect_format(input), DetectedFormat::SpdxXml);
+    }
+
+    #[test]
+    fn test_detect_unknown_xml_with_document_prefixed_element() {
+        let input = br#"<?xml version="1.0"?>
+<DocumentRoot>
+  <Title>quarterly report</Title>
+  <SpdxDocumentation>nothing to do with SBOMs</SpdxDocumentation>
+</DocumentRoot>"#;
+        assert_eq!(detect_format(input), DetectedFormat::Unknown);
+    }
+
+    #[test]
     fn test_detect_cyclonedx_xml_wins_over_spdx_xml() {
         let input =
             br#"<?xml version="1.0"?><bom xmlns="http://cyclonedx.org/schema/bom/1.5"><Document/>"#;
@@ -541,6 +571,18 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_format_real_spdx_xml() {
+        for fixture in ["old.spdx.xml", "new.spdx.xml"] {
+            let content = std::fs::read(format!("../../tests/fixtures/{fixture}")).unwrap();
+            assert_eq!(
+                detect_format(&content),
+                DetectedFormat::SpdxXml,
+                "{fixture}"
+            );
+        }
+    }
+
+    #[test]
     fn test_strip_bom_and_whitespace() {
         assert_eq!(strip_bom_and_whitespace(b"\xef\xbb\xbf  {"), b"{");
         assert_eq!(strip_bom_and_whitespace(b"  \n<"), b"<");
@@ -554,6 +596,19 @@ mod tests {
         assert_eq!(find_subsequence(b"hello", b"xyz"), None);
         assert_eq!(find_subsequence(b"", b"a"), None);
         assert_eq!(find_subsequence(b"abc", b"abc"), Some(0));
+    }
+
+    #[test]
+    fn test_contains_element() {
+        assert!(contains_element(b"<Document>", b"<Document"));
+        assert!(contains_element(b"<Document/>", b"<Document"));
+        assert!(contains_element(b"<Document xmlns='x'>", b"<Document"));
+        assert!(contains_element(b"<Document\n>", b"<Document"));
+        assert!(!contains_element(b"<DocumentRoot>", b"<Document"));
+        assert!(!contains_element(b"<Document", b"<Document"));
+        assert!(!contains_element(b"", b"<Document"));
+        // a rejected candidate does not stop the scan
+        assert!(contains_element(b"<DocumentRoot><Document>", b"<Document"));
     }
 
     /// load `fixture` directly and again with a UTF-8 BOM prepended (via a
