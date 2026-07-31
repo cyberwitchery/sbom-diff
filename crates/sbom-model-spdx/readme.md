@@ -2,7 +2,7 @@
 
 spdx adapter for [`sbom-model`](https://docs.rs/sbom-model).
 
-parses [spdx](https://spdx.dev/) 2.x documents — json, xml, and tag-value — into the format-agnostic `Sbom` type.
+parses [spdx](https://spdx.dev/) 2.x documents (json, xml, and tag-value) into the format-agnostic `Sbom` type.
 
 ## usage
 

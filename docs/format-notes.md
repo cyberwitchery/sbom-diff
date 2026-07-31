@@ -8,7 +8,7 @@ both adapters produce:
 
 - `Sbom.metadata`
 - `Sbom.components: IndexMap<ComponentId, Component>`
-- `Sbom.dependencies: BTreeMap<ComponentId, BTreeSet<ComponentId>>`
+- `Sbom.dependencies: BTreeMap<ComponentId, BTreeMap<ComponentId, DependencyKind>>`
 
 `ComponentId` prefers purl when present; otherwise it falls back to a deterministic hash over selected component properties.
 

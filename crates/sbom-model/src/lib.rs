@@ -261,7 +261,7 @@ impl Sbom {
         // strip volatile metadata
         self.metadata.timestamp = None;
         self.metadata.tools.clear();
-        self.metadata.authors.clear(); // Authors might be relevant, but often change slightly. Let's keep strict for now.
+        self.metadata.authors.clear(); // authors churn between generator runs, so they count as volatile
 
         self.rebuild_reverse_deps();
     }

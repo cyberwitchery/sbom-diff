@@ -2218,9 +2218,8 @@ mod tests {
 
     #[test]
     fn test_filter_by_ecosystem_no_ecosystem_change_unaffected() {
-        // control for the regression above: with no pair crossing the
-        // ecosystem boundary, the new-side derivation of `unchanged` agrees
-        // with the old-side one — the fix leaves ordinary results identical.
+        // control: with no pair crossing the ecosystem boundary, the new-side
+        // derivation of `unchanged` agrees with the old-side one.
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
