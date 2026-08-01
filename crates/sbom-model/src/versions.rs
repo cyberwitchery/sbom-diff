@@ -9,10 +9,10 @@ use std::cmp::Ordering;
 /// parsed version representation for lenient comparison.
 ///
 /// covers the common version formats found in SBOMs:
-/// - Standard semver (possibly with `v` prefix or fewer than three parts)
-/// - Dot-separated numeric (e.g., date-based `2024.01.15` or four-part `1.2.3.4`)
+/// - standard semver (possibly with `v` prefix or fewer than three parts)
+/// - dot-separated numeric (e.g., date-based `2024.01.15` or four-part `1.2.3.4`)
 /// - Debian/RPM-style `epoch:upstream-revision` (dominant in OS/container SBOMs)
-/// - Opaque strings that cannot be compared
+/// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Version {
     /// parseable as semver (with lenient parsing: `v`/`V` prefix stripped,
@@ -257,9 +257,8 @@ fn deb_cmp(a: (u64, &str, &str), b: (u64, &str, &str)) -> Ordering {
 /// the Debian `dpkg` version-component comparison (`verrevcmp`).
 ///
 /// the two strings are scanned in lockstep, alternating between runs of
-/// non-digits and runs of digits. non-digit runs are compared lexically with a
-/// modified ordering (a tilde sorts before everything, even the end of a
-/// string, and letters sort before other punctuation); digit runs are compared
+/// non-digits and runs of digits. non-digit runs are compared lexically in the
+/// modified ordering of [`deb_order`]; digit runs are compared
 /// numerically (leading zeros stripped, longer run wins). this is the standard
 /// algorithm used for Debian upstream versions and revisions, and it also gives
 /// correct results for the overwhelming majority of RPM versions.
@@ -716,7 +715,7 @@ mod tests {
 
     #[test]
     fn parse_epoch_is_deb() {
-        // versions with an epoch aren't semver and were previously Opaque
+        // versions with an epoch aren't semver
         assert!(matches!(
             Version::parse_lenient("2:1.0"),
             Version::Deb { .. }
@@ -729,7 +728,7 @@ mod tests {
 
     #[test]
     fn parse_revision_is_deb() {
-        // "5.1-3" is not valid semver (two-part base) and was previously Opaque
+        // "5.1-3" is not valid semver (two-part base)
         assert!(matches!(
             Version::parse_lenient("5.1-3"),
             Version::Deb { .. }
@@ -920,9 +919,9 @@ mod tests {
     fn deb_canonical_ordering_vectors() {
         use Ordering::{Equal, Greater, Less};
 
-        // Canonical dpkg (`verrevcmp`) orderings for the edge cases the other
+        // canonical dpkg (`verrevcmp`) orderings for the edge cases the other
         // tests don't fully pin, each `expected` derived by hand from the
-        // `deb_order`/`verrevcmp` rules documented above. Every string pins an
+        // `deb_order`/`verrevcmp` rules documented above. every string pins an
         // epoch so it forces `Deb` parsing — a bare `1.0`/`1.0~rc1` would parse
         // as Semver/Numeric and exercise the wrong comparator (see
         // `downgrade_absent_revision_equals_zero`). `expected` is how `a` orders

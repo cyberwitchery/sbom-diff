@@ -150,15 +150,15 @@ impl Diff {
     }
 
     /// filters the diff to only include components whose ecosystem matches
-    /// the given predicate. Adjusts `old_total`, `new_total`, and `unchanged`
+    /// the given predicate. adjusts `old_total`, `new_total`, and `unchanged`
     /// to reflect the filtered view.
     ///
     /// `filtered_old_total` and `filtered_new_total` are the pre-counted
-    /// number of components in each SBOM that pass the predicate. These must
+    /// number of components in each SBOM that pass the predicate. these must
     /// be computed before [`Differ::diff_owned`] consumes the SBOMs.
     ///
     /// `component_ecosystems` maps component IDs to their ecosystem, built
-    /// from both SBOMs before they are consumed. This is used to filter
+    /// from both SBOMs before they are consumed. this is used to filter
     /// edge diffs by the parent component's ecosystem.
     pub fn filter_by_ecosystem<F: Fn(Option<&str>) -> bool>(
         &mut self,
@@ -194,7 +194,7 @@ impl Diff {
         self.old_total = filtered_old_total;
         self.new_total = filtered_new_total;
         // derive unchanged from the NEW side, consistent with added/changed
-        // (both retained by new-side ecosystem). Deriving from the old side
+        // (both retained by new-side ecosystem). deriving from the old side
         // over-counts a matched pair whose ecosystem changes across the filter
         // boundary, which can push unchanged above new_total.
         self.unchanged = filtered_new_total
@@ -204,7 +204,7 @@ impl Diff {
 }
 
 /// shared implementation for [`Diff::group_by_ecosystem`] and
-/// [`Diff::into_group_by_ecosystem`]. Accepts owned iterators so both the
+/// [`Diff::into_group_by_ecosystem`]. accepts owned iterators so both the
 /// cloning and consuming callers can share the same loop logic.
 fn group_components_by_ecosystem(
     added: impl IntoIterator<Item = Component>,
@@ -365,7 +365,7 @@ impl Differ {
     /// compares two SBOMs and returns the differences.
     ///
     /// both SBOMs are normalized before comparison to ignore irrelevant differences
-    /// like ordering or metadata timestamps. This method clones both SBOMs
+    /// like ordering or metadata timestamps. this method clones both SBOMs
     /// internally; use [`diff_owned`](Self::diff_owned) to avoid cloning when
     /// you already own the SBOMs.
     ///
@@ -387,7 +387,7 @@ impl Differ {
     /// // Compare all fields
     /// let diff = Differ::diff(&old, &new, None);
     ///
-    /// // Compare only version and license changes
+    /// // compare only version and license changes
     /// let diff = Differ::diff(&old, &new, Some(&[Field::Version, Field::License]));
     /// ```
     pub fn diff(old: &Sbom, new: &Sbom, only: Option<&[Field]>) -> Diff {
@@ -396,11 +396,6 @@ impl Differ {
 
     /// consuming variant of [`diff`](Self::diff) that normalizes in place,
     /// avoiding two full SBOM clones.
-    ///
-    /// components are moved out of the SBOM maps rather than cloned: matched
-    /// pairs are drained via `swap_remove`, and unmatched remainders are
-    /// collected with `into_values()`. This eliminates all `Component::clone()`
-    /// calls in the diff path.
     pub fn diff_owned(mut old: Sbom, mut new: Sbom, only: Option<&[Field]>) -> Diff {
         // compare metadata before normalize() strips volatile fields
         let metadata_changed = {
@@ -431,8 +426,8 @@ impl Differ {
         old.normalize();
         new.normalize();
 
-        // Phase 1: Collect match decisions using only borrows — no component
-        // clones. We record (old_id, new_id, field_changes) triples for pairs
+        // phase 1: collect match decisions using only borrows — no component
+        // clones. we record (old_id, new_id, field_changes) triples for pairs
         // that actually differ and track all matched IDs for later draining.
         let mut changed_pairs: Vec<(ComponentId, ComponentId, Vec<FieldChange>)> = Vec::new();
         let mut matched_old: HashSet<ComponentId> = HashSet::new();
@@ -441,7 +436,7 @@ impl Differ {
         // track old_id -> new_id mappings for edge reconciliation
         let mut id_mapping: BTreeMap<ComponentId, ComponentId> = BTreeMap::new();
 
-        // 1. Match by ID
+        // 1. match by ID
         for (id, new_comp) in &new.components {
             if let Some(old_comp) = old.components.get(id) {
                 matched_old.insert(id.clone());
@@ -455,7 +450,7 @@ impl Differ {
             }
         }
 
-        // 2. Reconciliation: Match by "Identity" (Name + Ecosystem)
+        // 2. reconciliation: match by "identity" (name + ecosystem)
         // when purls are absent or change, we match by (ecosystem, name).
         // if either ecosystem is None, we treat it as a wildcard and match by name alone.
         //
@@ -510,10 +505,7 @@ impl Differ {
             matched_new.insert(new_id.clone());
         }
 
-        // 2b. whatever is still unmatched falls through the wildcard cases:
-        // 1. Exact match on (ecosystem, name)
-        // 2. If new has ecosystem but no exact match, try old with None ecosystem (same name)
-        // 3. If new has no ecosystem, try any old with same name
+        // 2b. whatever is still unmatched falls through the wildcard cases below.
         for (id, new_comp) in &new.components {
             if matched_new.contains(id) {
                 continue;
@@ -559,13 +551,13 @@ impl Differ {
             }
         }
 
-        // 3. Compute totals (must happen before draining the maps)
+        // 3. compute totals (must happen before draining the maps)
         let old_total = old.components.len();
         let new_total = new.components.len();
         let matched = matched_old.len();
         let unchanged = matched - changed_pairs.len();
 
-        // 4. Compute edge diffs (needs dependencies, not component values)
+        // 4. compute edge diffs (needs dependencies, not component values)
         let should_include_deps = only.is_none_or(|fields| fields.contains(&Field::Deps));
         let edge_diffs = if should_include_deps {
             Self::compute_edge_diffs(&old, &new, &id_mapping)
@@ -573,13 +565,13 @@ impl Differ {
             Vec::new()
         };
 
-        // 5. Build human-readable name map (needs component maps intact)
+        // 5. build human-readable name map (needs component maps intact)
         let component_names = Self::build_component_names(&old, &new, &edge_diffs);
 
-        // Phase 2: Drain components by moving them out of the maps, avoiding
+        // phase 2: drain components by moving them out of the maps, avoiding
         // all Component::clone() calls.
 
-        // 6. Drain changed pairs — swap_remove moves values out of the IndexMap
+        // 6. drain changed pairs — swap_remove moves values out of the IndexMap
         let mut changed = Vec::with_capacity(changed_pairs.len());
         for (old_id, new_id, fields) in changed_pairs {
             let old_comp = old.components.swap_remove(&old_id).unwrap();
@@ -599,7 +591,7 @@ impl Differ {
             });
         }
 
-        // 7. Remove unchanged matched components (already drained changed ones
+        // 7. remove unchanged matched components (already drained changed ones
         //    above, so swap_remove returns None for those — that's fine)
         for id in &matched_old {
             old.components.swap_remove(id);
@@ -608,7 +600,7 @@ impl Differ {
             new.components.swap_remove(id);
         }
 
-        // 8. Drain remaining: everything left is unmatched
+        // 8. drain remaining: everything left is unmatched
         let added: Vec<Component> = new.components.into_values().collect();
         let removed: Vec<Component> = old.components.into_values().collect();
 
@@ -841,7 +833,7 @@ impl Differ {
     /// builds a human-readable display name map for component IDs in edge diffs.
     ///
     /// only includes entries for hash-based IDs (`h:...`) since purl-based IDs
-    /// are already human-readable. Looks up component names from both SBOMs.
+    /// are already human-readable. looks up component names from both SBOMs.
     fn build_component_names(
         old: &Sbom,
         new: &Sbom,
@@ -879,11 +871,11 @@ impl Differ {
     }
 
     /// compares two components field-by-field, returning the list of
-    /// [`FieldChange`]s. An empty vector means the components are identical
+    /// [`FieldChange`]s. an empty vector means the components are identical
     /// (modulo fields excluded by `only`).
     ///
     /// this is a pure comparison — it does not construct a [`ComponentChange`]
-    /// or clone either component. The caller is responsible for building the
+    /// or clone either component. the caller is responsible for building the
     /// final struct from owned values.
     fn compute_fields(
         old: &Component,
@@ -2167,14 +2159,10 @@ mod tests {
     #[test]
     fn test_filter_by_ecosystem_matched_pair_changes_ecosystem() {
         // a matched pair (same name+version → same hash id) whose ecosystem
-        // goes npm → None because its purl was dropped. Two differently-schemed
+        // goes npm → None because its purl was dropped. two differently-schemed
         // purls would get distinct ids and diff as add+remove, so a dropped (or
         // added) purl — ecosystem Some↔None — is the reachable way a *matched*
-        // pair straddles the ecosystem filter. The pair lands in `changed`,
-        // retained by its NEW ecosystem (None); filtering to npm drops it from
-        // `changed` while it is still counted in the old total. Deriving
-        // `unchanged` from the old side would absorb this pair and push
-        // `unchanged` above `new_total`; the new-side derivation must not.
+        // pair straddles the ecosystem filter.
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 

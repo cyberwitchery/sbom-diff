@@ -2,7 +2,6 @@
 ignore = []
 
 [licenses]
-# We allow common OSS licenses
 allow = [
     "MIT",
     "MIT-0",

@@ -8,7 +8,7 @@ use std::time::Instant;
 
 /// build two SBOMs where every component has a *different* ID in old vs new
 /// (triggering reconciliation via identity matching) and each component has
-/// dependency edges.  This maximises the reverse-lookup work in
+/// dependency edges.  this maximises the reverse-lookup work in
 /// `compute_edge_diffs`.
 fn make_sboms(n: usize) -> (Sbom, Sbom) {
     let mut old = Sbom::default();

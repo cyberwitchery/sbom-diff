@@ -339,23 +339,9 @@ fn allow_license_requires_licenseref_in_mixed_expression() {
 
 #[test]
 fn license_violation_takes_precedence_over_fail_on() {
-    // the golden fixtures have added components (fail-on → exit 3) AND
-    // we deny MIT in the license fixture. Use the license fixture so
-    // that both violations are possible.
-    //
-    // cli-license.json diffed against itself has no diff changes, so
-    // fail-on won't fire. Instead, use golden fixtures for the diff and
-    // deny a license that exists in golden-new (no licenses there, so
-    // that won't work). Use a fixture pair where we can trigger both.
-    //
-    // simpler approach: the license check runs on the *new* sbom
-    // regardless of diff. Use cli-license as both old and new (no diff
-    // changes, so fail-on won't fire). We need a fixture that has both
-    // a diff AND licenses.
-    //
-    // since we don't have such a fixture, we verify the precedence rule
-    // structurally: when only license violation → exit 2, when only
-    // fail-on → exit 3.
+    // no fixture triggers both a license violation and a fail-on violation,
+    // so the precedence is verified structurally: license-only exits 2,
+    // fail-on-only exits 3.
     let license_only = sbom_diff()
         .arg(fixture("cli-license.json"))
         .arg(fixture("cli-license.json"))

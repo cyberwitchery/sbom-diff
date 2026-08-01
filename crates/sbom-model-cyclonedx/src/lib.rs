@@ -45,9 +45,9 @@ const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1.3", "1.4", "1.5"];
 /// instead of a cryptic parse error.
 const MAX_COMPONENT_DEPTH: usize = 32;
 
-/// parser for CycloneDX JSON documents.
+/// parser for CycloneDX documents.
 ///
-/// converts CycloneDX 1.4+ JSON into the format-agnostic [`Sbom`] type.
+/// converts CycloneDX 1.3-1.5 JSON and XML into the format-agnostic [`Sbom`] type.
 pub struct CycloneDxReader;
 
 impl CycloneDxReader {
@@ -427,7 +427,6 @@ impl CycloneDxReader {
             }
             sbom.components.insert(id, comp);
 
-            // recurse into sub-components
             if let Some(sub) = &cdx_comp.components {
                 Self::collect_components(&sub.0, sbom, scope_map, depth + 1);
             }
@@ -817,7 +816,7 @@ mod tests {
             .id
             .clone();
 
-        // excluded has no DependencyKind equivalent; falls back to Runtime
+        // excluded maps to Runtime, see `scope_to_dep_kind`
         assert_eq!(
             sbom.dependencies[&app_id][&excl_id],
             DependencyKind::Runtime

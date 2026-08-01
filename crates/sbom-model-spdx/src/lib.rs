@@ -205,8 +205,7 @@ impl SpdxReader {
             .package_information
             .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
 
-        // fix creator contamination: re-parse Creator lines from the raw
-        // input instead of trusting the parsed result.
+        // quirk 1: creator contamination.
         let parsed_creators = spdx_doc
             .document_creation_information
             .creation_info
@@ -378,8 +377,6 @@ impl SpdxReader {
 
             // determine the edge direction and semantic kind for this
             // relationship type.
-            // forward: left depends on right (left → right edge).
-            // inverse: right depends on left (right → left edge).
             let (parent_spdx, child_spdx, kind) = match dependency_direction(&rel_type) {
                 Some((Direction::Forward, kind)) => (&left_spdx, &right_spdx, kind),
                 Some((Direction::Inverse, kind)) => (&right_spdx, &left_spdx, kind),
@@ -1243,8 +1240,8 @@ mod tests {
         assert!(find("both-noassertion").licenses.is_empty());
 
         // valid concluded -> uses concluded, ignores declared
-        // spdx 0.13 preserves the canonical SPDX id (GPL-3.0-only) rather than
-        // collapsing it to the deprecated short form (GPL-3.0) as 0.10 did.
+        // spdx preserves the canonical id (GPL-3.0-only), not the deprecated
+        // short form (GPL-3.0)
         assert!(find("concluded-present").licenses.contains("GPL-3.0-only"));
         assert!(!find("concluded-present").licenses.contains("MIT"));
 

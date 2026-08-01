@@ -375,8 +375,7 @@ fn main() -> anyhow::Result<()> {
     let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
     let cycle_violation = check_cyclic_dependencies(&new_sbom, &args.fail_on);
 
-    // build ecosystem filter and pre-count filtered totals before diff_owned
-    // consumes the SBOMs.
+    // build ecosystem filter and pre-count filtered totals.
     let eco_include: HashSet<String> = args
         .include_ecosystem
         .iter()
@@ -401,7 +400,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let (filtered_old_total, filtered_new_total, component_ecosystems) = if eco_filter_active {
-        // build ecosystem map from both SBOMs before diff_owned consumes them
+        // build ecosystem map from both SBOMs
         let mut eco_map = std::collections::BTreeMap::new();
         for (id, comp) in old_sbom.components.iter() {
             eco_map.insert(id.clone(), comp.ecosystem.clone());
@@ -803,8 +802,8 @@ fn only_masked_gate_warnings(only: &[Field], fail_on: &[FailOn]) -> Vec<String> 
         return Vec::new();
     }
 
-    // `only` holds at most one entry per field, so a linear membership check is
-    // cheaper than building a set (and `Field` is not `Hash`).
+    // the field list is tiny and `Field` is not `Hash`; a linear membership
+    // check beats building a set.
     let active: BTreeSet<FailOn> = fail_on.iter().copied().collect();
 
     let mut warnings = Vec::new();

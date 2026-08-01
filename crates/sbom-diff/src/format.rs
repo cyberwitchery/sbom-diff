@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_load_sbom_bom_cyclonedx_xml() {
-        // regression guard: CycloneDX XML already tolerated a leading BOM.
+        // CycloneDX XML tolerates a leading BOM on its own; keep it covered.
         assert_bom_roundtrip(
             "../../tests/fixtures/golden-old.cdx.xml",
             "golden-old.cdx.xml",

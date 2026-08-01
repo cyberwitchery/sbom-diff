@@ -125,8 +125,8 @@ impl fmt::Display for DependencyKind {
 
 /// stable identifier for a component.
 ///
-/// used as a key in the component map and dependency graph. Prefers package URLs
-/// (purls) when available since they provide globally unique identifiers. Falls
+/// used as a key in the component map and dependency graph. prefers package URLs
+/// (purls) when available since they provide globally unique identifiers. falls
 /// back to a deterministic SHA-256 hash of component properties when no purl exists.
 ///
 /// # Example
@@ -134,11 +134,11 @@ impl fmt::Display for DependencyKind {
 /// ```
 /// use sbom_model::ComponentId;
 ///
-/// // With a purl (preferred)
+/// // with a purl (preferred)
 /// let id = ComponentId::new(Some("pkg:npm/lodash@4.17.21"), &[]);
 /// assert_eq!(id.as_str(), "pkg:npm/lodash@4.17.21");
 ///
-/// // Without a purl (hash fallback)
+/// // without a purl (hash fallback)
 /// let id = ComponentId::new(None, &[("name", "foo"), ("version", "1.0")]);
 /// assert!(id.as_str().starts_with("h:"));
 /// ```
@@ -148,11 +148,10 @@ pub struct ComponentId(String);
 impl ComponentId {
     /// creates a new identifier from a purl or property hash.
     ///
-    /// if a purl is provided, it will be canonicalized. Otherwise, a deterministic
+    /// if a purl is provided, it will be canonicalized. otherwise, a deterministic
     /// SHA-256 hash is computed from the provided key-value properties.
     pub fn new(purl: Option<&str>, properties: &[(&str, &str)]) -> Self {
         if let Some(purl) = purl {
-            // try to canonicalize purl
             if let Ok(parsed) = PackageUrl::from_str(purl) {
                 return ComponentId(parsed.to_string());
             }
@@ -243,10 +242,10 @@ impl Sbom {
     /// normalizes the SBOM for deterministic comparison.
     ///
     /// this method:
-    /// - Sorts components by ID
-    /// - Deduplicates and sorts licenses within each component
-    /// - Lowercases hash algorithms and values
-    /// - Clears volatile metadata (timestamps, tools, authors)
+    /// - sorts components by ID
+    /// - deduplicates and sorts licenses within each component
+    /// - lowercases hash algorithms and values
+    /// - clears volatile metadata (timestamps, tools, authors)
     ///
     /// call this before comparing two SBOMs to ignore irrelevant differences.
     pub fn normalize(&mut self) {
@@ -261,7 +260,7 @@ impl Sbom {
         // strip volatile metadata
         self.metadata.timestamp = None;
         self.metadata.tools.clear();
-        self.metadata.authors.clear(); // authors churn between generator runs, so they count as volatile
+        self.metadata.authors.clear();
 
         self.rebuild_reverse_deps();
     }
@@ -286,7 +285,7 @@ impl Sbom {
     /// returns root components (those not depended on by any other component).
     ///
     /// these are typically the top-level packages or applications in the SBOM.
-    /// uses the precomputed `reverse_deps` index for O(n) lookup.
+    /// uses the precomputed `reverse_deps` index.
     pub fn roots(&self) -> Vec<ComponentId> {
         self.components
             .keys()
@@ -304,7 +303,7 @@ impl Sbom {
     }
 
     /// returns reverse dependencies (components that depend on the given component).
-    /// uses the precomputed `reverse_deps` index for O(1) lookup.
+    /// uses the precomputed `reverse_deps` index.
     pub fn rdeps(&self, id: &ComponentId) -> Vec<ComponentId> {
         self.reverse_deps
             .get(id)
@@ -428,7 +427,7 @@ impl Sbom {
 impl Component {
     /// normalizes the component for deterministic comparison.
     ///
-    /// lowercases hash keys and values. Licenses are stored as a BTreeSet
+    /// lowercases hash keys and values. licenses are stored as a BTreeSet
     /// so they're already sorted and deduplicated.
     pub fn normalize(&mut self) {
         let normalized_hashes: BTreeMap<String, String> = self
@@ -580,9 +579,9 @@ pub fn hash_algorithm_strength(name: &str) -> Option<u8> {
 /// set's strongest algorithm is weaker than the old set's strongest.
 ///
 /// returns `false` when:
-/// - Either hash set is empty (use `missing-hashes` for that)
-/// - Neither set contains a recognized algorithm
-/// - The new set is at least as strong as the old set
+/// - either hash set is empty (use `missing-hashes` for that)
+/// - neither set contains a recognized algorithm
+/// - the new set is at least as strong as the old set
 ///
 /// # Example
 ///
@@ -699,7 +698,6 @@ mod tests {
 
         comp.normalize();
 
-        // BTreeSet is already sorted and deduped
         assert_eq!(
             comp.licenses,
             BTreeSet::from(["Apache-2.0".to_string(), "MIT".to_string()])
@@ -1007,7 +1005,7 @@ mod tests {
 
     #[test]
     fn test_hash_algorithm_strength_ordering() {
-        // task-specified ordering: MD5 < SHA-1 < SHA-224 < SHA-256 < SHA-384 < SHA-512
+        // ordering: MD5 < SHA-1 < SHA-224 < SHA-256 < SHA-384 < SHA-512
         let md5 = hash_algorithm_strength("MD5").unwrap();
         let sha1 = hash_algorithm_strength("SHA-1").unwrap();
         let sha224 = hash_algorithm_strength("SHA-224").unwrap();
