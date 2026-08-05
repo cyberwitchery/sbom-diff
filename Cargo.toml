@@ -28,11 +28,11 @@ clap = { version = "4.4", features = ["derive"] }
 cyclonedx-bom = "0.8"
 spdx-rs = "0.5"
 spdx = "0.13"
-packageurl = "0.6"
+packageurl = "0.7"
 sha2 = "0.11"
 hex = "0.4"
 semver = "1.0"
-xml-rs = "0.8"
+xml-rs = "1.0"
 
 [profile.release]
 strip = true
