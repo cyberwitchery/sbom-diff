@@ -339,32 +339,42 @@ fn allow_license_requires_licenseref_in_mixed_expression() {
 
 #[test]
 fn license_violation_takes_precedence_over_fail_on() {
-    // no fixture triggers both a license violation and a fail-on violation,
-    // so the precedence is verified structurally: license-only exits 2,
-    // fail-on-only exits 3.
-    let license_only = sbom_diff()
-        .arg(fixture("cli-license.json"))
-        .arg(fixture("cli-license.json"))
-        .arg("--deny-license")
-        .arg("MIT")
-        .arg("--fail-on")
-        .arg("added-components")
-        .output()
-        .unwrap();
-
-    // no diff changes here, so only license fires → exit 2.
-    assert_eq!(license_only.status.code(), Some(2));
-
     let fail_on_only = sbom_diff()
-        .arg(fixture("golden-old.json"))
-        .arg(fixture("golden-new.json"))
+        .arg(fixture("dual-violation-old.json"))
+        .arg(fixture("dual-violation-new.json"))
         .arg("--fail-on")
         .arg("added-components")
         .output()
         .unwrap();
 
-    // golden fixtures have no licenses, so only fail-on fires → exit 3.
-    assert_eq!(fail_on_only.status.code(), Some(3));
+    assert_eq!(
+        fail_on_only.status.code(),
+        Some(3),
+        "fixture pair must trigger a fail-on violation on its own"
+    );
+
+    let both = sbom_diff()
+        .arg(fixture("dual-violation-old.json"))
+        .arg(fixture("dual-violation-new.json"))
+        .arg("--deny-license")
+        .arg("GPL-3.0-only")
+        .arg("--fail-on")
+        .arg("added-components")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(
+        stderr.contains("license GPL-3.0-only is denied"),
+        "license violation should be reported, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("--fail-on added-components"),
+        "fail-on violation should be reported too, got: {}",
+        stderr
+    );
+    assert_eq!(both.status.code(), Some(2));
 }
 
 #[test]
