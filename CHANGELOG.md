@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.7.0] - 2026-08-08
 
 - fix invented version downgrades when the same dependency set is diffed across serialization formats: components that gain or lose their purl are paired in version order, so an npm SBOM re-exported as purl-less SPDX reports no version change instead of a spliced `1.0.0 -> 2.0.0` upgrade and `2.0.0 -> 1.0.0` downgrade failing `--fail-on version-downgrade`
 - read SPDX 2.x XML documents: `--format spdx-xml` parses them, `--format auto` detects them, and `SpdxReader::read_xml` mirrors `read_json`/`read_tag_value`. both `<Document>` and `<SpdxDocument>` roots are accepted; SPDX 3.x is rejected with the same unsupported-version message as the JSON and tag-value paths
