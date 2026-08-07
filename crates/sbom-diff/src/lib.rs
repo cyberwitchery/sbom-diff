@@ -455,8 +455,8 @@ impl Differ {
         // if either ecosystem is None, we treat it as a wildcard and match by name alone.
         //
         // the map is keyed by name, then by ecosystem, so the wildcard lookup
-        // (case 3: new has no ecosystem → match any old with same name) is
-        // O(k) where k is the number of distinct ecosystems sharing that name,
+        // (new has no ecosystem → match any old with the same name) is O(k)
+        // where k is the number of distinct ecosystems sharing that name,
         // rather than a linear scan of the entire map.
         let mut old_identity_map: BTreeMap<String, BTreeMap<Option<String>, Vec<ComponentId>>> =
             BTreeMap::new();
@@ -505,32 +505,38 @@ impl Differ {
             matched_new.insert(new_id.clone());
         }
 
-        // 2b. whatever is still unmatched falls through the wildcard cases below.
-        for (id, new_comp) in &new.components {
-            if matched_new.contains(id) {
+        // 2b. what is left falls through to the wildcard cases, aligned by
+        // version as well; an ecosystem-less new component pools every old
+        // ecosystem of that name, so the version-nearest candidate wins over
+        // the alphabetically first.
+        for (name, new_eco_map) in &new_identity_map {
+            let Some(old_eco_map) = old_identity_map.get_mut(name) else {
                 continue;
-            }
-
-            let matched_old_id = old_identity_map
-                .get_mut(&new_comp.name)
-                .and_then(|eco_map| {
-                    // case 1: exact match on (ecosystem, name)
-                    eco_map
-                        .get_mut(&new_comp.ecosystem)
-                        .and_then(|ids| ids.pop())
-                        .or_else(|| {
-                            if new_comp.ecosystem.is_some() {
-                                // case 2: new has ecosystem, try old with None ecosystem
-                                eco_map.get_mut(&None).and_then(|ids| ids.pop())
-                            } else {
-                                // case 3: new has no ecosystem, try any old with same name
-                                eco_map.values_mut().find_map(|ids| ids.pop())
-                            }
-                        })
-                });
-
-            if let Some(old_id) = matched_old_id {
-                identity_pairs.push((old_id, id.clone()));
+            };
+            for (ecosystem, new_ids) in new_eco_map {
+                let new_ids: Vec<ComponentId> = new_ids
+                    .iter()
+                    .filter(|id| !matched_new.contains(*id))
+                    .cloned()
+                    .collect();
+                if new_ids.is_empty() {
+                    continue;
+                }
+                let old_ids: Vec<ComponentId> = if ecosystem.is_some() {
+                    old_eco_map.get(&None).cloned().unwrap_or_default()
+                } else {
+                    old_eco_map.values().flatten().cloned().collect()
+                };
+                let pairs = Self::align_by_version(&old_ids, &new_ids, &old, &new);
+                let consumed: HashSet<ComponentId> =
+                    pairs.iter().map(|(old_id, _)| old_id.clone()).collect();
+                for ids in old_eco_map.values_mut() {
+                    ids.retain(|id| !consumed.contains(id));
+                }
+                for (_, new_id) in &pairs {
+                    matched_new.insert(new_id.clone());
+                }
+                identity_pairs.extend(pairs);
             }
         }
 
@@ -2471,13 +2477,21 @@ mod tests {
         assert!(!diff.changed[0].is_downgrade);
     }
 
-    fn npm_component(name: &str, version: &str) -> Component {
-        let purl = format!("pkg:npm/{name}@{version}");
+    fn purl_component(ecosystem: &str, name: &str, version: &str) -> Component {
+        let purl = format!("pkg:{ecosystem}/{name}@{version}");
         let mut comp = Component::new(name.to_string(), Some(version.to_string()));
-        comp.ecosystem = Some("npm".to_string());
+        comp.ecosystem = Some(ecosystem.to_string());
         comp.id = ComponentId::new(Some(&purl), &[]);
         comp.purl = Some(purl);
         comp
+    }
+
+    fn npm_component(name: &str, version: &str) -> Component {
+        purl_component("npm", name, version)
+    }
+
+    fn plain_component(name: &str, version: &str) -> Component {
+        Component::new(name.to_string(), Some(version.to_string()))
     }
 
     fn sbom_of(components: Vec<Component>) -> Sbom {
@@ -2760,5 +2774,96 @@ mod tests {
             "both parents kept their dependency, got {:?}",
             diff.edge_diffs
         );
+    }
+
+    /// a purl-less re-export drops the ecosystem, so every component takes the
+    /// wildcard path.
+    #[test]
+    fn test_wildcard_reconciliation_pairs_same_version_line() {
+        for (old_comps, new_comps) in [
+            (
+                vec![
+                    npm_component("libfoo", "1.0.0"),
+                    npm_component("libfoo", "2.0.0"),
+                ],
+                vec![
+                    plain_component("libfoo", "1.0.0"),
+                    plain_component("libfoo", "2.0.0"),
+                ],
+            ),
+            (
+                vec![
+                    plain_component("libfoo", "1.0.0"),
+                    plain_component("libfoo", "2.0.0"),
+                ],
+                vec![
+                    npm_component("libfoo", "1.0.0"),
+                    npm_component("libfoo", "2.0.0"),
+                ],
+            ),
+        ] {
+            let diff = Differ::diff(&sbom_of(old_comps), &sbom_of(new_comps), None);
+            assert_eq!(
+                version_pairs(&diff),
+                expect_pairs(&[("1.0.0", "1.0.0"), ("2.0.0", "2.0.0")])
+            );
+            assert_eq!(diff.added.len(), 0);
+            assert_eq!(diff.removed.len(), 0);
+            assert!(
+                !diff.changed.iter().any(|c| c.is_downgrade),
+                "re-serializing the same versions must not report a downgrade, got {:?}",
+                version_pairs(&diff)
+            );
+        }
+    }
+
+    #[test]
+    fn test_wildcard_reconciliation_prefers_version_nearest_candidate() {
+        let old = sbom_of(vec![
+            npm_component("libfoo", "2.0.0"),
+            purl_component("pypi", "libfoo", "1.0.0"),
+        ]);
+        let new = sbom_of(vec![plain_component("libfoo", "1.0.1")]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(version_pairs(&diff), expect_pairs(&[("1.0.0", "1.0.1")]));
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.added.len(), 0);
+        assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+    }
+
+    #[test]
+    fn test_wildcard_reconciliation_breaks_version_ties_deterministically() {
+        let old = sbom_of(
+            ["cargo", "npm", "pypi"]
+                .iter()
+                .map(|eco| purl_component(eco, "libfoo", "1.0.0"))
+                .collect(),
+        );
+        let new = sbom_of(vec![plain_component("libfoo", "1.0.1")]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(
+            diff.changed[0].old.id.as_str(),
+            "pkg:pypi/libfoo@1.0.0",
+            "equal versions must resolve by merged version order, not ecosystem name"
+        );
+        assert_eq!(diff.removed.len(), 2);
+        assert_eq!(diff.added.len(), 0);
+    }
+
+    #[test]
+    fn test_exact_ecosystem_match_beats_a_nearer_wildcard() {
+        let old = sbom_of(vec![
+            npm_component("libfoo", "1.0.0"),
+            plain_component("libfoo", "2.0.0"),
+        ]);
+        let new = sbom_of(vec![npm_component("libfoo", "2.0.1")]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(version_pairs(&diff), expect_pairs(&[("1.0.0", "2.0.1")]));
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.added.len(), 0);
     }
 }
