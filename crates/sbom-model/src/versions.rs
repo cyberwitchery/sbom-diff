@@ -1,8 +1,12 @@
 //! version parsing and comparison utilities.
 //!
 //! provides lenient version parsing for SBOM component versions, supporting
-//! semver, dot-separated numeric strings, Debian/RPM-style epoch/revision
-//! versions, and opaque version strings.
+//! semver, dot-separated numeric strings, PEP440-style qualified versions,
+//! Debian/RPM-style epoch/revision versions, and opaque version strings.
+//!
+//! versions of different kinds are ordered through a shared
+//! `(epoch, release, qualifier)` key; see [`Version::partial_cmp_lenient`] for
+//! which pairs that leaves unordered.
 
 use std::cmp::Ordering;
 
@@ -11,6 +15,7 @@ use std::cmp::Ordering;
 /// covers the common version formats found in SBOMs:
 /// - standard semver (possibly with `v` prefix or fewer than three parts)
 /// - dot-separated numeric (e.g., date-based `2024.01.15` or four-part `1.2.3.4`)
+/// - PEP440-style qualified versions (dominant on pypi, plus maven `-SNAPSHOT`)
 /// - Debian/RPM-style `epoch:upstream-revision` (dominant in OS/container SBOMs)
 /// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,12 +26,14 @@ pub enum Version {
     /// dot-separated numeric segments that don't qualify as semver
     /// (e.g., four-part versions or versions with leading zeros).
     Numeric(Vec<u64>),
+    /// numeric release with a PEP440 epoch or pre/post/dev qualifier, compared
+    /// with the PEP440 ordering. covers pypi versions (`1.0rc1`, `1.0.dev1`,
+    /// `1!2.0`, `1.0.post1`) and the maven `-SNAPSHOT` marker.
+    Pep440(Pep440),
     /// Debian/RPM-style version with an optional numeric epoch and a trailing
     /// revision, compared with the Debian `dpkg` algorithm. covers
-    /// `epoch:upstream-revision` (Debian), `epoch:version-release` (RPM), and
-    /// PEP440 `epoch!version` forms that don't parse as clean semver but whose
-    /// ordering is still well-defined. an absent epoch is `0` and an absent
-    /// revision is the empty string.
+    /// `epoch:upstream-revision` (Debian) and `epoch:version-release` (RPM). an
+    /// absent epoch is `0` and an absent revision is the empty string.
     Deb {
         epoch: u64,
         upstream: String,
@@ -36,12 +43,37 @@ pub enum Version {
     Opaque(String),
 }
 
+/// a PEP440-style version: numeric release core plus optional epoch,
+/// pre-release, post-release, and development-release qualifiers.
+///
+/// build a value with [`Version::parse_lenient`]; ordering follows PEP440's
+/// `dev < alpha < beta < rc < release < post`, with maven's `-SNAPSHOT`
+/// slotted between `rc` and the release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pep440 {
+    epoch: u64,
+    release: Vec<u64>,
+    pre: Option<(PreKind, u64)>,
+    post: Option<u64>,
+    dev: Option<u64>,
+}
+
+/// pre-release markers, in ascending order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PreKind {
+    Alpha,
+    Beta,
+    Rc,
+    Snapshot,
+}
+
 impl Version {
     /// parses a version string leniently.
     ///
     /// tries semver first (stripping `v`/`V` prefix and padding one- or
-    /// two-part versions), then dot-separated numeric, then Debian/RPM-style
-    /// epoch/revision versions, then falls back to [`Opaque`](Version::Opaque).
+    /// two-part versions), then dot-separated numeric, then PEP440-style
+    /// qualified versions, then Debian/RPM-style epoch/revision versions, then
+    /// falls back to [`Opaque`](Version::Opaque).
     ///
     /// # Examples
     ///
@@ -51,6 +83,7 @@ impl Version {
     /// assert!(matches!(Version::parse_lenient("1.2.3"), Version::Semver(_)));
     /// assert!(matches!(Version::parse_lenient("v1.2"), Version::Semver(_)));
     /// assert!(matches!(Version::parse_lenient("2024.01.15"), Version::Numeric(_)));
+    /// assert!(matches!(Version::parse_lenient("1.0rc1"), Version::Pep440(_)));
     /// assert!(matches!(Version::parse_lenient("2:1.0-3"), Version::Deb { .. }));
     /// assert!(matches!(Version::parse_lenient("abc"), Version::Opaque(_)));
     /// ```
@@ -81,6 +114,10 @@ impl Version {
             return Version::Numeric(segments);
         }
 
+        if let Some(pep) = parse_pep440(stripped) {
+            return pep;
+        }
+
         if let Some(deb) = parse_deb(stripped) {
             return deb;
         }
@@ -90,16 +127,27 @@ impl Version {
 
     /// orders two versions, returning `None` when the ordering is unknown.
     ///
-    /// comparison strategy depends on the variant pair:
-    /// - **Semver vs Semver**: semver *precedence* ordering (including
-    ///   pre-release; build metadata is ignored per SemVer §10)
-    /// - **Numeric vs Numeric**: segment-by-segment with implicit zero padding
-    /// - **Semver vs Numeric** (either direction): extracts `[major, minor, patch]`
-    ///   from the semver side and compares as numeric segments
-    /// - **Deb vs Deb**: epoch (numeric), then upstream, then revision, via the
-    ///   Debian `dpkg` version-comparison algorithm
-    /// - **Any other pair** (including any Opaque, or a Deb against a
-    ///   semver/numeric version): `None`
+    /// two versions of the same kind use that kind's native ordering:
+    /// - **Semver**: semver *precedence* (including pre-release; build metadata
+    ///   is ignored per SemVer §10)
+    /// - **Numeric**: segment-by-segment with implicit zero padding
+    /// - **Pep440**: epoch, release, then `dev < alpha < beta < rc < SNAPSHOT <
+    ///   release < post` per PEP440
+    /// - **Deb**: epoch, then upstream, then revision, via the Debian `dpkg`
+    ///   version-comparison algorithm
+    ///
+    /// versions of different kinds are reduced to a common
+    /// `(epoch, release, qualifier)` key: a differing epoch decides, then
+    /// differing release components decide. with both equal, the qualifiers
+    /// decide only when both rank on the shared `dev < pre-release < release <
+    /// post-release` scale — a plain release outranks any pre-release, so
+    /// `1.0.0` is [`Greater`](Ordering::Greater) than `1.0.0rc1`. an
+    /// unrecognized pre-release (a semver `-next.0`, a Debian `~foo`) still
+    /// ranks below a release but not against another pre-release, and a Debian
+    /// upstream suffix or revision (`1.0.2k`, `5.1-3`) does not rank at all.
+    ///
+    /// anything unranked, and anything involving an [`Opaque`](Version::Opaque)
+    /// version, is `None`.
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
     /// [`Opaque`](Version::Opaque) versions compare `None`.
@@ -114,6 +162,10 @@ impl Version {
     /// let b = Version::parse_lenient("1.5.0");
     /// assert_eq!(a.partial_cmp_lenient(&b), Some(Ordering::Greater));
     ///
+    /// let release = Version::parse_lenient("1.0.0");
+    /// let candidate = Version::parse_lenient("1.0.0rc1");
+    /// assert_eq!(release.partial_cmp_lenient(&candidate), Some(Ordering::Greater));
+    ///
     /// let opaque = Version::parse_lenient("deadbeef");
     /// assert_eq!(a.partial_cmp_lenient(&opaque), None);
     /// ```
@@ -121,12 +173,7 @@ impl Version {
         match (self, other) {
             (Version::Semver(a), Version::Semver(b)) => Some(a.cmp_precedence(b)),
             (Version::Numeric(a), Version::Numeric(b)) => Some(numeric_cmp(a, b)),
-            (Version::Semver(a), Version::Numeric(b)) => {
-                Some(numeric_cmp(&[a.major, a.minor, a.patch], b))
-            }
-            (Version::Numeric(a), Version::Semver(b)) => {
-                Some(numeric_cmp(a, &[b.major, b.minor, b.patch]))
-            }
+            (Version::Pep440(a), Version::Pep440(b)) => Some(a.cmp_pep440(b)),
             (
                 Version::Deb {
                     epoch: ae,
@@ -139,7 +186,41 @@ impl Version {
                     revision: brev,
                 },
             ) => Some(deb_cmp((*ae, au, arev), (*be, bu, brev))),
-            _ => None,
+            _ => cross_kind_cmp(self, other),
+        }
+    }
+
+    /// reduces a version to the `(epoch, release, qualifier)` key shared by all
+    /// kinds. `None` for [`Opaque`](Version::Opaque), which has no release.
+    fn cross_key(&self) -> Option<(u64, Vec<u64>, Qual)> {
+        match self {
+            Version::Semver(v) => Some((
+                0,
+                vec![v.major, v.minor, v.patch],
+                if v.pre.is_empty() {
+                    Qual::Release
+                } else {
+                    Qual::UnrankedPre
+                },
+            )),
+            Version::Numeric(segments) => Some((0, segments.clone(), Qual::Release)),
+            Version::Pep440(p) => Some((p.epoch, p.release.clone(), p.qual())),
+            Version::Deb {
+                epoch,
+                upstream,
+                revision,
+            } => {
+                let (release, suffix) = split_release(upstream)?;
+                let qual = if suffix.starts_with('~') {
+                    Qual::UnrankedPre
+                } else if !suffix.is_empty() || !revision.is_empty() {
+                    Qual::Unranked
+                } else {
+                    Qual::Release
+                };
+                Some((*epoch, release, qual))
+            }
+            Version::Opaque(_) => None,
         }
     }
 
@@ -178,6 +259,215 @@ fn numeric_cmp(a: &[u64], b: &[u64]) -> Ordering {
         }
     }
     Ordering::Equal
+}
+
+/// where a version sits on the release scale shared by every scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Qual {
+    Dev(u64),
+    Pre(PreKind, u64),
+    /// a pre-release marker no scheme-independent rank applies to.
+    UnrankedPre,
+    Release,
+    Post(u64),
+    /// a suffix whose meaning is scheme-specific (a Debian upstream suffix or
+    /// revision), so it orders against nothing outside its own scheme.
+    Unranked,
+}
+
+impl Qual {
+    fn rank(self) -> u8 {
+        match self {
+            Qual::Dev(_) => 0,
+            Qual::Pre(..) => 1,
+            Qual::UnrankedPre => 2,
+            Qual::Release => 3,
+            Qual::Post(_) => 4,
+            Qual::Unranked => 5,
+        }
+    }
+}
+
+/// orders two versions of different kinds through [`Version::cross_key`].
+fn cross_kind_cmp(a: &Version, b: &Version) -> Option<Ordering> {
+    let (a_epoch, a_release, a_qual) = a.cross_key()?;
+    let (b_epoch, b_release, b_qual) = b.cross_key()?;
+    match a_epoch
+        .cmp(&b_epoch)
+        .then_with(|| numeric_cmp(&a_release, &b_release))
+    {
+        Ordering::Equal => qual_cmp(a_qual, b_qual),
+        decided => Some(decided),
+    }
+}
+
+/// orders two qualifiers of versions that share an epoch and release.
+fn qual_cmp(a: Qual, b: Qual) -> Option<Ordering> {
+    match (a, b) {
+        (Qual::Unranked, _) | (_, Qual::Unranked) => None,
+        // an unranked pre-release precedes its release but not another pre-release
+        (Qual::UnrankedPre, Qual::UnrankedPre | Qual::Dev(_) | Qual::Pre(..))
+        | (Qual::Dev(_) | Qual::Pre(..), Qual::UnrankedPre) => None,
+        (Qual::Dev(x), Qual::Dev(y)) | (Qual::Post(x), Qual::Post(y)) => Some(x.cmp(&y)),
+        (Qual::Pre(xk, x), Qual::Pre(yk, y)) => Some(xk.cmp(&yk).then(x.cmp(&y))),
+        _ => Some(a.rank().cmp(&b.rank())),
+    }
+}
+
+impl Pep440 {
+    /// PEP440 ordering: epoch, release, then the pre/post/dev sort keys.
+    fn cmp_pep440(&self, other: &Self) -> Ordering {
+        self.epoch
+            .cmp(&other.epoch)
+            .then_with(|| numeric_cmp(&self.release, &other.release))
+            .then_with(|| self.pre_key().cmp(&other.pre_key()))
+            .then_with(|| self.post_key().cmp(&other.post_key()))
+            .then_with(|| self.dev_key().cmp(&other.dev_key()))
+    }
+
+    /// a development release with no pre- or post-release marker sorts before
+    /// every pre-release; an absent marker on any other version sorts after.
+    fn pre_key(&self) -> (i8, PreKind, u64) {
+        match self.pre {
+            Some((kind, n)) => (0, kind, n),
+            None if self.post.is_none() && self.dev.is_some() => (-1, PreKind::Alpha, 0),
+            None => (1, PreKind::Alpha, 0),
+        }
+    }
+
+    fn post_key(&self) -> (u8, u64) {
+        self.post.map_or((0, 0), |n| (1, n))
+    }
+
+    fn dev_key(&self) -> (u8, u64) {
+        self.dev.map_or((1, 0), |n| (0, n))
+    }
+
+    fn qual(&self) -> Qual {
+        match (self.pre, self.post, self.dev) {
+            (Some((kind, n)), _, _) => Qual::Pre(kind, n),
+            (None, Some(n), _) => Qual::Post(n),
+            (None, None, Some(n)) => Qual::Dev(n),
+            (None, None, None) => Qual::Release,
+        }
+    }
+}
+
+/// parses a PEP440-style version: an optional `N!` epoch, a numeric release,
+/// and any number of pre/post/dev markers.
+///
+/// returns `None` for anything the markers don't fully explain, leaving Debian
+/// shapes (`1.0.2k`, `5.1-3`, `1.0~rc1`) to [`parse_deb`], and `None` for a
+/// plain numeric release, leaving it to the semver and numeric parsers.
+fn parse_pep440(stripped: &str) -> Option<Version> {
+    let (epoch, rest) = split_pep440_epoch(stripped);
+    let (release, mut rest) = split_release(rest)?;
+    let (mut pre, mut post, mut dev) = (None, None, None);
+
+    while !rest.is_empty() {
+        let body = rest.strip_prefix(['.', '-', '_']).unwrap_or(rest);
+        let (marker, n, tail) = take_marker(body)?;
+        match marker {
+            Marker::Pre(kind) if pre.is_none() && post.is_none() && dev.is_none() => {
+                pre = Some((kind, n));
+            }
+            Marker::Post if post.is_none() && dev.is_none() => post = Some(n),
+            Marker::Dev if dev.is_none() => dev = Some(n),
+            _ => return None,
+        }
+        rest = tail;
+    }
+
+    if epoch == 0 && pre.is_none() && post.is_none() && dev.is_none() {
+        return None;
+    }
+    Some(Version::Pep440(Pep440 {
+        epoch,
+        release,
+        pre,
+        post,
+        dev,
+    }))
+}
+
+/// splits a leading `N!` PEP440 epoch off a version string.
+fn split_pep440_epoch(s: &str) -> (u64, &str) {
+    if let Some((head, tail)) = s.split_once('!') {
+        if let Ok(epoch) = head.parse::<u64>() {
+            return (epoch, tail);
+        }
+    }
+    (0, s)
+}
+
+/// splits a leading dot-separated numeric release off a version string,
+/// returning it with the remaining suffix. `None` when there is no leading
+/// digit or a segment overflows.
+fn split_release(s: &str) -> Option<(Vec<u64>, &str)> {
+    let mut release = Vec::new();
+    let mut rest = s;
+    loop {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        release.push(rest[..end].parse::<u64>().ok()?);
+        rest = &rest[end..];
+        match rest.strip_prefix('.') {
+            Some(next) if next.starts_with(|c: char| c.is_ascii_digit()) => rest = next,
+            _ => return Some((release, rest)),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Marker {
+    Pre(PreKind),
+    Post,
+    Dev,
+}
+
+/// markers, longest first so `preview` wins over `pre` and `beta` over `b`. the
+/// single-letter aliases require a following digit: `0.9.8b` is an upstream
+/// patch letter, which dpkg sorts *above* `0.9.8`.
+const MARKERS: &[(&str, Marker, bool)] = &[
+    ("snapshot", Marker::Pre(PreKind::Snapshot), false),
+    ("preview", Marker::Pre(PreKind::Rc), false),
+    ("alpha", Marker::Pre(PreKind::Alpha), false),
+    ("beta", Marker::Pre(PreKind::Beta), false),
+    ("post", Marker::Post, false),
+    ("dev", Marker::Dev, false),
+    ("pre", Marker::Pre(PreKind::Rc), false),
+    ("rc", Marker::Pre(PreKind::Rc), false),
+    ("a", Marker::Pre(PreKind::Alpha), true),
+    ("b", Marker::Pre(PreKind::Beta), true),
+    ("c", Marker::Pre(PreKind::Rc), true),
+];
+
+/// consumes one marker and its optional ordinal, returning the rest.
+fn take_marker(body: &str) -> Option<(Marker, u64, &str)> {
+    let lower = body.to_ascii_lowercase();
+    for (word, marker, needs_ordinal) in MARKERS {
+        let Some(tail) = lower.strip_prefix(word) else {
+            continue;
+        };
+        let tail = &body[body.len() - tail.len()..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        if *needs_ordinal && end == 0 {
+            continue;
+        }
+        let ordinal = if end == 0 {
+            0
+        } else {
+            tail[..end].parse::<u64>().ok()?
+        };
+        return Some((*marker, ordinal, &tail[end..]));
+    }
+    None
 }
 
 /// parses dot-separated numeric segments (e.g. four-part or leading-zero
@@ -770,19 +1060,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_pep440_epoch_is_deb() {
-        match Version::parse_lenient("1!2.0") {
-            Version::Deb {
-                epoch,
-                upstream,
-                revision,
-            } => {
-                assert_eq!(epoch, 1);
-                assert_eq!(upstream, "2.0");
-                assert_eq!(revision, "");
-            }
-            other => panic!("expected Deb, got {:?}", other),
-        }
+    fn parse_pep440_epoch_is_pep440() {
+        assert!(matches!(
+            Version::parse_lenient("1!2.0"),
+            Version::Pep440(_)
+        ));
+        assert_eq!(compare_versions("1!2.0", "1!3.0"), Some(Ordering::Less));
+        assert_eq!(compare_versions("1!2.0", "9.9.9"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("1!2.0", "1:2.0"), Some(Ordering::Equal));
     }
 
     #[test]
@@ -909,10 +1194,24 @@ mod tests {
     }
 
     #[test]
-    fn downgrade_deb_vs_semver_not_flagged() {
-        // cross-format comparison stays conservative (returns false)
-        assert!(!is_version_downgrade("2:1.0", "1.0.0"));
+    fn downgrade_deb_vs_semver_epoch_dominates() {
+        assert!(is_version_downgrade("2:1.0", "1.0.0"));
         assert!(!is_version_downgrade("1.0.0", "2:1.0"));
+        assert!(is_version_downgrade("2:1.0", "0:1.0.0"));
+    }
+
+    #[test]
+    fn downgrade_deb_vs_semver_release_decides() {
+        assert!(is_version_downgrade("1.1.1f-1", "1.0.0"));
+        assert!(!is_version_downgrade("1.0.0", "1.1.1f-1"));
+    }
+
+    #[test]
+    fn downgrade_deb_suffix_vs_semver_not_flagged() {
+        assert_eq!(compare_versions("1.0.2k", "1.0.2"), None);
+        assert_eq!(compare_versions("5.1-3", "5.1.0"), None);
+        assert!(!is_version_downgrade("1.0.2k", "1.0.2"));
+        assert!(!is_version_downgrade("5.1-3", "5.1.0"));
     }
 
     #[test]
@@ -988,6 +1287,169 @@ mod tests {
         }
     }
 
+    // --- PEP440 parsing and ordering ---
+
+    #[test]
+    fn parse_pep440_shapes() {
+        for s in [
+            "1.0rc1",
+            "1.0.0rc1",
+            "1.0a1",
+            "1.0b2",
+            "1.0c1",
+            "1.0.dev1",
+            "1.0a1.dev1",
+            "1.0.post1",
+            "1.0-alpha",
+            "1.0_beta2",
+            "1.0-SNAPSHOT",
+            "1.0preview1",
+            "1!2.0",
+        ] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Pep440(_)),
+                "{s} did not parse as Pep440"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_pep440_leaves_debian_shapes_alone() {
+        for s in ["1.0~rc1", "5.1-3", "1.0.2k", "0.9.8b", "1:1.0", "1.2-2-1"] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Deb { .. }),
+                "{s} was taken from the Debian parser"
+            );
+        }
+    }
+
+    #[test]
+    fn pep440_stage_ordering() {
+        use Ordering::Less;
+
+        // PEP440 §"summary of permitted suffixes": dev < a < b < rc < release < post
+        for (a, b) in [
+            ("1.0.dev1", "1.0a1"),
+            ("1.0a1.dev1", "1.0a1"),
+            ("1.0a1", "1.0b1"),
+            ("1.0b1", "1.0rc1"),
+            ("1.0rc1", "1.0.post1"),
+            ("1.0.post1.dev1", "1.0.post1"),
+            ("1.0rc1", "1.0rc2"),
+            ("1.0.dev1", "1.0.dev2"),
+            ("1.0.post1", "1.0.post2"),
+            // maven puts SNAPSHOT after every qualifier but before the release
+            ("1.0rc1", "1.0-SNAPSHOT"),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(Less), "{a} vs {b}");
+            assert!(is_version_downgrade(b, a), "{b} -> {a}");
+            assert!(!is_version_downgrade(a, b), "{a} -> {b}");
+        }
+    }
+
+    #[test]
+    fn pep440_aliases_and_case_are_equivalent() {
+        for (a, b) in [
+            ("1.0a1", "1.0alpha1"),
+            ("1.0b1", "1.0beta1"),
+            ("1.0c1", "1.0rc1"),
+            ("1.0rc1", "1.0preview1"),
+            ("1.0rc1", "1.0-RC1"),
+            ("1.0-SNAPSHOT", "1.0-snapshot"),
+            ("1.0rc1", "1.0.rc1"),
+            ("1.0rc1", "1.0_rc1"),
+            ("1.0rc", "1.0rc0"),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(Ordering::Equal), "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn pep440_epoch_dominates_release() {
+        assert_eq!(compare_versions("1!1.0", "9.9.9"), Some(Ordering::Greater));
+        assert!(is_version_downgrade("1!1.0", "2.0.0"));
+        assert!(!is_version_downgrade("2.0.0", "1!1.0"));
+    }
+
+    // --- cross-kind ordering ---
+
+    #[test]
+    fn downgrade_release_to_prerelease_across_kinds() {
+        for (release, candidate) in [
+            ("1.0.0", "1.0.0rc1"),
+            ("2.0.0", "2.0.0rc1"),
+            ("1.0", "1.0.dev1"),
+            ("1.0", "1.0-SNAPSHOT"),
+            ("1.0.0", "1.0-alpha"),
+            ("1.0.0.0", "1.0.0-beta.1"),
+            ("1.0.0", "1.0.0~rc1"),
+            ("1.2.3", "1.2.3-next.0"),
+        ] {
+            assert!(
+                is_version_downgrade(release, candidate),
+                "{release} -> {candidate} not flagged"
+            );
+            assert!(
+                !is_version_downgrade(candidate, release),
+                "{candidate} -> {release} wrongly flagged"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_kind_post_release_outranks_release() {
+        assert_eq!(
+            compare_versions("1.0.post1", "1.0.0"),
+            Some(Ordering::Greater)
+        );
+        assert!(is_version_downgrade("1.0.post1", "1.0.0"));
+        assert!(!is_version_downgrade("1.0.0", "1.0.post1"));
+    }
+
+    #[test]
+    fn cross_kind_release_components_decide_first() {
+        for (a, b) in [
+            ("2.0.0", "1.0.0rc1"),
+            ("2.0.0rc1", "1.0.0"),
+            ("1.0.2k", "1.0.1"),
+            ("1.0.2k", "1.0.post1"),
+            ("2024.01.15", "2023.1.0rc1"),
+            ("1.2.3.4", "1.2.3rc1"),
+        ] {
+            assert_eq!(
+                compare_versions(a, b),
+                Some(Ordering::Greater),
+                "{a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_kind_unrecognized_prereleases_stay_unordered() {
+        for (a, b) in [
+            ("1.0.0-next.0", "1.0.0rc1"),
+            ("1.0~rc1", "1.0rc1"),
+            ("1.0~rc1", "1.0.dev1"),
+            ("1.0.0-beta.1", "1.0-SNAPSHOT"),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert!(!is_version_downgrade(a, b));
+            assert!(!is_version_downgrade(b, a));
+        }
+    }
+
+    #[test]
+    fn cross_kind_semver_prerelease_beats_numeric() {
+        assert_eq!(
+            compare_versions("1.0.0.0", "1.0.0-beta.1"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("1.0.0-beta.1", "1.0.0.0"),
+            Some(Ordering::Less)
+        );
+    }
+
     #[test]
     fn compare_orders_comparable_variant_pairs() {
         use Ordering::{Equal, Greater, Less};
@@ -1015,8 +1477,10 @@ mod tests {
             ("deadbeef", "1.0.0"),
             ("deadbeef", "cafebabe"),
             ("deadbeef", "deadbeef"),
-            ("2:1.0-3", "1.0.0"),
+            ("1.2.3.RELEASE", "1.2.3"),
             ("5.1-3", "5.1.0.0"),
+            ("1.0.0-next.0", "1.0rc1"),
+            ("1.0~rc1", "1.0rc1"),
         ] {
             assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
             assert_eq!(compare_versions(b, a), None, "{b} vs {a}");

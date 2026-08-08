@@ -1,5 +1,12 @@
 # changelog
 
+## Unreleased
+
+- fix `--fail-on version-downgrade` staying silent when the two versions come from different version schemes: a released package replaced by a pre-release build of the same release — `1.0.0` -> `1.0.0rc1`, `1.0` -> `1.0.dev1`, `1.0` -> `1.0-SNAPSHOT`, `1.0.0` -> `1.0.0~rc1` — is now flagged, as is any pair whose epoch or numeric release components differ (`2:1.0` -> `1.0.0`, `1!1.0` -> `2.0.0`). over a corpus of version strings from pypi, maven, go, npm, deb, and rpm, uncomparable pairs drop from 854 of 1406 to 362
+- fix pypi pre-release ordering: `1.0.dev1` sorted above `1.0a1`/`1.0rc1` and `1.0a1.dev1` above `1.0a1`, so a downgrade between two pypi pre-releases was reported as an upgrade and vice versa. PEP440 versions (epoch `N!`, `.devN`, `aN`/`bN`/`rcN`/`alphaN`/`betaN`/`preN`, `.postN`) now order as PEP440 specifies, and maven's `-SNAPSHOT` sorts after every other qualifier but below the release
+- pre-release markers that two schemes order differently stay unordered rather than being ranked by one scheme's rules: a semver `1.0.0-next.0` against a pypi `1.0.0rc1`, or a Debian `1.0~rc1` against a pypi `1.0rc1`. Debian upstream suffixes and revisions (`1.0.2k`, `5.1-3`) likewise stay unordered against a semver or PEP440 version with the same release, since dpkg sorts them above the release and the other schemes have no equivalent
+- add `Version::Pep440` to sbom-model's `Version` enum; `1!2.0` and other PEP440 forms previously parsed as `Version::Deb`
+
 ## [0.7.0] - 2026-08-08
 
 - fix invented version downgrades when the same dependency set is diffed across serialization formats: components that gain or lose their purl are paired in version order, so an npm SBOM re-exported as purl-less SPDX reports no version change instead of a spliced `1.0.0 -> 2.0.0` upgrade and `2.0.0 -> 1.0.0` downgrade failing `--fail-on version-downgrade`
