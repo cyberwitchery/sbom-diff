@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- make `--fail-on version-downgrade` correct for PEP 440 (Python) versions: pre-releases, post-releases, dev releases and epochs (`1.0rc1`, `1.0.post1`, `1.0.dev1`, `1!1.0`) were read as Debian versions and ordered by the `dpkg` algorithm, which knows nothing about PEP 440. every transition between one of them and the plain release was treated as uncomparable and silently skipped by the gate (`4.2.0` → `4.2.0rc1`, a real downgrade, exited 0), and one ordinary Python progression — `1.0.dev1` → `1.0a1` — was misreported as a downgrade and exited 3. they are now ordered per PEP 440: epoch first, then the release, then dev release < pre-release < final release < post-release, with the `alpha`/`beta`/`c`/`pre`/`preview`/`rev`/`r` spellings normalized, `-`/`_`/`.` separators treated as equivalent, and case ignored. the comparison also works against the plain semver or numeric spelling of the same release, which is what made the skip silent. the `Version (downgrade)` label in text and markdown, the `version-downgrade` CSV field name, and the SARIF `error` escalation all follow. Debian and RPM versions are unaffected — in particular the PEP 440 implicit post-release form (`1.0-1`) is still read as a Debian upstream-revision version, since the two are indistinguishable and the Debian reading is far more common in SBOMs
+
 ## [0.7.0] - 2026-08-08
 
 - fix invented version downgrades when the same dependency set is diffed across serialization formats: components that gain or lose their purl are paired in version order, so an npm SBOM re-exported as purl-less SPDX reports no version change instead of a spliced `1.0.0 -> 2.0.0` upgrade and `2.0.0 -> 1.0.0` downgrade failing `--fail-on version-downgrade`

@@ -1,8 +1,8 @@
 //! version parsing and comparison utilities.
 //!
 //! provides lenient version parsing for SBOM component versions, supporting
-//! semver, dot-separated numeric strings, Debian/RPM-style epoch/revision
-//! versions, and opaque version strings.
+//! semver, dot-separated numeric strings, PEP 440 (Python) versions,
+//! Debian/RPM-style epoch/revision versions, and opaque version strings.
 
 use std::cmp::Ordering;
 
@@ -11,6 +11,7 @@ use std::cmp::Ordering;
 /// covers the common version formats found in SBOMs:
 /// - standard semver (possibly with `v` prefix or fewer than three parts)
 /// - dot-separated numeric (e.g., date-based `2024.01.15` or four-part `1.2.3.4`)
+/// - PEP 440 pre/post/dev releases and epochs (dominant in Python SBOMs)
 /// - Debian/RPM-style `epoch:upstream-revision` (dominant in OS/container SBOMs)
 /// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,12 +22,15 @@ pub enum Version {
     /// dot-separated numeric segments that don't qualify as semver
     /// (e.g., four-part versions or versions with leading zeros).
     Numeric(Vec<u64>),
+    /// PEP 440 (Python) version carrying an epoch, pre-release, post-release or
+    /// dev-release segment, ordered per the PEP.
+    Pep440(Pep440),
     /// Debian/RPM-style version with an optional numeric epoch and a trailing
     /// revision, compared with the Debian `dpkg` algorithm. covers
-    /// `epoch:upstream-revision` (Debian), `epoch:version-release` (RPM), and
-    /// PEP440 `epoch!version` forms that don't parse as clean semver but whose
-    /// ordering is still well-defined. an absent epoch is `0` and an absent
-    /// revision is the empty string.
+    /// `epoch:upstream-revision` (Debian) and `epoch:version-release` (RPM); a
+    /// `N!` epoch prefix is accepted too, for strings
+    /// [`Pep440`](Version::Pep440) declines. an absent epoch is `0` and an
+    /// absent revision is the empty string.
     Deb {
         epoch: u64,
         upstream: String,
@@ -36,12 +40,44 @@ pub enum Version {
     Opaque(String),
 }
 
+/// a normalized PEP 440 version: `[N!]N(.N)*[{a|b|rc}N][.postN][.devN][+local]`.
+///
+/// spelling aliases are folded to the canonical form during parsing
+/// (`alpha` → `a`, `beta` → `b`, `c`/`pre`/`preview` → `rc`, `rev`/`r` →
+/// `post`), and `-`/`_`/`.` separators are equivalent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pep440 {
+    pub epoch: u64,
+    pub release: Vec<u64>,
+    pub pre: Option<(PreRelease, u64)>,
+    pub post: Option<u64>,
+    pub dev: Option<u64>,
+    pub local: Vec<LocalSegment>,
+}
+
+/// a PEP 440 pre-release kind, in ascending order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PreRelease {
+    Alpha,
+    Beta,
+    Rc,
+}
+
+/// one dot-separated part of a PEP 440 local version label. the variant order
+/// is the PEP 440 rule: a lexical part sorts before any numeric one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LocalSegment {
+    Str(String),
+    Num(u64),
+}
+
 impl Version {
     /// parses a version string leniently.
     ///
     /// tries semver first (stripping `v`/`V` prefix and padding one- or
-    /// two-part versions), then dot-separated numeric, then Debian/RPM-style
-    /// epoch/revision versions, then falls back to [`Opaque`](Version::Opaque).
+    /// two-part versions), then dot-separated numeric, then PEP 440, then
+    /// Debian/RPM-style epoch/revision versions, then falls back to
+    /// [`Opaque`](Version::Opaque).
     ///
     /// # Examples
     ///
@@ -51,6 +87,7 @@ impl Version {
     /// assert!(matches!(Version::parse_lenient("1.2.3"), Version::Semver(_)));
     /// assert!(matches!(Version::parse_lenient("v1.2"), Version::Semver(_)));
     /// assert!(matches!(Version::parse_lenient("2024.01.15"), Version::Numeric(_)));
+    /// assert!(matches!(Version::parse_lenient("4.2.0rc1"), Version::Pep440(_)));
     /// assert!(matches!(Version::parse_lenient("2:1.0-3"), Version::Deb { .. }));
     /// assert!(matches!(Version::parse_lenient("abc"), Version::Opaque(_)));
     /// ```
@@ -81,6 +118,13 @@ impl Version {
             return Version::Numeric(segments);
         }
 
+        if let Some(pep) = parse_pep440(stripped) {
+            // a plain release has no PEP 440-specific segment; leave its classification alone
+            if pep.epoch > 0 || pep.pre.is_some() || pep.post.is_some() || pep.dev.is_some() {
+                return Version::Pep440(pep);
+            }
+        }
+
         if let Some(deb) = parse_deb(stripped) {
             return deb;
         }
@@ -98,8 +142,12 @@ impl Version {
     ///   from the semver side and compares as numeric segments
     /// - **Deb vs Deb**: epoch (numeric), then upstream, then revision, via the
     ///   Debian `dpkg` version-comparison algorithm
+    /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
+    ///   other side is read as a PEP 440 version and both are ordered per PEP
+    ///   440. a semver pre-release that isn't a PEP 440 suffix (say
+    ///   `1.0.0-foo.bar`) has no PEP 440 reading, so that pair stays `None`
     /// - **Any other pair** (including any Opaque, or a Deb against a
-    ///   semver/numeric version): `None`
+    ///   semver/numeric/PEP 440 version): `None`
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
     /// [`Opaque`](Version::Opaque) versions compare `None`.
@@ -139,6 +187,9 @@ impl Version {
                     revision: brev,
                 },
             ) => Some(deb_cmp((*ae, au, arev), (*be, bu, brev))),
+            (Version::Pep440(_), _) | (_, Version::Pep440(_)) => {
+                Some(pep440_cmp(&as_pep440(self)?, &as_pep440(other)?))
+            }
             _ => None,
         }
     }
@@ -193,6 +244,174 @@ fn parse_numeric(stripped: &str) -> Option<Vec<u64>> {
     } else {
         Some(segments)
     }
+}
+
+/// pre-release spellings PEP 440 normalizes, longest first so `alpha` is not
+/// read as `a` with a trailing `lpha`.
+const PRE_ALIASES: [(&str, PreRelease); 8] = [
+    ("alpha", PreRelease::Alpha),
+    ("beta", PreRelease::Beta),
+    ("preview", PreRelease::Rc),
+    ("pre", PreRelease::Rc),
+    ("rc", PreRelease::Rc),
+    ("a", PreRelease::Alpha),
+    ("b", PreRelease::Beta),
+    ("c", PreRelease::Rc),
+];
+
+/// post-release spellings PEP 440 normalizes, longest first.
+const POST_ALIASES: [(&str, ()); 3] = [("post", ()), ("rev", ()), ("r", ())];
+
+const DEV_ALIASES: [(&str, ()); 1] = [("dev", ())];
+
+/// parses a PEP 440 version, returning `None` for anything not confidently PEP
+/// 440 so Debian and opaque strings fall through to the next strategy. the
+/// implicit post-release form (`1.0-1`) is rejected: it is indistinguishable
+/// from a Debian upstream-revision version.
+fn parse_pep440(s: &str) -> Option<Pep440> {
+    let lower = s.to_ascii_lowercase();
+
+    let (head, local) = match lower.split_once('+') {
+        Some((head, tail)) => (head, parse_local(tail)?),
+        None => (lower.as_str(), Vec::new()),
+    };
+    let (epoch, mut rest) = match head.split_once('!') {
+        Some((epoch, tail)) => (epoch.parse::<u64>().ok()?, tail),
+        None => (0, head),
+    };
+
+    let mut release = Vec::new();
+    loop {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if end == 0 {
+            return None;
+        }
+        release.push(rest[..end].parse::<u64>().ok()?);
+        rest = &rest[end..];
+        match rest.strip_prefix('.') {
+            // a dot continues the release only when a digit follows it
+            Some(next) if next.starts_with(|c: char| c.is_ascii_digit()) => rest = next,
+            _ => break,
+        }
+    }
+
+    let (pre, rest) = match take_segment(rest, &PRE_ALIASES) {
+        Some((kind, n, rest)) => (Some((kind, n)), rest),
+        None => (None, rest),
+    };
+    let (post, rest) = match take_segment(rest, &POST_ALIASES) {
+        Some((_, n, rest)) => (Some(n), rest),
+        None => (None, rest),
+    };
+    let (dev, rest) = match take_segment(rest, &DEV_ALIASES) {
+        Some((_, n, rest)) => (Some(n), rest),
+        None => (None, rest),
+    };
+    if !rest.is_empty() {
+        return None;
+    }
+
+    Some(Pep440 {
+        epoch,
+        release,
+        pre,
+        post,
+        dev,
+        local,
+    })
+}
+
+/// consumes a `[-_.]?<keyword>[-_.]?<number>?` suffix, returning the matched
+/// keyword's tag, its number (an absent one is `0`, per PEP 440) and the rest.
+fn take_segment<'a, T: Copy>(s: &'a str, aliases: &[(&str, T)]) -> Option<(T, u64, &'a str)> {
+    let body = s.strip_prefix(['-', '_', '.']).unwrap_or(s);
+    let (tag, rest) = aliases
+        .iter()
+        .find_map(|(name, tag)| Some((*tag, body.strip_prefix(*name)?)))?;
+    let digits = rest.strip_prefix(['-', '_', '.']).unwrap_or(rest);
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    let n = if end == 0 {
+        0
+    } else {
+        digits[..end].parse::<u64>().ok()?
+    };
+    Some((tag, n, &digits[end..]))
+}
+
+/// parses a PEP 440 local version label (the part after `+`).
+fn parse_local(s: &str) -> Option<Vec<LocalSegment>> {
+    let mut segments = Vec::new();
+    for part in s.split(['-', '_', '.']) {
+        if part.is_empty() || !part.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        segments.push(match part.parse::<u64>() {
+            Ok(n) => LocalSegment::Num(n),
+            Err(_) => LocalSegment::Str(part.to_string()),
+        });
+    }
+    Some(segments)
+}
+
+/// reads a version as a PEP 440 version, so a `Pep440` can be compared against
+/// the semver and numeric spellings of the same release. returns `None` when
+/// there is no PEP 440 reading.
+fn as_pep440(v: &Version) -> Option<Pep440> {
+    let plain = |release| Pep440 {
+        epoch: 0,
+        release,
+        pre: None,
+        post: None,
+        dev: None,
+        local: Vec::new(),
+    };
+    match v {
+        Version::Pep440(p) => Some(p.clone()),
+        Version::Numeric(segments) => Some(plain(segments.clone())),
+        Version::Semver(s) if s.pre.is_empty() => Some(plain(vec![s.major, s.minor, s.patch])),
+        Version::Semver(s) => {
+            parse_pep440(&format!("{}.{}.{}-{}", s.major, s.minor, s.patch, s.pre))
+        }
+        Version::Deb { .. } | Version::Opaque(_) => None,
+    }
+}
+
+/// orders two PEP 440 versions: epoch, release (zero-padded), then the
+/// pre/post/dev segments, then the local label.
+fn pep440_cmp(a: &Pep440, b: &Pep440) -> Ordering {
+    a.epoch
+        .cmp(&b.epoch)
+        .then_with(|| numeric_cmp(&a.release, &b.release))
+        .then_with(|| pre_key(a).cmp(&pre_key(b)))
+        .then_with(|| a.post.cmp(&b.post))
+        .then_with(|| dev_key(a).cmp(&dev_key(b)))
+        .then_with(|| a.local.cmp(&b.local))
+}
+
+/// the pre-release sort key: a bare dev release precedes every pre-release of
+/// the same version, and a release with no pre-release segment follows them.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum PreKey {
+    BeforeAll,
+    Pre(PreRelease, u64),
+    AfterAll,
+}
+
+fn pre_key(v: &Pep440) -> PreKey {
+    match v.pre {
+        Some((kind, n)) => PreKey::Pre(kind, n),
+        None if v.post.is_none() && v.dev.is_some() => PreKey::BeforeAll,
+        None => PreKey::AfterAll,
+    }
+}
+
+/// an absent dev segment sorts *after* any dev release, the reverse of `Option`.
+fn dev_key(v: &Pep440) -> (bool, u64) {
+    (v.dev.is_none(), v.dev.unwrap_or(0))
 }
 
 /// parses a Debian/RPM-style `epoch:upstream-revision` version.
@@ -770,8 +989,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_pep440_epoch_is_deb() {
+    fn parse_pep440_epoch_is_pep440() {
         match Version::parse_lenient("1!2.0") {
+            Version::Pep440(p) => {
+                assert_eq!(p.epoch, 1);
+                assert_eq!(p.release, vec![2, 0]);
+                assert_eq!(p.pre, None);
+            }
+            other => panic!("expected Pep440, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_deb_keeps_epoch_bang_forms_it_declines() {
+        // a Debian revision after a PEP 440 epoch is not a PEP 440 version
+        match Version::parse_lenient("1!2.0-3") {
             Version::Deb {
                 epoch,
                 upstream,
@@ -779,7 +1011,7 @@ mod tests {
             } => {
                 assert_eq!(epoch, 1);
                 assert_eq!(upstream, "2.0");
-                assert_eq!(revision, "");
+                assert_eq!(revision, "3");
             }
             other => panic!("expected Deb, got {:?}", other),
         }
@@ -1021,6 +1253,225 @@ mod tests {
             assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
             assert_eq!(compare_versions(b, a), None, "{b} vs {a}");
         }
+    }
+
+    // --- PEP 440 (Python) parsing and ordering ---
+
+    #[test]
+    fn parse_pep440_suffixes() {
+        for s in [
+            "1.0rc1",
+            "1.0a1",
+            "1.0b1",
+            "1.0.dev1",
+            "1.0.post1",
+            "4.2.0rc1",
+            "1!1.0",
+            "1.0alpha1",
+            "1.0-rc-1",
+            "1.0_beta_2",
+            "1.0.RC1",
+            "2.0.post2.dev3",
+            "1.0rc1+ubuntu.1",
+        ] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Pep440(_)),
+                "{s} should parse as Pep440"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_pep440_fields() {
+        match Version::parse_lenient("2!4.2.0.post3.dev7") {
+            Version::Pep440(p) => {
+                assert_eq!(p.epoch, 2);
+                assert_eq!(p.release, vec![4, 2, 0]);
+                assert_eq!(p.pre, None);
+                assert_eq!(p.post, Some(3));
+                assert_eq!(p.dev, Some(7));
+                assert!(p.local.is_empty());
+            }
+            other => panic!("expected Pep440, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_pep440_leaves_other_formats_alone() {
+        for s in [
+            "1.2.3",
+            "v1.2",
+            "42",
+            "1.2.3-beta.1",
+            "1.0.0-alpha.1+build.789",
+            "0.0.0",
+        ] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Semver(_)),
+                "{s} should still be Semver"
+            );
+        }
+        for s in ["1.2.3.4", "2024.01.15", "01.02.03", "v1.2.3.4"] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Numeric(_)),
+                "{s} should still be Numeric"
+            );
+        }
+        for s in [
+            "2:1.0",
+            "5.1-3",
+            "2:1.2.3-4",
+            "1.2-2-1",
+            "1.0.0~rc1",
+            "1:1.1.1f-1ubuntu2.16",
+            "1.0+ubuntu.1",
+        ] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Deb { .. }),
+                "{s} should still be Deb"
+            );
+        }
+        for s in ["abc", "foo.bar.baz", "focal-1", "stable", "1:stable", ""] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Opaque(_)),
+                "{s} should still be Opaque"
+            );
+        }
+    }
+
+    /// asserts the strings are in strictly ascending order, every pair.
+    fn assert_ascending(versions: &[&str]) {
+        for (i, a) in versions.iter().enumerate() {
+            for b in &versions[i + 1..] {
+                assert_eq!(
+                    compare_versions(a, b),
+                    Some(Ordering::Less),
+                    "expected {a} < {b}"
+                );
+                assert_eq!(
+                    compare_versions(b, a),
+                    Some(Ordering::Greater),
+                    "expected {b} > {a}"
+                );
+                assert!(is_version_downgrade(b, a), "expected {b} -> {a} downgrade");
+                assert!(!is_version_downgrade(a, b), "expected {a} -> {b} upgrade");
+            }
+        }
+    }
+
+    #[test]
+    fn pep440_release_cycle_ordering() {
+        assert_ascending(&[
+            "1.0.dev1",
+            "1.0a1",
+            "1.0a2",
+            "1.0b1",
+            "1.0rc1",
+            "1.0",
+            "1.0.post1",
+            "1.0.1",
+        ]);
+    }
+
+    #[test]
+    fn pep440_dev_ordering_within_segments() {
+        assert_ascending(&["1.0.dev1", "1.0a1.dev1", "1.0a1", "1.0"]);
+        assert_ascending(&["1.0", "1.0.post1.dev1", "1.0.post1"]);
+    }
+
+    #[test]
+    fn pep440_epoch_ordering() {
+        assert_ascending(&["2.0", "1!1.0", "1!2.0", "2!0.1"]);
+    }
+
+    #[test]
+    fn pep440_spelling_aliases() {
+        for (canonical, aliases) in [
+            ("1.0a1", ["1.0alpha1", "1.0.ALPHA.1", "1.0-a-1"]),
+            ("1.0b1", ["1.0beta1", "1.0.BETA.1", "1.0_b_1"]),
+            ("1.0rc1", ["1.0c1", "1.0pre1", "1.0preview1"]),
+            ("1.0.post1", ["1.0rev1", "1.0r1", "1.0-POST-1"]),
+        ] {
+            for alias in aliases {
+                assert_eq!(
+                    compare_versions(canonical, alias),
+                    Some(Ordering::Equal),
+                    "{alias} should normalize to {canonical}"
+                );
+            }
+        }
+        // an omitted number is an implicit 0, so 1.0rc < 1.0rc1
+        assert_eq!(compare_versions("1.0rc", "1.0rc0"), Some(Ordering::Equal));
+        assert_eq!(compare_versions("1.0rc", "1.0rc1"), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn pep440_compares_against_semver_and_numeric() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            // the silently-skipped transitions: one side parses Semver
+            ("4.2.0rc1", "4.2.0", Less),
+            ("1.0rc1", "1.0", Less),
+            ("1.0.dev1", "1.0", Less),
+            ("1.0", "1.0.post1", Less),
+            ("1!1.0", "2.0", Greater),
+            ("1.0.post1", "1.0.1", Less),
+            // implicit zero padding across the two spellings of one release
+            ("1.0.post0", "1.0.0.post0", Equal),
+            // ...and against a four-part version, which parses Numeric
+            ("1.2.3.4rc1", "1.2.3.4", Less),
+            ("1.2.3.4.dev1", "1.2.3.3", Greater),
+            // a semver pre-release that is also a PEP 440 pre-release
+            ("1.0.0-rc1", "1.0rc2", Less),
+            ("1.0.0-alpha.1", "1.0b1", Less),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(expected), "{a} vs {b}");
+            assert_eq!(
+                compare_versions(b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn pep440_local_version_ordering() {
+        // a local label outranks the same version without one
+        assert_ascending(&["1.0rc1", "1.0rc1+ubuntu", "1.0rc1+ubuntu.1"]);
+        assert_ascending(&["1.0rc1+abc", "1.0rc1+1"]);
+        assert_ascending(&["1.0rc1+build.9", "1.0rc1+build.10"]);
+        assert_eq!(
+            compare_versions("1.0rc1+UBUNTU-1", "1.0rc1+ubuntu.1"),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn pep440_stays_uncomparable_against_deb_and_opaque() {
+        for (a, b) in [
+            ("1.0rc1", "2:1.0"),
+            ("1.0rc1", "1.0.0~rc1"),
+            ("1.0rc1", "deadbeef"),
+            // a semver pre-release with no PEP 440 reading
+            ("1.0.0-foo.bar", "1.0rc1"),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert_eq!(compare_versions(b, a), None, "{b} vs {a}");
+        }
+    }
+
+    #[test]
+    fn downgrade_pep440_gate() {
+        // the false positive: a normal Python pre-release progression
+        assert!(!is_version_downgrade("1.0.dev1", "1.0a1"));
+        assert!(is_version_downgrade("1.0a1", "1.0.dev1"));
+        // the silent skips
+        assert!(!is_version_downgrade("4.2.0rc1", "4.2.0"));
+        assert!(is_version_downgrade("4.2.0", "4.2.0rc1"));
+        assert!(!is_version_downgrade("1.0", "1.0.post1"));
+        assert!(is_version_downgrade("1.0.post1", "1.0"));
+        assert!(!is_version_downgrade("1.0rc1", "1.0rc1"));
     }
 
     #[test]
