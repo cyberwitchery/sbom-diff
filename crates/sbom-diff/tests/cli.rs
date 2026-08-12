@@ -773,6 +773,59 @@ fn fail_on_version_downgrade_no_change_exits_0() {
 }
 
 #[test]
+fn fail_on_version_downgrade_letter_suffix_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("os-letter-version-old.json"))
+        .arg(fixture("os-letter-version-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1.0.2d -> 1.0.2c"),
+        "openssl letter rollback should be reported, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("2025a -> 2024h"),
+        "tzdata year rollback should be reported, got: {stderr}"
+    );
+}
+
+#[test]
+fn fail_on_version_downgrade_letter_suffix_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("os-letter-upgrade-old.json"))
+        .arg(fixture("os-letter-upgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for change in [
+        "1.0.2 -> 1.0.2a",
+        "1.0.2a -> 1.0.2b",
+        "2024h -> 2025a",
+        "1.1.1a-r0 -> 1.1.1d-r0",
+    ] {
+        assert!(
+            stdout.contains(change),
+            "{change} should be listed: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn fail_on_supplier_changed_exits_3() {
     let out = sbom_diff()
         .arg(fixture("supplier-changed-old.json"))

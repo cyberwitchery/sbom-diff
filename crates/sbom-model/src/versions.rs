@@ -266,8 +266,9 @@ const DEV_ALIASES: [(&str, ()); 1] = [("dev", ())];
 
 /// parses a PEP 440 version, returning `None` for anything not confidently PEP
 /// 440 so Debian and opaque strings fall through to the next strategy. the
-/// implicit post-release form (`1.0-1`) is rejected: it is indistinguishable
-/// from a Debian upstream-revision version.
+/// implicit post-release form (`1.0-1`) and the bare single-letter suffix
+/// (`1.0.2a`, `2024h`, `1.1.1a-r0`) are rejected: both are indistinguishable
+/// from a Debian upstream version.
 fn parse_pep440(s: &str) -> Option<Pep440> {
     let lower = s.to_ascii_lowercase();
 
@@ -325,19 +326,20 @@ fn parse_pep440(s: &str) -> Option<Pep440> {
 
 /// consumes a `[-_.]?<keyword>[-_.]?<number>?` suffix, returning the matched
 /// keyword's tag, its number (an absent one is `0`, per PEP 440) and the rest.
+/// a single-letter keyword must be followed by at least one digit.
 fn take_segment<'a, T: Copy>(s: &'a str, aliases: &[(&str, T)]) -> Option<(T, u64, &'a str)> {
     let body = s.strip_prefix(['-', '_', '.']).unwrap_or(s);
-    let (tag, rest) = aliases
+    let (name, tag, rest) = aliases
         .iter()
-        .find_map(|(name, tag)| Some((*tag, body.strip_prefix(*name)?)))?;
+        .find_map(|(name, tag)| Some((*name, *tag, body.strip_prefix(*name)?)))?;
     let digits = rest.strip_prefix(['-', '_', '.']).unwrap_or(rest);
     let end = digits
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(digits.len());
-    let n = if end == 0 {
-        0
-    } else {
-        digits[..end].parse::<u64>().ok()?
+    let n = match end {
+        0 if name.len() == 1 => return None,
+        0 => 0,
+        _ => digits[..end].parse::<u64>().ok()?,
     };
     Some((tag, n, &digits[end..]))
 }
@@ -1472,6 +1474,94 @@ mod tests {
         assert!(!is_version_downgrade("1.0", "1.0.post1"));
         assert!(is_version_downgrade("1.0.post1", "1.0"));
         assert!(!is_version_downgrade("1.0rc1", "1.0rc1"));
+    }
+
+    // --- letter-suffixed OS package versions (OpenSSL, tzdata, Alpine) ---
+
+    /// `pattern` with its `@` replaced by each letter of `a`..`z` in turn.
+    fn letter_suffixed(pattern: &str) -> Vec<String> {
+        ('a'..='z')
+            .map(|c| pattern.replace('@', &c.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn bare_single_letter_suffix_parses_as_deb() {
+        for pattern in ["1.0.2@", "2024@", "1.1.1@-r0", "1.0@"] {
+            for s in letter_suffixed(pattern) {
+                assert!(
+                    matches!(Version::parse_lenient(&s), Version::Deb { .. }),
+                    "{s} should parse as Deb"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn letter_suffixed_versions_order_across_the_alphabet() {
+        for pattern in ["1.0.2@", "2024@", "1.1.1@-r0"] {
+            let versions = letter_suffixed(pattern);
+            let refs: Vec<&str> = versions.iter().map(String::as_str).collect();
+            assert_ascending(&refs);
+        }
+        assert_ascending(&["2024a", "2024h", "2025a", "2025b"]);
+        assert_ascending(&["1.1.1a-r0", "1.1.1d-r0", "1.1.1d-r1", "1.1.1w-r0"]);
+    }
+
+    #[test]
+    fn bare_keyword_longer_than_one_letter_stays_pep440() {
+        for s in [
+            "1.0rc",
+            "1.0.dev",
+            "1.0.post",
+            "1.0alpha",
+            "1.0beta",
+            "1.0pre",
+            "1.0preview",
+            "1.0rev",
+            "2.0.post2.dev3",
+        ] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Pep440(_)),
+                "{s} should still parse as Pep440"
+            );
+        }
+    }
+
+    #[test]
+    fn single_letter_alias_with_a_number_stays_pep440() {
+        for s in [
+            "1.0a1",
+            "1.0b1",
+            "1.0c1",
+            "1.0r1",
+            "1.0a0",
+            "1.0-a-1",
+            "1.0_b_2",
+            "1.0.c.3",
+            "1!2.0a1",
+            "1.0a1+ubuntu.1",
+        ] {
+            assert!(
+                matches!(Version::parse_lenient(s), Version::Pep440(_)),
+                "{s} should still parse as Pep440"
+            );
+        }
+    }
+
+    #[test]
+    fn downgrade_letter_suffix_gate() {
+        assert!(is_version_downgrade("1.0.2d", "1.0.2c"));
+        assert!(!is_version_downgrade("1.0.2c", "1.0.2d"));
+        assert!(is_version_downgrade("2025a", "2024h"));
+        assert!(!is_version_downgrade("2024h", "2025a"));
+        assert!(is_version_downgrade("1.1.1d-r0", "1.1.1a-r0"));
+        assert!(!is_version_downgrade("1.1.1a-r0", "1.1.1d-r0"));
+        assert!(!is_version_downgrade("1.0.2a", "1.0.2a"));
+        // a base release and its letter releases are Semver against Deb
+        assert_eq!(compare_versions("1.0.2", "1.0.2a"), None);
+        assert!(!is_version_downgrade("1.0.2", "1.0.2a"));
+        assert!(!is_version_downgrade("1.0.2a", "1.0.2"));
     }
 
     #[test]

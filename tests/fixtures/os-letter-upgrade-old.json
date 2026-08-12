@@ -1,0 +1,31 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "openssl",
+      "version": "1.0.2",
+      "purl": "pkg:deb/debian/openssl@1.0.2"
+    },
+    {
+      "type": "library",
+      "name": "openssl-libs",
+      "version": "1.0.2a",
+      "purl": "pkg:deb/debian/openssl-libs@1.0.2a"
+    },
+    {
+      "type": "library",
+      "name": "tzdata",
+      "version": "2024h",
+      "purl": "pkg:deb/debian/tzdata@2024h"
+    },
+    {
+      "type": "library",
+      "name": "musl",
+      "version": "1.1.1a-r0",
+      "purl": "pkg:apk/alpine/musl@1.1.1a-r0"
+    }
+  ]
+}
