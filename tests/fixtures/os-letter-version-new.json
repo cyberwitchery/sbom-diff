@@ -1,0 +1,19 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "openssl",
+      "version": "1.0.2c",
+      "purl": "pkg:deb/debian/openssl@1.0.2c"
+    },
+    {
+      "type": "library",
+      "name": "tzdata",
+      "version": "2024h",
+      "purl": "pkg:deb/debian/tzdata@2024h"
+    }
+  ]
+}
