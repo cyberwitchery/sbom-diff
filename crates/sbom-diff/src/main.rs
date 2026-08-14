@@ -4,13 +4,14 @@ use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use format::{load_sbom, Format};
 use sbom_diff::{
+    pair_ecosystem,
     renderer::{
         format_option, format_set, CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions,
         Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
     Differ, Field, FieldChange,
 };
-use sbom_model::versions::is_version_downgrade;
+use sbom_model::versions::is_version_downgrade_for_ecosystem;
 use sbom_model::{copyleft_introduced, is_copyleft_license, is_hash_algorithm_downgrade};
 use sbom_model::{ComponentId, DependencyKind, Sbom};
 use std::collections::{BTreeSet, HashSet};
@@ -663,7 +664,12 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                         }
                     }
                     FieldChange::Version(Some(old_ver), Some(new_ver))
-                        if check_version_downgrade && is_version_downgrade(old_ver, new_ver) =>
+                        if check_version_downgrade
+                            && is_version_downgrade_for_ecosystem(
+                                pair_ecosystem(&change.old, &change.new),
+                                old_ver,
+                                new_ver,
+                            ) =>
                     {
                         violations.push(Violation::VersionDowngrade {
                             id: change.id.clone(),

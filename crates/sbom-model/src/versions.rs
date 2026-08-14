@@ -3,6 +3,13 @@
 //! provides lenient version parsing for SBOM component versions, supporting
 //! semver, dot-separated numeric strings, PEP 440 (Python) versions,
 //! Debian/RPM-style epoch/revision versions, and opaque version strings.
+//!
+//! two entry points parse a version string: [`Version::parse_lenient`] infers
+//! the format from the string alone, and [`Version::parse_for_ecosystem`]
+//! applies the rules of the component's ecosystem. inference cannot separate a
+//! Debian revision from a semver pre-release — `1.2.3-1ubuntu2` and
+//! `1.0.0-alpha.1` are the same shape, ordered in opposite directions — so
+//! callers that know the ecosystem should pass it.
 
 use std::cmp::Ordering;
 
@@ -79,6 +86,10 @@ impl Version {
     /// Debian/RPM-style epoch/revision versions, then falls back to
     /// [`Opaque`](Version::Opaque).
     ///
+    /// the shape alone does not always identify the format; when the
+    /// component's ecosystem is known, prefer
+    /// [`parse_for_ecosystem`](Self::parse_for_ecosystem).
+    ///
     /// # Examples
     ///
     /// ```
@@ -132,6 +143,37 @@ impl Version {
         Version::Opaque(s.to_string())
     }
 
+    /// parses a version string with the rules of the ecosystem it came from.
+    ///
+    /// `ecosystem` is a purl package type (the value of
+    /// [`Component::ecosystem`](crate::Component::ecosystem)). `None`, or a type
+    /// with no dedicated ruleset, is exactly [`parse_lenient`](Self::parse_lenient).
+    ///
+    /// `deb` versions are read as [`Deb`](Version::Deb) and ordered by the
+    /// `dpkg` algorithm; a string that is not a valid Debian version is
+    /// [`Opaque`](Version::Opaque) rather than being retried as semver.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::cmp::Ordering;
+    /// use sbom_model::versions::Version;
+    ///
+    /// // `1ubuntu2` is a Debian revision, not a semver pre-release
+    /// let old = Version::parse_for_ecosystem(Some("deb"), "1.2.3-1ubuntu2");
+    /// let new = Version::parse_for_ecosystem(Some("deb"), "1.2.3-2");
+    /// assert_eq!(old.partial_cmp_lenient(&new), Some(Ordering::Less));
+    ///
+    /// let guessed = Version::parse_for_ecosystem(None, "1.2.3-1ubuntu2");
+    /// assert_eq!(guessed, Version::parse_lenient("1.2.3-1ubuntu2"));
+    /// ```
+    pub fn parse_for_ecosystem(ecosystem: Option<&str>, s: &str) -> Self {
+        match Scheme::for_ecosystem(ecosystem) {
+            Scheme::Infer => Version::parse_lenient(s),
+            Scheme::Deb => parse_deb(s).unwrap_or_else(|| Version::Opaque(s.to_string())),
+        }
+    }
+
     /// orders two versions, returning `None` when the ordering is unknown.
     ///
     /// comparison strategy depends on the variant pair:
@@ -151,6 +193,11 @@ impl Version {
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
     /// [`Opaque`](Version::Opaque) versions compare `None`.
+    ///
+    /// which arm applies depends on how each side was parsed:
+    /// [`parse_for_ecosystem`](Self::parse_for_ecosystem) puts both sides of a
+    /// known ecosystem in the same variant, where
+    /// [`parse_lenient`](Self::parse_lenient) can infer different ones.
     ///
     /// # Examples
     ///
@@ -215,6 +262,22 @@ impl Version {
     /// ```
     pub fn is_downgrade(&self, new: &Self) -> bool {
         self.partial_cmp_lenient(new) == Some(Ordering::Greater)
+    }
+}
+
+/// the ruleset [`Version::parse_for_ecosystem`] reads a string with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scheme {
+    Infer,
+    Deb,
+}
+
+impl Scheme {
+    fn for_ecosystem(ecosystem: Option<&str>) -> Self {
+        match ecosystem {
+            Some(e) if e.eq_ignore_ascii_case("deb") => Scheme::Deb,
+            _ => Scheme::Infer,
+        }
     }
 }
 
@@ -423,8 +486,8 @@ fn dev_key(v: &Pep440) -> (bool, u64) {
 /// and every character must be in the Debian/RPM version alphabet — so that
 /// codenames, git hashes, and other genuinely opaque strings stay
 /// [`Opaque`](Version::Opaque) rather than being force-ordered.
-fn parse_deb(stripped: &str) -> Option<Version> {
-    let (epoch, rest) = split_epoch(stripped);
+fn parse_deb(s: &str) -> Option<Version> {
+    let (epoch, rest) = split_epoch(s);
 
     if !rest.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
@@ -563,6 +626,62 @@ pub fn is_version_downgrade(old_ver: &str, new_ver: &str) -> bool {
 /// [`Version::partial_cmp_lenient`].
 pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
     Version::parse_lenient(a).partial_cmp_lenient(&Version::parse_lenient(b))
+}
+
+/// convenience function: returns `true` if `new_ver` is a downgrade from
+/// `old_ver` under `ecosystem`'s version rules.
+///
+/// parses both strings with [`Version::parse_for_ecosystem`] and delegates to
+/// [`Version::is_downgrade`]. a `None` ecosystem is exactly
+/// [`is_version_downgrade`].
+///
+/// # Examples
+///
+/// ```
+/// use sbom_model::versions::is_version_downgrade_for_ecosystem;
+///
+/// // a routine Ubuntu security update, not a downgrade
+/// assert!(!is_version_downgrade_for_ecosystem(
+///     Some("deb"),
+///     "1.2.3-1ubuntu2",
+///     "1.2.3-2"
+/// ));
+/// assert!(is_version_downgrade_for_ecosystem(Some("deb"), "1.2.3-2", "1.2.3-1ubuntu2"));
+/// ```
+pub fn is_version_downgrade_for_ecosystem(
+    ecosystem: Option<&str>,
+    old_ver: &str,
+    new_ver: &str,
+) -> bool {
+    Version::parse_for_ecosystem(ecosystem, old_ver)
+        .is_downgrade(&Version::parse_for_ecosystem(ecosystem, new_ver))
+}
+
+/// convenience function: orders two version strings under `ecosystem`'s version
+/// rules, returning `None` when the ordering is unknown.
+///
+/// parses both strings with [`Version::parse_for_ecosystem`] and delegates to
+/// [`Version::partial_cmp_lenient`]. a `None` ecosystem is exactly
+/// [`compare_versions`].
+///
+/// # Examples
+///
+/// ```
+/// use std::cmp::Ordering;
+/// use sbom_model::versions::compare_versions_for_ecosystem;
+///
+/// assert_eq!(
+///     compare_versions_for_ecosystem(Some("deb"), "1.0~rc1", "1.0"),
+///     Some(Ordering::Less)
+/// );
+/// ```
+pub fn compare_versions_for_ecosystem(
+    ecosystem: Option<&str>,
+    a: &str,
+    b: &str,
+) -> Option<Ordering> {
+    Version::parse_for_ecosystem(ecosystem, a)
+        .partial_cmp_lenient(&Version::parse_for_ecosystem(ecosystem, b))
 }
 
 #[cfg(test)]
@@ -1581,6 +1700,208 @@ mod tests {
                 is_version_downgrade(a, b),
                 compare_versions(a, b) == Some(Greater),
                 "{a} -> {b}"
+            );
+        }
+    }
+
+    /// version strings spanning every shape the two entry points disagree about.
+    const ECOSYSTEM_CORPUS: &[&str] = &[
+        "1",
+        "1.0",
+        "1.0.0",
+        "1.2.3",
+        "v1.2.3",
+        "2024.01.15",
+        "1.2.3.4",
+        "1.0.0-alpha.1",
+        "1.0.0-alpha.2",
+        "1.0.0-rc.1",
+        "1.0.0+build.9",
+        "1.0.0-foo.bar",
+        "4.2.0rc1",
+        "1.0.dev1",
+        "1.0a1",
+        "1!1.0",
+        "1.0.post1",
+        "1.0.2a",
+        "1.2.3-1",
+        "1.2.3-2",
+        "1.2.3-1ubuntu2",
+        "1.2.3-1build1",
+        "1.2.3-1+deb11u1",
+        "1.0~rc1",
+        "2:1.0-3",
+        "4.4.2-2.el7_9",
+        "deadbeef",
+        "",
+    ];
+
+    #[test]
+    fn unknown_ecosystem_parses_exactly_like_parse_lenient() {
+        for eco in [
+            None,
+            Some("npm"),
+            Some("cargo"),
+            Some("maven"),
+            Some("golang"),
+        ] {
+            for s in ECOSYSTEM_CORPUS {
+                assert_eq!(
+                    Version::parse_for_ecosystem(eco, s),
+                    Version::parse_lenient(s),
+                    "{eco:?} / {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_ecosystem_orders_exactly_like_the_string_only_path() {
+        for eco in [
+            None,
+            Some("npm"),
+            Some("cargo"),
+            Some("maven"),
+            Some("golang"),
+        ] {
+            for a in ECOSYSTEM_CORPUS {
+                for b in ECOSYSTEM_CORPUS {
+                    assert_eq!(
+                        compare_versions_for_ecosystem(eco, a, b),
+                        compare_versions(a, b),
+                        "{eco:?} / {a} vs {b}"
+                    );
+                    assert_eq!(
+                        is_version_downgrade_for_ecosystem(eco, a, b),
+                        is_version_downgrade(a, b),
+                        "{eco:?} / {a} -> {b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn semver_prereleases_keep_their_semver_reading() {
+        for eco in [None, Some("npm"), Some("cargo")] {
+            assert_eq!(
+                compare_versions_for_ecosystem(eco, "1.0.0-alpha.1", "1.0.0"),
+                Some(Ordering::Less),
+                "{eco:?}"
+            );
+            assert!(!is_version_downgrade_for_ecosystem(
+                eco,
+                "1.0.0-alpha.1",
+                "1.0.0"
+            ));
+            assert!(is_version_downgrade_for_ecosystem(
+                eco,
+                "1.0.0",
+                "1.0.0-alpha.1"
+            ));
+        }
+    }
+
+    #[test]
+    fn deb_ecosystem_parses_as_deb() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1ubuntu2"),
+            Version::Deb {
+                epoch: 0,
+                upstream: "1.2.3".into(),
+                revision: "1ubuntu2".into(),
+            }
+        );
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3"),
+            Version::Deb { .. }
+        ));
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("deb"), "1.0.0-alpha.1"),
+            Version::Deb { .. }
+        ));
+    }
+
+    #[test]
+    fn deb_ecosystem_match_ignores_case() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("DEB"), "1.2.3-1ubuntu2"),
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1ubuntu2")
+        );
+    }
+
+    #[test]
+    fn deb_ecosystem_does_not_retry_a_non_deb_string_as_semver() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("deb"), "v1.2.3-1ubuntu2"),
+            Version::Opaque("v1.2.3-1ubuntu2".into())
+        );
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("deb"), "4.4.2-2.el7_9"),
+            Version::Opaque("4.4.2-2.el7_9".into())
+        );
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("deb"), "v1.2.3", "v1.2.4"),
+            None
+        );
+    }
+
+    /// every expectation checked against `dpkg --compare-versions` on Debian.
+    #[test]
+    fn deb_ecosystem_orders_revisions_the_way_dpkg_does() {
+        use Ordering::{Greater, Less};
+
+        for (a, b, expected) in [
+            ("1.2.3-1ubuntu2", "1.2.3-2", Less),
+            ("1.2.3-1build1", "1.2.3-2", Less),
+            ("1.2.3-2ubuntu0.1", "1.2.3-3", Less),
+            ("1.2.3-1+deb11u1", "1.2.3-2", Less),
+            ("1.2.3-1+deb11u1", "1.2.3-1+deb11u2", Less),
+            ("1.2.3-1ubuntu2", "1.2.3-1ubuntu1", Greater),
+            ("1.2.3-1", "1.2.3-10", Less),
+            ("1.2.3", "1.2.3-1", Less),
+            ("1.0-1", "1.0", Greater),
+            ("1.0~rc1", "1.0", Less),
+            ("1.0~rc1-1", "1.0-1", Less),
+            ("1.2.3-1~bpo11+1", "1.2.3-1", Less),
+            ("2:1.0-1", "10.0-1", Greater),
+            ("1.1.1n-0+deb11u5", "1.1.1o-1", Less),
+        ] {
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("deb"), a, b),
+                Some(expected),
+                "{a} vs {b}"
+            );
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("deb"), b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn deb_ecosystem_clears_the_false_downgrade_the_string_only_path_reports() {
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("deb"),
+            "1.2.3-1ubuntu2",
+            "1.2.3-2"
+        ));
+        assert!(is_version_downgrade("1.2.3-1ubuntu2", "1.2.3-2"));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("deb"),
+            "1.2.3-2",
+            "1.2.3-1ubuntu2"
+        ));
+    }
+
+    #[test]
+    fn deb_ecosystem_makes_previously_uncomparable_pairs_comparable() {
+        for (a, b) in [("1.0-1", "1.0"), ("1.0~rc1", "1.0"), ("1.0.2a", "1.0.2")] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert!(
+                compare_versions_for_ecosystem(Some("deb"), a, b).is_some(),
+                "{a} vs {b}"
             );
         }
     }

@@ -721,6 +721,42 @@ fn fail_on_version_downgrade_exits_3() {
 }
 
 #[test]
+fn fail_on_version_downgrade_deb_revision_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("deb-upgrade-old.json"))
+        .arg(fixture("deb-upgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "1.2.3-1ubuntu2 -> 1.2.3-2 and 1.0~rc1 -> 1.0 are upgrades per dpkg, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn fail_on_version_downgrade_deb_revision_downgrade_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("deb-upgrade-old.json"))
+        .arg(fixture("deb-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1.2.3-1ubuntu2 -> 1.2.3-1ubuntu1"),
+        "stderr should report the real revision downgrade, got: {stderr}"
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_upgrade_exits_0() {
     // golden fixtures only have upgrades (1.0.0 -> 1.1.0)
     let out = sbom_diff()
