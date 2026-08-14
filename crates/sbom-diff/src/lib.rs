@@ -1,6 +1,6 @@
 #![doc = include_str!("../readme.md")]
 
-use sbom_model::versions::{is_version_downgrade, Version};
+use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
 use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -295,6 +295,17 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// the ecosystem a matched pair's versions should be ordered in: the side that
+/// declares one, or `None` when the two sides declare different ecosystems and
+/// neither ruleset applies. feeds
+/// [`sbom_model::versions::is_version_downgrade_for_ecosystem`].
+pub fn pair_ecosystem<'a>(old: &'a Component, new: &'a Component) -> Option<&'a str> {
+    match (old.ecosystem.as_deref(), new.ecosystem.as_deref()) {
+        (Some(a), Some(b)) if a != b => None,
+        (a, b) => a.or(b),
+    }
+}
+
 /// a dependency edge change for a single parent component.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeDiff {
@@ -582,9 +593,10 @@ impl Differ {
         for (old_id, new_id, fields) in changed_pairs {
             let old_comp = old.components.swap_remove(&old_id).unwrap();
             let new_comp = new.components.swap_remove(&new_id).unwrap();
+            let ecosystem = pair_ecosystem(&old_comp, &new_comp);
             let downgrade = fields.iter().any(|f| match f {
                 FieldChange::Version(Some(old_ver), Some(new_ver)) => {
-                    is_version_downgrade(old_ver, new_ver)
+                    is_version_downgrade_for_ecosystem(ecosystem, old_ver, new_ver)
                 }
                 _ => false,
             });
@@ -655,11 +667,12 @@ impl Differ {
             Vec::with_capacity(old_ids.len() + new_ids.len());
         for (side, ids, sbom) in [(0u8, old_ids, old), (1u8, new_ids, new)] {
             for id in ids {
-                let Some(version) = sbom.components.get(id).and_then(|c| c.version.as_deref())
-                else {
+                let component = sbom.components.get(id);
+                let Some(version) = component.and_then(|c| c.version.as_deref()) else {
                     return by_id();
                 };
-                merged.push((Version::parse_lenient(version), side, id));
+                let ecosystem = component.and_then(|c| c.ecosystem.as_deref());
+                merged.push((Version::parse_for_ecosystem(ecosystem, version), side, id));
             }
         }
         // `sort_by` needs a strict weak ordering; comparability is an equivalence, so
@@ -2475,6 +2488,100 @@ mod tests {
         let diff = Differ::diff(&old, &new, None);
         assert_eq!(diff.changed.len(), 1);
         assert!(!diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn deb_revision_upgrade_is_not_a_downgrade() {
+        for (old_ver, new_ver) in [
+            ("1.2.3-1ubuntu2", "1.2.3-2"),
+            ("1.2.3-1build1", "1.2.3-2"),
+            ("1.2.3-1+deb11u1", "1.2.3-1+deb11u2"),
+            ("1.0~rc1", "1.0"),
+            ("1.0", "1.0-1"),
+        ] {
+            let old = sbom_of(vec![deb_component("libfoo", old_ver)]);
+            let new = sbom_of(vec![deb_component("libfoo", new_ver)]);
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(diff.changed.len(), 1, "{old_ver} -> {new_ver}");
+            assert!(
+                !diff.changed[0].is_downgrade,
+                "{old_ver} -> {new_ver} is an upgrade per dpkg"
+            );
+        }
+    }
+
+    #[test]
+    fn deb_revision_downgrade_is_still_flagged() {
+        for (old_ver, new_ver) in [
+            ("1.2.3-2", "1.2.3-1ubuntu2"),
+            ("1.0", "1.0~rc1"),
+            ("2:1.0-1", "1:9.0-1"),
+        ] {
+            let old = sbom_of(vec![deb_component("libfoo", old_ver)]);
+            let new = sbom_of(vec![deb_component("libfoo", new_ver)]);
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(diff.changed.len(), 1, "{old_ver} -> {new_ver}");
+            assert!(
+                diff.changed[0].is_downgrade,
+                "{old_ver} -> {new_ver} is a downgrade per dpkg"
+            );
+        }
+    }
+
+    #[test]
+    fn npm_prerelease_downgrade_is_unaffected() {
+        let old = sbom_of(vec![npm_component("libfoo", "1.0.0")]);
+        let new = sbom_of(vec![npm_component("libfoo", "1.0.0-alpha.1")]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn deb_versions_align_by_dpkg_order() {
+        let versions =
+            |vs: [&str; 2]| sbom_of(vs.iter().map(|v| deb_component("libfoo", v)).collect());
+        let old = versions(["1.2.3-1ubuntu2", "2.0.0-1"]);
+        let new = versions(["1.2.3-2", "2.0.1-1"]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[("1.2.3-1ubuntu2", "1.2.3-2"), ("2.0.0-1", "2.0.1-1")])
+        );
+        assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+    }
+
+    #[test]
+    fn pair_ecosystem_needs_the_two_sides_to_agree() {
+        let deb = deb_component("libfoo", "1.0");
+        let npm = npm_component("libfoo", "1.0");
+        let plain = plain_component("libfoo", "1.0");
+
+        assert_eq!(pair_ecosystem(&deb, &deb), Some("deb"));
+        assert_eq!(pair_ecosystem(&deb, &plain), Some("deb"));
+        assert_eq!(pair_ecosystem(&plain, &deb), Some("deb"));
+        assert_eq!(pair_ecosystem(&deb, &npm), None);
+        assert_eq!(pair_ecosystem(&plain, &plain), None);
+    }
+
+    #[test]
+    fn a_pair_whose_ecosystem_changed_keeps_the_string_only_reading() {
+        let mut old = npm_component("libfoo", "1.2.3-1ubuntu2");
+        let mut new = deb_component("libfoo", "1.2.3-2");
+        old.id = ComponentId::new(None, &[("name", "libfoo")]);
+        new.id = old.id.clone();
+
+        let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0].is_downgrade);
+    }
+
+    fn deb_component(name: &str, version: &str) -> Component {
+        purl_component("deb", name, version)
     }
 
     fn purl_component(ecosystem: &str, name: &str, version: &str) -> Component {
