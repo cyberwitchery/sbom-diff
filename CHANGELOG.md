@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- fix `--fail-on version-downgrade` for Debian and Ubuntu versions, which were read as semver. the routine `1.2.3-1ubuntu2` → `1.2.3-2` upgrade exited 3, while the genuine downgrade exited 0, and `1.2.3-1+deb11u1` against `+deb11u2` compared equal, hiding security point releases in both directions. components whose purl says `pkg:deb/...` now use the dpkg algorithm, which also orders `1.0` → `1.0-1` and `1.0~rc1` → `1.0`. other ecosystems are unchanged; `rpm` and `apk` still guess from the version string
+- fix `--fail-on version-downgrade` for Debian and Ubuntu versions, which were compared as semver
 - add `Version::parse_for_ecosystem`, `versions::compare_versions_for_ecosystem` and `versions::is_version_downgrade_for_ecosystem` to sbom-model, which take the component's ecosystem (a purl package type) and apply that ecosystem's version rules; a `None` or unrecognized ecosystem behaves exactly like the existing `Version::parse_lenient`, `compare_versions` and `is_version_downgrade`, whose signatures and results are unchanged. sbom-diff gains `pair_ecosystem`, which picks the ecosystem for a matched component pair and returns `None` when the two sides disagree
-- fix `--fail-on version-downgrade` for PEP 440 (Python) versions, which were read as Debian. transitions between a pre-, post- or dev release and the plain release were silently skipped — `4.2.0` → `4.2.0rc1`, a real downgrade, exited 0 — and `1.0.dev1` → `1.0a1` was misreported as a downgrade. they now order per PEP 440: dev < pre < final < post, after epoch and release. Debian and RPM are unaffected; a bare `a`/`b`/`c`/`r` is a PEP 440 segment only when a digit follows, so `1.0.2a` stays Debian
+- fix `--fail-on version-downgrade` for PEP 440 versions, which were compared as Debian
 
 ## [0.7.0] - 2026-08-08
 
