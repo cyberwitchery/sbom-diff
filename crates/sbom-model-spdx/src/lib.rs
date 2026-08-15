@@ -317,6 +317,7 @@ impl SpdxReader {
                     .or_else(|| pkg.package_summary_description.clone()),
                 purl,
                 licenses: BTreeSet::new(),
+                license_expression: None,
                 hashes: BTreeMap::new(),
                 source_ids: vec![pkg.package_spdx_identifier.clone()],
             };
@@ -336,8 +337,9 @@ impl SpdxReader {
                     s != "NOASSERTION" && s != "NONE"
                 }));
             if let Some(l) = license_expr {
-                comp.licenses
-                    .extend(parse_license_expression(&l.to_string()));
+                let l = l.to_string();
+                comp.licenses.extend(parse_license_expression(&l));
+                comp.license_expression = Some(l);
             }
 
             for checksum in pkg.package_checksum {
@@ -2639,5 +2641,60 @@ PackageCopyrightText: NOASSERTION
             SpdxReader::read_xml(&xml[..]).unwrap(),
             SpdxReader::read_json(&json[..]).unwrap()
         );
+    }
+
+    #[test]
+    fn test_license_expression_is_preserved() {
+        let json = br#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://example.com/test",
+            "creationInfo": { "creators": ["Tool: test"], "created": "2024-01-01T00:00:00Z" },
+            "packages": [
+                {
+                    "name": "dual",
+                    "SPDXID": "SPDXRef-dual",
+                    "downloadLocation": "NOASSERTION",
+                    "licenseConcluded": "MIT OR GPL-3.0-only"
+                },
+                {
+                    "name": "with-exception",
+                    "SPDXID": "SPDXRef-with-exception",
+                    "downloadLocation": "NOASSERTION",
+                    "licenseConcluded": "NOASSERTION",
+                    "licenseDeclared": "GPL-2.0-only WITH Classpath-exception-2.0"
+                },
+                {
+                    "name": "unlicensed",
+                    "SPDXID": "SPDXRef-unlicensed",
+                    "downloadLocation": "NOASSERTION",
+                    "licenseConcluded": "NOASSERTION"
+                }
+            ]
+        }"#;
+
+        let sbom = SpdxReader::read_json(&json[..]).unwrap();
+        let find = |name: &str| {
+            sbom.components
+                .values()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+
+        assert_eq!(
+            find("dual").license_expression.as_deref(),
+            Some("MIT OR GPL-3.0-only")
+        );
+        assert_eq!(
+            find("with-exception").license_expression.as_deref(),
+            Some("GPL-2.0-only WITH Classpath-exception-2.0")
+        );
+        assert_eq!(
+            find("with-exception").licenses,
+            BTreeSet::from(["GPL-2.0-only".to_string()])
+        );
+        assert_eq!(find("unlicensed").license_expression, None);
     }
 }

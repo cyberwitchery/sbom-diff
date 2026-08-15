@@ -1,0 +1,36 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "License Exception Test Document",
+  "documentNamespace": "http://spdx.org/spdxdocs/license-exception-new",
+  "creationInfo": {
+    "creators": ["Tool: manual"],
+    "created": "2024-01-01T00:00:00Z"
+  },
+  "packages": [
+    {
+      "name": "classpath-lib",
+      "SPDXID": "SPDXRef-classpath-lib",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "GPL-2.0-only",
+      "licenseDeclared": "GPL-2.0-only",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:maven/example/classpath-lib@1.0.0"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-classpath-lib",
+      "relationshipType": "DESCRIBES"
+    }
+  ]
+}

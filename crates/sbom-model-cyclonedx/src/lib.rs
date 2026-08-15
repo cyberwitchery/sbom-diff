@@ -375,6 +375,7 @@ impl CycloneDxReader {
                 description: cdx_comp.description.as_ref().map(|d| d.to_string()),
                 purl,
                 licenses: BTreeSet::new(),
+                license_expression: None,
                 hashes: BTreeMap::new(),
                 source_ids: Vec::new(),
             };
@@ -388,6 +389,11 @@ impl CycloneDxReader {
             }
 
             if let Some(licenses) = &cdx_comp.licenses {
+                if let [cyclonedx_bom::models::license::LicenseChoice::Expression(e)] =
+                    licenses.0.as_slice()
+                {
+                    comp.license_expression = Some(e.to_string());
+                }
                 for license_choice in &licenses.0 {
                     match license_choice {
                         cyclonedx_bom::models::license::LicenseChoice::License(l) => {
@@ -1609,5 +1615,52 @@ mod tests {
         assert_eq!(sbom.components.len(), 1);
         assert_eq!(sbom.components[0].name, "pkg-a");
         assert!(sbom.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_license_expression_is_preserved() {
+        let json = br#"{
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "components": [
+                {
+                    "type": "library",
+                    "name": "dual",
+                    "version": "1.0.0",
+                    "licenses": [{ "expression": "MIT OR GPL-3.0-only" }]
+                },
+                {
+                    "type": "library",
+                    "name": "listed",
+                    "version": "1.0.0",
+                    "licenses": [
+                        { "license": { "id": "MIT" } },
+                        { "license": { "id": "Apache-2.0" } }
+                    ]
+                }
+            ]
+        }"#;
+
+        let sbom = CycloneDxReader::read_json(&json[..]).unwrap();
+        let find = |name: &str| {
+            sbom.components
+                .values()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+
+        let dual = find("dual");
+        assert_eq!(
+            dual.license_expression.as_deref(),
+            Some("MIT OR GPL-3.0-only")
+        );
+        assert_eq!(
+            dual.licenses,
+            BTreeSet::from(["GPL-3.0-only".to_string(), "MIT".to_string()])
+        );
+
+        // per-license entries carry no expression, so the flat set stands alone
+        assert_eq!(find("listed").license_expression, None);
     }
 }

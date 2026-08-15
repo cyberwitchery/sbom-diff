@@ -85,6 +85,33 @@ cargo install sbom-diff
 - matches components by purl or identity (name/ecosystem)
 - zero network access - fully offline
 
+## license gating
+
+`--deny-license` and `--allow-license` (both repeatable, case-insensitive, exit
+code 2) and `--fail-on copyleft-added` (exit code 3) evaluate the SPDX license
+expression the sbom declared, so the operators decide the verdict:
+
+- `AND` means every operand applies; `OR` means the consumer picks one.
+  `MIT OR GPL-3.0-only` passes `--deny-license gpl-3.0-only` because it can be
+  taken under MIT, and passes `--allow-license mit` for the same reason.
+  `MIT AND GPL-3.0-only` fails both.
+- a deny only fires when no satisfying choice avoids a denied license; an allow
+  only fires when no satisfying choice lies inside the allow-list, so
+  `(MIT OR Apache-2.0) AND BSD-3-Clause` is allowed by
+  `--allow-license mit --allow-license bsd-3-clause`.
+- `--fail-on copyleft-added` fires when the new expression cannot be satisfied
+  without a copyleft license the old one did not already force. gaining a
+  copyleft alternative (`MIT` to `MIT OR GPL-3.0-only`) is not a violation;
+  losing the permissive alternative (`MIT OR GPL-3.0-only` to `GPL-3.0-only`) is.
+- a `WITH` exception is part of the license: dropping it is reported as a
+  license change even though the identifiers are unchanged, and it is nameable
+  in a policy list by its full spelling,
+  `--deny-license "GPL-2.0-only WITH Classpath-exception-2.0"`.
+
+components whose sbom declares no expression — free-text names, `LicenseRef-`
+identifiers, or per-license `id`/`name` entries — are gated on their identifier
+set, where every identifier applies.
+
 ## exit codes
 
 | code | meaning |

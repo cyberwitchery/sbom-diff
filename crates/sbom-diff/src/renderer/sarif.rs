@@ -189,6 +189,13 @@ impl SarifRenderer {
             FieldChange::License(old, new) => {
                 format!("license: {} -> {}", format_set(old), format_set(new))
             }
+            FieldChange::LicenseExpression(old, new) => {
+                format!(
+                    "license expression: {} -> {}",
+                    format_option(old),
+                    format_option(new)
+                )
+            }
             FieldChange::Supplier(old, new) => {
                 format!("supplier: {} -> {}", format_option(old), format_option(new))
             }
