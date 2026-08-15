@@ -2,7 +2,7 @@
 //!
 //! provides lenient version parsing for SBOM component versions, supporting
 //! semver, dot-separated numeric strings, PEP 440 (Python) versions,
-//! Debian/RPM-style epoch/revision versions, and opaque version strings.
+//! Debian and RPM epoch/revision versions, and opaque version strings.
 //!
 //! two entry points parse a version string: [`Version::parse_lenient`] infers
 //! the format from the string alone, and [`Version::parse_for_ecosystem`]
@@ -19,7 +19,8 @@ use std::cmp::Ordering;
 /// - standard semver (possibly with `v` prefix or fewer than three parts)
 /// - dot-separated numeric (e.g., date-based `2024.01.15` or four-part `1.2.3.4`)
 /// - PEP 440 pre/post/dev releases and epochs (dominant in Python SBOMs)
-/// - Debian/RPM-style `epoch:upstream-revision` (dominant in OS/container SBOMs)
+/// - Debian `epoch:upstream-revision` and RPM `epoch:version-release` (dominant
+///   in OS/container SBOMs)
 /// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Version {
@@ -32,16 +33,26 @@ pub enum Version {
     /// PEP 440 (Python) version carrying an epoch, pre-release, post-release or
     /// dev-release segment, ordered per the PEP.
     Pep440(Pep440),
-    /// Debian/RPM-style version with an optional numeric epoch and a trailing
-    /// revision, compared with the Debian `dpkg` algorithm. covers
-    /// `epoch:upstream-revision` (Debian) and `epoch:version-release` (RPM); a
-    /// `N!` epoch prefix is accepted too, for strings
+    /// Debian-style `epoch:upstream-revision` version, compared with the Debian
+    /// `dpkg` algorithm. a `N!` epoch prefix is accepted too, for strings
     /// [`Pep440`](Version::Pep440) declines. an absent epoch is `0` and an
     /// absent revision is the empty string.
     Deb {
         epoch: u64,
         upstream: String,
         revision: String,
+    },
+    /// RPM `epoch:version-release`, compared with rpm's own `rpmvercmp`
+    /// algorithm, which disagrees with the Debian one on ordinary inputs. an
+    /// absent epoch is `0`; an absent release is the empty string and sorts
+    /// below every release, including `0`. only
+    /// [`parse_for_ecosystem`](Version::parse_for_ecosystem) produces this
+    /// variant — the shape alone does not distinguish an RPM version from a
+    /// Debian one.
+    Rpm {
+        epoch: u64,
+        version: String,
+        release: String,
     },
     /// non-parseable version string where ordering cannot be determined.
     Opaque(String),
@@ -83,7 +94,7 @@ impl Version {
     ///
     /// tries semver first (stripping `v`/`V` prefix and padding one- or
     /// two-part versions), then dot-separated numeric, then PEP 440, then
-    /// Debian/RPM-style epoch/revision versions, then falls back to
+    /// Debian-style epoch/revision versions, then falls back to
     /// [`Opaque`](Version::Opaque).
     ///
     /// the shape alone does not always identify the format; when the
@@ -147,10 +158,11 @@ impl Version {
     /// with no dedicated ruleset, is exactly [`parse_lenient`](Self::parse_lenient).
     ///
     /// `deb` versions are read as [`Deb`](Version::Deb) and ordered by the
-    /// `dpkg` algorithm. a leading `v`/`V` is stripped, as
+    /// `dpkg` algorithm, `rpm` versions as [`Rpm`](Version::Rpm) and ordered by
+    /// rpm's `rpmvercmp`. a leading `v`/`V` is stripped, as
     /// [`parse_lenient`](Self::parse_lenient) does; a string that is still not a
-    /// valid Debian version is [`Opaque`](Version::Opaque) rather than being
-    /// retried as semver.
+    /// valid version for that ecosystem is [`Opaque`](Version::Opaque) rather
+    /// than being retried as semver.
     ///
     /// # Examples
     ///
@@ -163,6 +175,11 @@ impl Version {
     /// let new = Version::parse_for_ecosystem(Some("deb"), "1.2.3-2");
     /// assert_eq!(old.partial_cmp_lenient(&new), Some(Ordering::Less));
     ///
+    /// // rpm ranks a numeric segment above an alpha one, dpkg the other way
+    /// let old = Version::parse_for_ecosystem(Some("rpm"), "1.a");
+    /// let new = Version::parse_for_ecosystem(Some("rpm"), "1.1");
+    /// assert_eq!(old.partial_cmp_lenient(&new), Some(Ordering::Less));
+    ///
     /// let guessed = Version::parse_for_ecosystem(None, "1.2.3-1ubuntu2");
     /// assert_eq!(guessed, Version::parse_lenient("1.2.3-1ubuntu2"));
     /// ```
@@ -171,6 +188,9 @@ impl Version {
             Scheme::Infer => Version::parse_lenient(s),
             Scheme::Deb => parse_deb(s)
                 .or_else(|| parse_deb(strip_v_prefix(s)))
+                .unwrap_or_else(|| Version::Opaque(s.to_string())),
+            Scheme::Rpm => parse_rpm(s)
+                .or_else(|| parse_rpm(strip_v_prefix(s)))
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
         }
     }
@@ -185,12 +205,14 @@ impl Version {
     ///   from the semver side and compares as numeric segments
     /// - **Deb vs Deb**: epoch (numeric), then upstream, then revision, via the
     ///   Debian `dpkg` version-comparison algorithm
+    /// - **Rpm vs Rpm**: epoch (numeric), then version, then release, via rpm's
+    ///   `rpmvercmp` algorithm
     /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
     ///   other side is read as a PEP 440 version and both are ordered per PEP
     ///   440. a semver pre-release that isn't a PEP 440 suffix (say
     ///   `1.0.0-foo.bar`) has no PEP 440 reading, so that pair stays `None`
-    /// - **Any other pair** (including any Opaque, or a Deb against a
-    ///   semver/numeric/PEP 440 version): `None`
+    /// - **Any other pair** (including any Opaque, a Deb against an Rpm, or
+    ///   either against a semver/numeric/PEP 440 version): `None`
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
     /// [`Opaque`](Version::Opaque) versions compare `None`.
@@ -235,6 +257,18 @@ impl Version {
                     revision: brev,
                 },
             ) => Some(deb_cmp((*ae, au, arev), (*be, bu, brev))),
+            (
+                Version::Rpm {
+                    epoch: ae,
+                    version: av,
+                    release: arel,
+                },
+                Version::Rpm {
+                    epoch: be,
+                    version: bv,
+                    release: brel,
+                },
+            ) => Some(rpm_cmp((*ae, av, arel), (*be, bv, brel))),
             (Version::Pep440(_), _) | (_, Version::Pep440(_)) => {
                 Some(pep440_cmp(&as_pep440(self)?, &as_pep440(other)?))
             }
@@ -271,12 +305,14 @@ impl Version {
 enum Scheme {
     Infer,
     Deb,
+    Rpm,
 }
 
 impl Scheme {
     fn for_ecosystem(ecosystem: Option<&str>) -> Self {
         match ecosystem {
             Some(e) if e.eq_ignore_ascii_case("deb") => Scheme::Deb,
+            Some(e) if e.eq_ignore_ascii_case("rpm") => Scheme::Rpm,
             _ => Scheme::Infer,
         }
     }
@@ -442,7 +478,7 @@ fn as_pep440(v: &Version) -> Option<Pep440> {
         Version::Semver(s) => {
             parse_pep440(&format!("{}.{}.{}-{}", s.major, s.minor, s.patch, s.pre))
         }
-        Version::Deb { .. } | Version::Opaque(_) => None,
+        Version::Deb { .. } | Version::Rpm { .. } | Version::Opaque(_) => None,
     }
 }
 
@@ -487,15 +523,15 @@ fn strip_v_prefix(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-/// parses a Debian/RPM-style `epoch:upstream-revision` version.
+/// parses a Debian-style `epoch:upstream-revision` version.
 ///
 /// returns `None` for strings that don't look like a comparable package
 /// version — the upstream part must start with a digit (the Debian convention)
-/// and every character must be in the Debian/RPM version alphabet — so that
+/// and every character must be in the Debian version alphabet — so that
 /// codenames, git hashes, and other genuinely opaque strings stay
 /// [`Opaque`](Version::Opaque) rather than being force-ordered.
 fn parse_deb(s: &str) -> Option<Version> {
-    let (epoch, rest) = split_epoch(s);
+    let (epoch, rest) = split_epoch(s, &[':', '!']);
 
     if !rest.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
@@ -518,10 +554,11 @@ fn parse_deb(s: &str) -> Option<Version> {
     })
 }
 
-/// splits a leading `N:` (Debian) or `N!` (PEP440) epoch off a version string.
-/// returns `(0, s)` when there is no numeric epoch prefix.
-fn split_epoch(s: &str) -> (u64, &str) {
-    if let Some(idx) = s.find([':', '!']) {
+/// splits a leading numeric epoch, delimited by any of `seps` (`:` for Debian
+/// and RPM, `!` for PEP 440), off a version string. returns `(0, s)` when there
+/// is no numeric epoch prefix.
+fn split_epoch<'a>(s: &'a str, seps: &[char]) -> (u64, &'a str) {
+    if let Some(idx) = s.find(seps) {
         let (head, tail) = s.split_at(idx);
         if !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()) {
             if let Ok(epoch) = head.parse::<u64>() {
@@ -532,12 +569,12 @@ fn split_epoch(s: &str) -> (u64, &str) {
     (0, s)
 }
 
-/// characters permitted in a Debian/RPM upstream version or revision.
+/// characters permitted in a Debian upstream version or revision.
 fn is_deb_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '~' | ':')
 }
 
-/// orders two Debian/RPM-style versions given as `(epoch, upstream, revision)`:
+/// orders two Debian-style versions given as `(epoch, upstream, revision)`:
 /// a higher epoch always wins; ties fall through to the upstream version and
 /// then the revision, both compared with [`verrevcmp`].
 fn deb_cmp(a: (u64, &str, &str), b: (u64, &str, &str)) -> Ordering {
@@ -552,8 +589,8 @@ fn deb_cmp(a: (u64, &str, &str), b: (u64, &str, &str)) -> Ordering {
 /// non-digits and runs of digits. non-digit runs are compared lexically in the
 /// modified ordering of [`deb_order`]; digit runs are compared
 /// numerically (leading zeros stripped, longer run wins). this is the standard
-/// algorithm used for Debian upstream versions and revisions, and it also gives
-/// correct results for the overwhelming majority of RPM versions.
+/// algorithm used for Debian upstream versions and revisions; RPM versions are
+/// ordered by [`rpmvercmp`] instead, which disagrees with it.
 fn verrevcmp(a: &str, b: &str) -> Ordering {
     let a = a.as_bytes();
     let b = b.as_bytes();
@@ -619,6 +656,170 @@ fn deb_order(c: u8) -> i32 {
     }
 }
 
+/// parses an RPM `epoch:version-release` version.
+///
+/// returns `None` on the same grounds as [`parse_deb`]: the version must start
+/// with a digit and every character must be in the RPM version alphabet, so
+/// codenames, git hashes and other genuinely opaque strings stay
+/// [`Opaque`](Version::Opaque) rather than being force-ordered.
+fn parse_rpm(s: &str) -> Option<Version> {
+    let (epoch, rest) = split_epoch(s, &[':']);
+
+    if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    if !rest.chars().all(is_rpm_char) {
+        return None;
+    }
+
+    // rpm's `parseEVR` splits the release at the last hyphen, as dpkg does
+    let (version, release) = match rest.rfind('-') {
+        Some(idx) => (rest[..idx].to_string(), rest[idx + 1..].to_string()),
+        None => (rest.to_string(), String::new()),
+    };
+
+    Some(Version::Rpm {
+        epoch,
+        version,
+        release,
+    })
+}
+
+/// characters permitted in an RPM version or release. wider than
+/// [`is_deb_char`]: `_` is an ordinary separator in RPM versions and `^` marks a
+/// post-release snapshot.
+fn is_rpm_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '~' | ':' | '_' | '^')
+}
+
+/// orders two RPM versions given as `(epoch, version, release)`: a higher epoch
+/// always wins; ties fall through to the version and then the release, both
+/// compared with [`rpmvercmp`].
+fn rpm_cmp(a: (u64, &str, &str), b: (u64, &str, &str)) -> Ordering {
+    a.0.cmp(&b.0)
+        .then_with(|| rpmvercmp(a.1, b.1))
+        .then_with(|| rpmvercmp(a.2, b.2))
+}
+
+/// rpm's own version-component comparison (`rpmvercmp`).
+///
+/// the two strings are scanned in lockstep, skipping separators on each side
+/// independently, so `1.0` and `1_0` are equal. `~` sorts before everything,
+/// including the end of a string; `^` sorts after the end of a string but
+/// before any longer continuation, so `1.0 < 1.0^ < 1.0.1`. otherwise each side
+/// yields its leading run of digits or of letters: a digit run outranks a letter
+/// run, two digit runs compare with leading zeros stripped and the longer run
+/// winning, and two letter runs compare bytewise. running out of string first
+/// loses.
+fn rpmvercmp(a: &str, b: &str) -> Ordering {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut i = 0;
+    let mut j = 0;
+
+    while i < a.len() || j < b.len() {
+        while i < a.len() && is_rpm_separator(a[i]) {
+            i += 1;
+        }
+        while j < b.len() && is_rpm_separator(b[j]) {
+            j += 1;
+        }
+
+        if a.get(i) == Some(&b'~') || b.get(j) == Some(&b'~') {
+            if a.get(i) != Some(&b'~') {
+                return Ordering::Greater;
+            }
+            if b.get(j) != Some(&b'~') {
+                return Ordering::Less;
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+
+        if a.get(i) == Some(&b'^') || b.get(j) == Some(&b'^') {
+            if i == a.len() {
+                return Ordering::Less;
+            }
+            if j == b.len() {
+                return Ordering::Greater;
+            }
+            if a.get(i) != Some(&b'^') {
+                return Ordering::Greater;
+            }
+            if b.get(j) != Some(&b'^') {
+                return Ordering::Less;
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+
+        if i == a.len() || j == b.len() {
+            break;
+        }
+
+        let numeric = a[i].is_ascii_digit();
+        let a_end = run_end(a, i, numeric);
+        let b_end = run_end(b, j, numeric);
+        // an empty run on the other side means different kinds; the digit wins
+        if b_end == j {
+            return if numeric {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
+        }
+
+        let mut x = &a[i..a_end];
+        let mut y = &b[j..b_end];
+        if numeric {
+            x = strip_leading_zeros(x);
+            y = strip_leading_zeros(y);
+            if x.len() != y.len() {
+                return x.len().cmp(&y.len());
+            }
+        }
+        match x.cmp(y) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+
+        i = a_end;
+        j = b_end;
+    }
+
+    match (i == a.len(), j == b.len()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Less,
+        _ => Ordering::Greater,
+    }
+}
+
+/// bytes [`rpmvercmp`] skips: anything that is not alphanumeric, `~` or `^`.
+fn is_rpm_separator(c: u8) -> bool {
+    !(c.is_ascii_alphanumeric() || matches!(c, b'~' | b'^'))
+}
+
+/// the end of the run of digits (or, when `numeric` is false, of letters)
+/// starting at `from`.
+fn run_end(s: &[u8], from: usize, numeric: bool) -> usize {
+    let in_run = |c: &&u8| {
+        if numeric {
+            c.is_ascii_digit()
+        } else {
+            c.is_ascii_alphabetic()
+        }
+    };
+    from + s[from..].iter().take_while(in_run).count()
+}
+
+/// drops a digit run's leading zeros, leaving an all-zero run empty.
+fn strip_leading_zeros(s: &[u8]) -> &[u8] {
+    let zeros = s.iter().take_while(|&&c| c == b'0').count();
+    &s[zeros..]
+}
+
 /// convenience function: returns `true` if `new_ver` is a downgrade from `old_ver`.
 ///
 /// parses both strings with [`Version::parse_lenient`] and delegates to
@@ -681,6 +882,12 @@ pub fn is_version_downgrade_for_ecosystem(
 /// assert_eq!(
 ///     compare_versions_for_ecosystem(Some("deb"), "1.0~rc1", "1.0"),
 ///     Some(Ordering::Less)
+/// );
+///
+/// // a `^` post-release snapshot, which the Debian alphabet has no reading for
+/// assert_eq!(
+///     compare_versions_for_ecosystem(Some("rpm"), "1.0^20200101git", "1.0"),
+///     Some(Ordering::Greater)
 /// );
 /// ```
 pub fn compare_versions_for_ecosystem(
@@ -1963,6 +2170,300 @@ mod tests {
             assert!(
                 compare_versions_for_ecosystem(Some("deb"), a, b).is_some(),
                 "{a} vs {b}"
+            );
+        }
+    }
+
+    /// rpm's own `tests/rpmvercmp.at` assertion list, one case per row.
+    /// `expected` is how `a` orders relative to `b`.
+    #[test]
+    fn rpmvercmp_upstream_vectors() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("1.0", "1.0", Equal),
+            ("1.0", "2.0", Less),
+            ("2.0", "1.0", Greater),
+            ("2.0.1", "2.0.1", Equal),
+            ("2.0", "2.0.1", Less),
+            ("2.0.1", "2.0", Greater),
+            ("2.0.1a", "2.0.1a", Equal),
+            ("2.0.1a", "2.0.1", Greater),
+            ("2.0.1", "2.0.1a", Less),
+            ("5.5p1", "5.5p1", Equal),
+            ("5.5p1", "5.5p2", Less),
+            ("5.5p2", "5.5p1", Greater),
+            ("5.5p10", "5.5p10", Equal),
+            ("5.5p1", "5.5p10", Less),
+            ("5.5p10", "5.5p1", Greater),
+            ("10xyz", "10.1xyz", Less),
+            ("10.1xyz", "10xyz", Greater),
+            ("xyz10", "xyz10", Equal),
+            ("xyz10", "xyz10.1", Less),
+            ("xyz10.1", "xyz10", Greater),
+            ("xyz.4", "xyz.4", Equal),
+            ("xyz.4", "8", Less),
+            ("8", "xyz.4", Greater),
+            ("xyz.4", "2", Less),
+            ("2", "xyz.4", Greater),
+            ("5.5p2", "5.6p1", Less),
+            ("5.6p1", "5.5p2", Greater),
+            ("5.6p1", "6.5p1", Less),
+            ("6.5p1", "5.6p1", Greater),
+            ("6.0.rc1", "6.0", Greater),
+            ("6.0", "6.0.rc1", Less),
+            ("10b2", "10a1", Greater),
+            ("10a2", "10b2", Less),
+            ("1.0aa", "1.0aa", Equal),
+            ("1.0a", "1.0aa", Less),
+            ("1.0aa", "1.0a", Greater),
+            ("10.0001", "10.0001", Equal),
+            ("10.0001", "10.1", Equal),
+            ("10.1", "10.0001", Equal),
+            ("10.0001", "10.0039", Less),
+            ("10.0039", "10.0001", Greater),
+            ("4.999.9", "5.0", Less),
+            ("5.0", "4.999.9", Greater),
+            ("20101121", "20101121", Equal),
+            ("20101121", "20101122", Less),
+            ("20101122", "20101121", Greater),
+            ("2_0", "2_0", Equal),
+            ("2.0", "2_0", Equal),
+            ("2_0", "2.0", Equal),
+            ("a", "a", Equal),
+            ("a+", "a+", Equal),
+            ("a+", "a_", Equal),
+            ("a_", "a+", Equal),
+            ("+a", "+a", Equal),
+            ("+a", "_a", Equal),
+            ("_a", "+a", Equal),
+            ("+_", "+_", Equal),
+            ("_+", "+_", Equal),
+            ("_+", "_+", Equal),
+            ("+", "_", Equal),
+            ("_", "+", Equal),
+            ("1.0~rc1", "1.0~rc1", Equal),
+            ("1.0~rc1", "1.0", Less),
+            ("1.0", "1.0~rc1", Greater),
+            ("1.0~rc1", "1.0~rc2", Less),
+            ("1.0~rc2", "1.0~rc1", Greater),
+            ("1.0~rc1~git123", "1.0~rc1~git123", Equal),
+            ("1.0~rc1~git123", "1.0~rc1", Less),
+            ("1.0~rc1", "1.0~rc1~git123", Greater),
+            ("1.0^", "1.0^", Equal),
+            ("1.0^", "1.0", Greater),
+            ("1.0", "1.0^", Less),
+            ("1.0^git1", "1.0^git1", Equal),
+            ("1.0^git1", "1.0", Greater),
+            ("1.0", "1.0^git1", Less),
+            ("1.0^git1", "1.0^git2", Less),
+            ("1.0^git2", "1.0^git1", Greater),
+            ("1.0^git1", "1.01", Less),
+            ("1.01", "1.0^git1", Greater),
+            ("1.0^20160101", "1.0^20160101", Equal),
+            ("1.0^20160101", "1.0.1", Less),
+            ("1.0.1", "1.0^20160101", Greater),
+            ("1.0^20160101^git1", "1.0^20160101^git1", Equal),
+            ("1.0^20160102", "1.0^20160101^git1", Greater),
+            ("1.0^20160101^git1", "1.0^20160102", Less),
+            ("1.0~rc1^git1", "1.0~rc1^git1", Equal),
+            ("1.0~rc1^git1", "1.0~rc1", Greater),
+            ("1.0~rc1", "1.0~rc1^git1", Less),
+            ("1.0^git1~pre", "1.0^git1~pre", Equal),
+            ("1.0^git1", "1.0^git1~pre", Greater),
+            ("1.0^git1~pre", "1.0^git1", Less),
+            // upstream keeps these as documented quirks: the alpha run is
+            // compared against "fc", so 'b' loses and 'g' wins
+            ("1b.fc17", "1b.fc17", Equal),
+            ("1b.fc17", "1.fc17", Less),
+            ("1.fc17", "1b.fc17", Greater),
+            ("1g.fc17", "1g.fc17", Equal),
+            ("1g.fc17", "1.fc17", Greater),
+            ("1.fc17", "1g.fc17", Less),
+            // non-ASCII bytes are separators, so these are all equal
+            ("1.1.α", "1.1.α", Equal),
+            ("1.1.α", "1.1.β", Equal),
+            ("1.1.β", "1.1.α", Equal),
+            ("1.1.αα", "1.1.α", Equal),
+            ("1.1.α", "1.1.αα", Equal),
+            ("1.1.αα", "1.1.αα", Equal),
+        ] {
+            assert_eq!(rpmvercmp(a, b), expected, "{a} vs {b}");
+        }
+    }
+
+    /// derived from the algorithm: upstream's vectors exercise `rpmvercmp`
+    /// alone, never the epoch and release `parseEVR` splits off ahead of it.
+    #[test]
+    fn rpm_ecosystem_orders_epoch_then_version_then_release() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("2:1.0-1", "1:9.9-9", Greater),
+            ("1.0-1", "0:1.0-1", Equal),
+            ("1.1-1", "1.0-9", Greater),
+            ("1.0-2", "1.0-10", Less),
+            ("1.0-1.el8", "1.0-1.el9", Less),
+            ("1.0-0", "1.0-1", Less),
+            // an absent release sorts below every release, including `0`
+            ("1.0", "1.0-0", Less),
+        ] {
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("rpm"), a, b),
+                Some(expected),
+                "{a} vs {b}"
+            );
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("rpm"), b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    /// the pairs rpm and dpkg return different verdicts for. every `deb`
+    /// expectation was checked against `dpkg --compare-versions`.
+    #[test]
+    fn rpm_and_deb_disagree_on_ordinary_versions() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, deb, rpm) in [
+            // an alpha run against a digit run: dpkg ranks the letter above the
+            // digit, rpm below it
+            ("1.a", "1.1", Some(Greater), Some(Less)),
+            ("1.fc35", "1.1", Some(Greater), Some(Less)),
+            // `_` is a plain separator in rpm and outside the Debian alphabet
+            ("1.0", "1_0", None, Some(Equal)),
+            // `^` marks a post-release snapshot, which sorts above the base
+            ("1.0^20200101gitabc", "1.0", None, Some(Greater)),
+            // a stock RHEL release string, unreadable under the Debian alphabet
+            ("4.4.2-2.el7_9", "4.4.2-3.el7_9", None, Some(Less)),
+        ] {
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("deb"), a, b),
+                deb,
+                "deb: {a} vs {b}"
+            );
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("rpm"), a, b),
+                rpm,
+                "rpm: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn rpm_ecosystem_reverses_a_gate_the_deb_rules_fire_backwards() {
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("deb"),
+            "1.a",
+            "1.1"
+        ));
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("rpm"),
+            "1.a",
+            "1.1"
+        ));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("rpm"),
+            "1.1",
+            "1.a"
+        ));
+    }
+
+    #[test]
+    fn rpm_ecosystem_parses_as_rpm() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("rpm"), "5.1.8-2.fc35"),
+            Version::Rpm {
+                epoch: 0,
+                version: "5.1.8".into(),
+                release: "2.fc35".into(),
+            }
+        );
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("rpm"), "1:2.36.1-2.fc35"),
+            Version::Rpm {
+                epoch: 1,
+                version: "2.36.1".into(),
+                release: "2.fc35".into(),
+            }
+        );
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("rpm"), "4.4.2-2.el7_9"),
+            Version::Rpm {
+                epoch: 0,
+                version: "4.4.2".into(),
+                release: "2.el7_9".into(),
+            }
+        );
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("rpm"), "1.2.3"),
+            Version::Rpm { .. }
+        ));
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("rpm"), "1.0.0-alpha.1"),
+            Version::Rpm { .. }
+        ));
+    }
+
+    #[test]
+    fn rpm_ecosystem_match_ignores_case() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("RPM"), "5.1.8-2.fc35"),
+            Version::parse_for_ecosystem(Some("rpm"), "5.1.8-2.fc35")
+        );
+    }
+
+    #[test]
+    fn rpm_ecosystem_keeps_codenames_and_hashes_opaque() {
+        for s in ["deadbeef", "focal", "", "stable", "1.0 "] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("rpm"), s),
+                Version::Opaque(s.to_string()),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn rpm_ecosystem_strips_a_v_prefix_instead_of_skipping_the_pair() {
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("rpm"), "v1.2.3-1"),
+            Version::Rpm { .. }
+        ));
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("rpm"), "v1.2.3", "v1.2.4"),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn rpm_stays_uncomparable_against_every_other_parse_result() {
+        let rpm = Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1");
+        for other in [
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
+            Version::parse_lenient("1.2.3"),
+            Version::parse_lenient("2024.01.15"),
+            Version::parse_lenient("4.2.0rc1"),
+            Version::parse_lenient("deadbeef"),
+        ] {
+            assert_eq!(rpm.partial_cmp_lenient(&other), None, "{other:?}");
+            assert_eq!(other.partial_cmp_lenient(&rpm), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn parse_lenient_never_produces_the_rpm_variant() {
+        for s in
+            ECOSYSTEM_CORPUS
+                .iter()
+                .copied()
+                .chain(["1.0^20200101", "1_0", "1.a", "5.1.8-2.fc35"])
+        {
+            assert!(
+                !matches!(Version::parse_lenient(s), Version::Rpm { .. }),
+                "{s}"
             );
         }
     }

@@ -757,6 +757,42 @@ fn fail_on_version_downgrade_deb_revision_downgrade_exits_3() {
 }
 
 #[test]
+fn fail_on_version_downgrade_rpm_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("rpm-upgrade-old.json"))
+        .arg(fixture("rpm-upgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "1.a -> 1.1 is an upgrade per rpm (a downgrade per dpkg), got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn fail_on_version_downgrade_rpm_release_downgrade_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("rpm-upgrade-old.json"))
+        .arg(fixture("rpm-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("4.4.2-2.el7_9 -> 4.4.2-1.el7_9"),
+        "stderr should report the release downgrade, got: {stderr}"
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_upgrade_exits_0() {
     // golden fixtures only have upgrades (1.0.0 -> 1.1.0)
     let out = sbom_diff()
