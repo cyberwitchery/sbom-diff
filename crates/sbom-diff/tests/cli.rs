@@ -793,6 +793,42 @@ fn fail_on_version_downgrade_rpm_release_downgrade_exits_3() {
 }
 
 #[test]
+fn fail_on_version_downgrade_maven_qualifier_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("maven-upgrade-old.json"))
+        .arg(fixture("maven-upgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "1.0-SNAPSHOT -> 1.0-Final and 1.7.0_80 -> 1.7.0_81 are upgrades per Maven, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn fail_on_version_downgrade_maven_qualifier_downgrade_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("maven-upgrade-old.json"))
+        .arg(fixture("maven-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1.0-SNAPSHOT -> 1.0-alpha1"),
+        "stderr should report the qualifier downgrade, got: {stderr}"
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_upgrade_exits_0() {
     // golden fixtures only have upgrades (1.0.0 -> 1.1.0)
     let out = sbom_diff()
