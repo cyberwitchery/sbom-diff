@@ -1,0 +1,57 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "License Expression Test Document",
+  "documentNamespace": "http://spdx.org/spdxdocs/license-expression",
+  "creationInfo": {
+    "creators": ["Tool: manual"],
+    "created": "2024-01-01T00:00:00Z"
+  },
+  "packages": [
+    {
+      "name": "dual-lib",
+      "SPDXID": "SPDXRef-dual-lib",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "MIT OR GPL-3.0-only",
+      "licenseDeclared": "MIT OR GPL-3.0-only",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/dual-lib@1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "both-lib",
+      "SPDXID": "SPDXRef-both-lib",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "MIT AND GPL-3.0-only",
+      "licenseDeclared": "MIT AND GPL-3.0-only",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:npm/both-lib@1.0.0"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-dual-lib",
+      "relationshipType": "DESCRIBES"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relatedSpdxElement": "SPDXRef-both-lib",
+      "relationshipType": "DESCRIBES"
+    }
+  ]
+}

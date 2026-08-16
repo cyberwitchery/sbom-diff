@@ -227,6 +227,11 @@ fn csv_field_change(fc: &FieldChange, is_downgrade: bool) -> (&'static str, Stri
             format_option(new).to_string(),
         ),
         FieldChange::License(old, new) => ("license", format_set(old), format_set(new)),
+        FieldChange::LicenseExpression(old, new) => (
+            "license-expression",
+            format_option(old).to_string(),
+            format_option(new).to_string(),
+        ),
         FieldChange::Supplier(old, new) => (
             "supplier",
             format_option(old).to_string(),

@@ -2002,3 +2002,276 @@ fn only_masking_deps_gate_warns_and_silently_passes() {
     );
     assert_eq!(out.status.code(), Some(0));
 }
+
+#[test]
+fn deny_license_ignores_an_avoidable_choice() {
+    let out = sbom_diff()
+        .arg(fixture("license-expression.json"))
+        .arg(fixture("license-expression.json"))
+        .arg("--deny-license")
+        .arg("gpl-3.0-only")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "MIT OR GPL-3.0-only can be taken under MIT: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn deny_license_fires_on_an_unavoidable_conjunct() {
+    let out = sbom_diff()
+        .arg(fixture("license-expression-conjunction.json"))
+        .arg(fixture("license-expression-conjunction.json"))
+        .arg("--deny-license")
+        .arg("gpl-3.0-only")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("license GPL-3.0-only is denied"),
+        "expected the denied conjunct to be named, got: {stderr}"
+    );
+}
+
+#[test]
+fn allow_license_accepts_a_satisfiable_expression() {
+    let out = sbom_diff()
+        .arg(fixture("license-expression.json"))
+        .arg(fixture("license-expression.json"))
+        .arg("--allow-license")
+        .arg("mit")
+        .arg("--allow-license")
+        .arg("bsd-3-clause")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "(MIT OR Apache-2.0) AND BSD-3-Clause is satisfiable inside the allow-list: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn allow_license_fires_when_no_choice_is_allowed() {
+    let out = sbom_diff()
+        .arg(fixture("license-expression.json"))
+        .arg(fixture("license-expression.json"))
+        .arg("--allow-license")
+        .arg("mit")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("BSD-3-Clause is not allowed"),
+        "expected the unsatisfiable conjunct to be named, got: {stderr}"
+    );
+}
+
+#[test]
+fn spdx_deny_license_ignores_an_avoidable_choice() {
+    let out = sbom_diff()
+        .arg(fixture("license-expression.spdx.json"))
+        .arg(fixture("license-expression.spdx.json"))
+        .arg("--deny-license")
+        .arg("gpl-3.0-only")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("pkg:npm/both-lib@1.0.0"),
+        "the conjunction must be denied, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("pkg:npm/dual-lib@1.0.0"),
+        "the choice must not be denied, got: {stderr}"
+    );
+}
+
+#[test]
+fn fail_on_copyleft_added_ignores_a_dual_license() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-added-permissive-old.json"))
+        .arg(fixture("copyleft-choice-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "MIT -> MIT OR GPL-3.0-only imposes no copyleft obligation: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn fail_on_copyleft_added_fires_on_a_conjunction() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-added-permissive-old.json"))
+        .arg(fixture("copyleft-conjunction-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("copyleft license introduced") && stderr.contains("GPL-3.0-only"));
+}
+
+#[test]
+fn fail_on_copyleft_added_ignores_an_unchanged_copyleft_choice() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-unchanged-choice-old.json"))
+        .arg(fixture("copyleft-unchanged-choice-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "only the permissive operand changed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = sbom_diff()
+        .arg(fixture("copyleft-unchanged-choice-old.json"))
+        .arg(fixture("copyleft-unchanged-choice-new.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn dropping_a_license_exception_is_a_license_change() {
+    let out = sbom_diff()
+        .arg(fixture("license-exception-old.spdx.json"))
+        .arg(fixture("license-exception-new.spdx.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("license expression changed")
+            && stderr.contains("GPL-2.0-only WITH Classpath-exception-2.0 -> GPL-2.0-only"),
+        "expected the dropped exception to be named, got: {stderr}"
+    );
+
+    let text = sbom_diff()
+        .arg(fixture("license-exception-old.spdx.json"))
+        .arg(fixture("license-exception-new.spdx.json"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        stdout.contains("License expression"),
+        "expected the diff to render the change, got: {stdout}"
+    );
+}
+
+#[test]
+fn license_exception_is_nameable_in_a_deny_list() {
+    let out = sbom_diff()
+        .arg(fixture("license-exception-old.spdx.json"))
+        .arg(fixture("license-exception-old.spdx.json"))
+        .arg("--deny-license")
+        .arg("GPL-2.0-only WITH Classpath-exception-2.0")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn losing_a_choice_to_a_flat_set_is_a_copyleft_addition() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-choice-new.json"))
+        .arg(fixture("copyleft-choice-flattened.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("copyleft license introduced") && stderr.contains("GPL-3.0-only"),
+        "expected the now-mandatory copyleft to be named, got: {stderr}"
+    );
+}
+
+#[test]
+fn losing_a_choice_to_a_flat_set_is_a_license_change() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-choice-new.json"))
+        .arg(fixture("copyleft-choice-flattened.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("license expression changed")
+            && stderr.contains("MIT OR GPL-3.0-only -> <none>"),
+        "expected the dropped choice to be named, got: {stderr}"
+    );
+}
+
+#[test]
+fn flattening_a_conjunction_is_not_a_license_change() {
+    let out = sbom_diff()
+        .arg(fixture("license-expression-conjunction.json"))
+        .arg(fixture("license-conjunction-flattened.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "MIT AND GPL-3.0-only already means every identifier applies: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn reordering_expression_operands_is_not_a_license_change() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-choice-new.json"))
+        .arg(fixture("copyleft-choice-reordered.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "GPL-3.0-only OR MIT offers the same choice: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

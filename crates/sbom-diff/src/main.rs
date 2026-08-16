@@ -9,11 +9,11 @@ use sbom_diff::{
         format_option, format_set, CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions,
         Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
-    Differ, Field, FieldChange,
+    ComponentChange, Differ, Field, FieldChange,
 };
 use sbom_model::versions::is_version_downgrade_for_ecosystem;
-use sbom_model::{copyleft_introduced, is_copyleft_license, is_hash_algorithm_downgrade};
-use sbom_model::{ComponentId, DependencyKind, Sbom};
+use sbom_model::{copyleft_obligations_added, is_hash_algorithm_downgrade};
+use sbom_model::{ComponentId, DependencyKind, LicenseRequirement, Licensing, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::io;
@@ -141,6 +141,11 @@ enum Violation {
         old: BTreeSet<String>,
         new: BTreeSet<String>,
     },
+    LicenseExpressionChanged {
+        id: ComponentId,
+        old: Option<String>,
+        new: Option<String>,
+    },
     LicenseIntroduced {
         id: ComponentId,
         licenses: Vec<String>,
@@ -230,6 +235,15 @@ impl fmt::Display for Violation {
                     id,
                     format_set(old),
                     format_set(new)
+                )
+            }
+            Violation::LicenseExpressionChanged { id, old, new } => {
+                write!(
+                    f,
+                    "license expression changed on component {}: {} -> {} (--fail-on license-changed)",
+                    id,
+                    format_option(old),
+                    format_option(new)
                 )
             }
             Violation::LicenseIntroduced { id, licenses } => {
@@ -486,10 +500,37 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// reports whether a policy list names this requirement.
+///
+/// an entry can be the bare identifier, its `+` form, or the full
+/// `<id> WITH <exception>` spelling; an exception is only nameable through the
+/// latter, so allowing a license never implies allowing the exception alone.
+fn requirement_listed(req: &LicenseRequirement, list: &HashSet<String>) -> bool {
+    if list.contains(&req.license.to_ascii_lowercase()) {
+        return true;
+    }
+    if req.or_later && list.contains(&format!("{}+", req.license.to_ascii_lowercase())) {
+        return true;
+    }
+    req.exception.is_some() && list.contains(&req.to_string().to_ascii_lowercase())
+}
+
+/// names the requirements that made a policy gate fire, for the diagnostic.
+fn offending_requirements(
+    licensing: Licensing<'_>,
+    keep: impl Fn(&LicenseRequirement) -> bool,
+) -> String {
+    licensing
+        .requirements()
+        .iter()
+        .filter(|req| keep(req))
+        .map(|req| req.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
-    // normalize to lowercase for matching so that e.g. --deny-license GPL-3.0-only
-    // catches components whose SBOM uses gpl-3.0-only.
     let deny_lower: HashSet<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
     let allow_lower: HashSet<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
 
@@ -504,22 +545,29 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
             violation = true;
             continue;
         }
-        for license in &comp.licenses {
-            let license_lower = license.to_ascii_lowercase();
-            if !deny_lower.is_empty() && deny_lower.contains(&license_lower) {
-                eprintln!(
-                    "error: license {} is denied (component {})",
-                    license, comp.id
-                );
-                violation = true;
-            }
-            if !allow_lower.is_empty() && !allow_lower.contains(&license_lower) {
-                eprintln!(
-                    "error: license {} is not allowed (component {})",
-                    license, comp.id
-                );
-                violation = true;
-            }
+
+        let licensing = comp.licensing();
+
+        if !deny_lower.is_empty()
+            && !licensing.satisfiable(|req| !requirement_listed(req, &deny_lower))
+        {
+            eprintln!(
+                "error: license {} is denied (component {})",
+                offending_requirements(licensing, |req| requirement_listed(req, &deny_lower)),
+                comp.id
+            );
+            violation = true;
+        }
+
+        if !allow_lower.is_empty()
+            && !licensing.satisfiable(|req| requirement_listed(req, &allow_lower))
+        {
+            eprintln!(
+                "error: license {} is not allowed (component {})",
+                offending_requirements(licensing, |req| !requirement_listed(req, &allow_lower)),
+                comp.id
+            );
+            violation = true;
         }
     }
     violation
@@ -543,6 +591,22 @@ fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
         );
     }
     true
+}
+
+/// builds the `copyleft-added` violation for a changed component, if the new
+/// licensing imposes a copyleft obligation the old one did not.
+fn copyleft_violation(change: &ComponentChange, active: bool) -> Option<Violation> {
+    if !active {
+        return None;
+    }
+    let introduced = copyleft_obligations_added(change.old.licensing(), change.new.licensing());
+    if introduced.is_empty() {
+        return None;
+    }
+    Some(Violation::CopyleftAdded {
+        id: change.id.clone(),
+        licenses: introduced.into_iter().collect(),
+    })
 }
 
 /// collects all policy violations from a diff in a single pass per collection.
@@ -584,18 +648,13 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
             });
         }
         if check_copyleft_added {
-            // an added component has no prior licenses, so every copyleft id it
-            // carries is newly introduced.
-            let introduced: Vec<String> = comp
-                .licenses
-                .iter()
-                .filter(|&l| is_copyleft_license(l))
-                .cloned()
-                .collect();
+            let none = BTreeSet::new();
+            let introduced =
+                copyleft_obligations_added(Licensing::from_ids(&none), comp.licensing());
             if !introduced.is_empty() {
                 violations.push(Violation::CopyleftAdded {
                     id: comp.id.clone(),
-                    licenses: introduced,
+                    licenses: introduced.into_iter().collect(),
                 });
             }
         }
@@ -651,17 +710,19 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                                 new: new.clone(),
                             });
                         }
-                        if check_copyleft_added && copyleft_introduced(old, new) {
-                            let introduced: Vec<String> = new
-                                .iter()
-                                .filter(|&l| is_copyleft_license(l) && !old.contains(l))
-                                .cloned()
-                                .collect();
-                            violations.push(Violation::CopyleftAdded {
+                        violations.extend(copyleft_violation(change, check_copyleft_added));
+                    }
+                    FieldChange::LicenseExpression(old, new)
+                        if check_license_changed || check_copyleft_added =>
+                    {
+                        if check_license_changed {
+                            violations.push(Violation::LicenseExpressionChanged {
                                 id: change.id.clone(),
-                                licenses: introduced,
+                                old: old.clone(),
+                                new: new.clone(),
                             });
                         }
+                        violations.extend(copyleft_violation(change, check_copyleft_added));
                     }
                     FieldChange::Version(Some(old_ver), Some(new_ver))
                         if check_version_downgrade

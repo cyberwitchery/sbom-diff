@@ -1,7 +1,7 @@
 #![doc = include_str!("../readme.md")]
 
 use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
-use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
+use sbom_model::{licensings_equivalent, Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -327,6 +327,10 @@ pub enum FieldChange {
     Version(Option<String>, Option<String>),
     /// licenses changed: (old, new).
     License(BTreeSet<String>, BTreeSet<String>),
+    /// the declared SPDX license expression changed while the flattened
+    /// identifier set stayed the same: (old, new). a `WITH` exception being
+    /// added or dropped, or `OR` becoming `AND`, shows up here.
+    LicenseExpression(Option<String>, Option<String>),
     /// supplier changed: (old, new).
     Supplier(Option<String>, Option<String>),
     /// package URL changed: (old, new).
@@ -912,11 +916,18 @@ impl Differ {
             ));
         }
 
-        if should_include(Field::License) && old.licenses != new.licenses {
-            changes.push(FieldChange::License(
-                old.licenses.clone(),
-                new.licenses.clone(),
-            ));
+        if should_include(Field::License) {
+            if old.licenses != new.licenses {
+                changes.push(FieldChange::License(
+                    old.licenses.clone(),
+                    new.licenses.clone(),
+                ));
+            } else if !licensings_equivalent(old.licensing(), new.licensing()) {
+                changes.push(FieldChange::LicenseExpression(
+                    old.license_expression.clone(),
+                    new.license_expression.clone(),
+                ));
+            }
         }
 
         if should_include(Field::Supplier) && old.supplier != new.supplier {

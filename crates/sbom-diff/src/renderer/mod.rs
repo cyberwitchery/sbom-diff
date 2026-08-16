@@ -148,6 +148,14 @@ pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
             FieldChange::License(old, new) => {
                 fmt.field_change(writer, "License", &format_set(old), &format_set(new))?;
             }
+            FieldChange::LicenseExpression(old, new) => {
+                fmt.field_change(
+                    writer,
+                    "License expression",
+                    format_option(old),
+                    format_option(new),
+                )?;
+            }
             FieldChange::Supplier(old, new) => {
                 fmt.field_change(writer, "Supplier", format_option(old), format_option(new))?;
             }
