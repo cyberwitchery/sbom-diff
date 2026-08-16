@@ -764,13 +764,18 @@ pub fn licensings_equivalent(a: Licensing<'_>, b: Licensing<'_>) -> bool {
     }
 }
 
-/// returns the copyleft licenses `new` forces on a consumer that `old` did not.
+/// returns the copyleft licenses `new` can put a consumer under that `old`
+/// could not.
 ///
 /// empty when `new` offers a way to satisfy it whose copyleft obligations `old`
 /// already offered — so a dual license like `MIT OR GPL-3.0-only` is not an
 /// introduction, while `MIT AND GPL-3.0-only` is, and an unchanged
-/// `GPL-2.0-only OR GPL-3.0-only` choice is neither. an expression too wide to
-/// expand is measured against the copyleft `old` made individually unavoidable.
+/// `GPL-2.0-only OR GPL-3.0-only` choice is neither. otherwise it is the
+/// copyleft carried by `new`'s minimal satisfying choices, minus the copyleft
+/// every choice of `old` already carried; those choices need not be comparable,
+/// so a consumer may end up under only some of the returned licenses. an
+/// expression too wide to expand is measured against the copyleft `old` made
+/// individually unavoidable.
 ///
 /// # Example
 ///
@@ -1232,15 +1237,35 @@ mod tests {
     }
 
     #[test]
-    fn test_copyleft_obligations_added_names_only_the_unavoidable_licenses() {
-        assert_eq!(
-            copyleft_added("MIT", "GPL-3.0-only AND (MPL-2.0 OR ISC)"),
-            licenses(&["GPL-3.0-only"])
-        );
-        assert_eq!(
-            copyleft_added("GPL-2.0-only", "GPL-2.0-only AND GPL-3.0-only"),
-            licenses(&["GPL-3.0-only"])
-        );
+    fn test_copyleft_obligations_added_spans_the_minimal_choices_less_what_old_forced() {
+        for (old, new, introduced) in [
+            (
+                "MIT",
+                "GPL-3.0-only AND (MPL-2.0 OR ISC)",
+                &["GPL-3.0-only"][..],
+            ),
+            (
+                "GPL-2.0-only",
+                "GPL-2.0-only AND GPL-3.0-only",
+                &["GPL-3.0-only"],
+            ),
+            (
+                "MIT",
+                "GPL-2.0-only OR AGPL-3.0-only",
+                &["AGPL-3.0-only", "GPL-2.0-only"],
+            ),
+            (
+                "MIT",
+                "(GPL-3.0-only AND MPL-2.0) OR (AGPL-3.0-only AND EPL-2.0)",
+                &["AGPL-3.0-only", "GPL-3.0-only", "MPL-2.0"],
+            ),
+        ] {
+            assert_eq!(
+                copyleft_added(old, new),
+                licenses(introduced),
+                "{old} -> {new}"
+            );
+        }
     }
 
     #[test]

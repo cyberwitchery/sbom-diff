@@ -100,12 +100,17 @@ expression the sbom declared, so the operators decide the verdict:
   `(MIT OR Apache-2.0) AND BSD-3-Clause` is allowed by
   `--allow-license mit --allow-license bsd-3-clause`.
 - `--fail-on copyleft-added` fires when the new expression offers no way to
-  satisfy it whose copyleft obligations the old expression already offered, and
-  names only the licenses no satisfying choice avoids. gaining a copyleft
-  alternative (`MIT` to `MIT OR GPL-3.0-only`) is not a violation, and neither
-  is a choice between copyleft licenses both sides offer
-  (`GPL-2.0-only OR GPL-3.0-only`); losing the permissive alternative
-  (`MIT OR GPL-3.0-only` to `GPL-3.0-only`) is.
+  satisfy it whose copyleft obligations the old expression already offered. the
+  licenses it names are the copyleft the new side's least burdensome choices
+  carry, minus the copyleft every old choice already forced: a license a lighter
+  choice avoids is dropped, so `MIT` to `GPL-3.0-only AND (MPL-2.0 OR ISC)`
+  names `GPL-3.0-only` alone, but where those choices are incomparable the list
+  spans all of them and the consumer ends up under only part of it, so `MIT` to
+  `GPL-2.0-only OR AGPL-3.0-only` names both. gaining a copyleft alternative
+  (`MIT` to `MIT OR GPL-3.0-only`) is not a violation, and neither is a choice
+  between copyleft licenses both sides offer (`GPL-2.0-only OR GPL-3.0-only`);
+  losing the permissive alternative (`MIT OR GPL-3.0-only` to `GPL-3.0-only`)
+  is.
 - a `WITH` exception is part of the license: dropping it is reported as a
   license change even though the identifiers are unchanged, and it is nameable
   in a policy list by its full spelling,
