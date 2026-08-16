@@ -5,6 +5,7 @@
 - fix `--fail-on version-downgrade` for Debian and Ubuntu versions, which were compared as semver
 - add `Version::parse_for_ecosystem`, `versions::compare_versions_for_ecosystem` and `versions::is_version_downgrade_for_ecosystem` to sbom-model, which take the component's ecosystem (a purl package type) and apply that ecosystem's version rules; a `None` or unrecognized ecosystem behaves exactly like the existing `Version::parse_lenient`, `compare_versions` and `is_version_downgrade`, whose signatures and results are unchanged. sbom-diff gains `pair_ecosystem`, which picks the ecosystem for a matched component pair and returns `None` when the two sides disagree
 - fix `--fail-on version-downgrade` for PEP 440 versions, which were compared as Debian
+- fix `--fail-on version-downgrade` for RPM versions like `4.4.2-2.el7_9`, which were not read as versions at all, so downgrades passed the gate silently; the ones that were read could still be ordered backwards
 
 ## [0.7.0] - 2026-08-08
 
