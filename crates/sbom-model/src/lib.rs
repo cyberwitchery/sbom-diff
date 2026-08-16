@@ -661,23 +661,41 @@ impl<'a> Licensing<'a> {
             .map(|r| r.license)
             .collect()
     }
+
+    /// returns the minimal copyleft burdens the licensing's satisfying choices
+    /// carry, or `None` when the expression expands past `MAX_CHOICES`.
+    fn copyleft_burdens(&self) -> Option<Burdens> {
+        let burdens = self
+            .choices()?
+            .into_iter()
+            .map(|choice| {
+                choice
+                    .into_iter()
+                    .filter(|r| is_copyleft_license(&r.license))
+                    .map(|r| r.license)
+                    .collect()
+            })
+            .collect();
+        Some(minimal_sets(burdens))
+    }
 }
 
 /// the alternative requirement sets an expression offers a consumer.
 type Choices = BTreeSet<BTreeSet<LicenseRequirement>>;
 
+/// the copyleft identifiers each alternative an expression offers carries.
+type Burdens = BTreeSet<BTreeSet<String>>;
+
 /// the largest number of alternatives an expression is expanded into before it
 /// is compared by spelling instead.
 const MAX_CHOICES: usize = 64;
 
-/// drops every alternative that another alternative is a strict subset of.
-fn minimal_choices(choices: Choices) -> Choices {
-    choices
-        .iter()
+/// drops every set that another set in the collection is a strict subset of.
+fn minimal_sets<T: Ord + Clone>(sets: BTreeSet<BTreeSet<T>>) -> BTreeSet<BTreeSet<T>> {
+    sets.iter()
         .filter(|set| {
-            !choices
-                .iter()
-                .any(|other| other != *set && other.is_subset(set))
+            sets.iter()
+                .all(|other| other == *set || !other.is_subset(set))
         })
         .cloned()
         .collect()
@@ -705,7 +723,7 @@ fn expression_choices(expr: &spdx::Expression) -> Option<Choices> {
                 if combined.len() > MAX_CHOICES {
                     return None;
                 }
-                stack.push(minimal_choices(combined));
+                stack.push(minimal_sets(combined));
             }
         }
     }
@@ -748,10 +766,11 @@ pub fn licensings_equivalent(a: Licensing<'_>, b: Licensing<'_>) -> bool {
 
 /// returns the copyleft licenses `new` forces on a consumer that `old` did not.
 ///
-/// empty when every copyleft obligation `new` imposes was already unavoidable
-/// under `old`, or when `new` can be satisfied without taking on any copyleft
-/// license at all — so a dual license like `MIT OR GPL-3.0-only` is not an
-/// introduction, while `MIT AND GPL-3.0-only` is.
+/// empty when `new` offers a way to satisfy it whose copyleft obligations `old`
+/// already offered — so a dual license like `MIT OR GPL-3.0-only` is not an
+/// introduction, while `MIT AND GPL-3.0-only` is, and an unchanged
+/// `GPL-2.0-only OR GPL-3.0-only` choice is neither. an expression too wide to
+/// expand is measured against the copyleft `old` made individually unavoidable.
 ///
 /// # Example
 ///
@@ -770,15 +789,37 @@ pub fn licensings_equivalent(a: Licensing<'_>, b: Licensing<'_>) -> bool {
 /// assert!(copyleft_obligations_added(old, both).contains("GPL-3.0-only"));
 /// ```
 pub fn copyleft_obligations_added(old: Licensing<'_>, new: Licensing<'_>) -> BTreeSet<String> {
-    let already = old.mandatory_copyleft();
-    if new.satisfiable(|r| !is_copyleft_license(&r.license) || already.contains(&r.license)) {
-        return BTreeSet::new();
+    match (old.copyleft_burdens(), new.copyleft_burdens()) {
+        (Some(offered), Some(demanded)) => {
+            if demanded
+                .iter()
+                .any(|burden| offered.iter().any(|had| burden.is_subset(had)))
+            {
+                return BTreeSet::new();
+            }
+            let unavoidable = offered
+                .into_iter()
+                .reduce(|acc, had| acc.intersection(&had).cloned().collect())
+                .unwrap_or_default();
+            demanded
+                .into_iter()
+                .flatten()
+                .filter(|license| !unavoidable.contains(license))
+                .collect()
+        }
+        _ => {
+            let already = old.mandatory_copyleft();
+            if new.satisfiable(|r| !is_copyleft_license(&r.license) || already.contains(&r.license))
+            {
+                return BTreeSet::new();
+            }
+            new.requirements()
+                .into_iter()
+                .filter(|r| is_copyleft_license(&r.license) && !already.contains(&r.license))
+                .map(|r| r.license)
+                .collect()
+        }
     }
-    new.requirements()
-        .into_iter()
-        .filter(|r| is_copyleft_license(&r.license) && !already.contains(&r.license))
-        .map(|r| r.license)
-        .collect()
 }
 
 /// reports whether two SPDX license expressions impose the same obligations.
@@ -1129,6 +1170,95 @@ mod tests {
                 licensing("GPL-3.0-only", &gpl)
             ),
             BTreeSet::from(["GPL-3.0-only".to_string()])
+        );
+    }
+
+    fn copyleft_added(old: &str, new: &str) -> BTreeSet<String> {
+        let old_ids = parse_license_expression(old);
+        let new_ids = parse_license_expression(new);
+        copyleft_obligations_added(licensing(old, &old_ids), licensing(new, &new_ids))
+    }
+
+    fn licenses(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn test_copyleft_obligations_added_ignores_a_choice_between_copyleft_licenses() {
+        for (old, new) in [
+            (
+                "GPL-2.0-only OR GPL-3.0-only",
+                "GPL-2.0-only OR GPL-3.0-only OR LGPL-3.0-only",
+            ),
+            (
+                "MIT AND (GPL-2.0-only OR GPL-3.0-only)",
+                "Apache-2.0 AND (GPL-2.0-only OR GPL-3.0-only)",
+            ),
+            (
+                "MPL-2.0 OR GPL-2.0-only OR LGPL-2.1-only",
+                "MPL-2.0 OR GPL-2.0-only OR LGPL-2.1-only",
+            ),
+        ] {
+            assert!(
+                copyleft_added(old, new).is_empty(),
+                "{old} -> {new} forces no copyleft the consumer could not already have taken"
+            );
+        }
+    }
+
+    #[test]
+    fn test_copyleft_obligations_added_fires_on_every_tightening() {
+        for (old, new, introduced) in [
+            (
+                "GPL-2.0-only OR GPL-3.0-only",
+                "GPL-2.0-only AND GPL-3.0-only",
+                &["GPL-2.0-only", "GPL-3.0-only"][..],
+            ),
+            ("MIT OR GPL-3.0-only", "GPL-3.0-only", &["GPL-3.0-only"]),
+            ("GPL-3.0-only", "AGPL-3.0-only", &["AGPL-3.0-only"]),
+            ("MIT", "MIT AND GPL-3.0-only", &["GPL-3.0-only"]),
+            (
+                "GPL-2.0-only OR GPL-3.0-only",
+                "AGPL-3.0-only",
+                &["AGPL-3.0-only"],
+            ),
+        ] {
+            assert_eq!(
+                copyleft_added(old, new),
+                licenses(introduced),
+                "{old} -> {new}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_copyleft_obligations_added_names_only_the_unavoidable_licenses() {
+        assert_eq!(
+            copyleft_added("MIT", "GPL-3.0-only AND (MPL-2.0 OR ISC)"),
+            licenses(&["GPL-3.0-only"])
+        );
+        assert_eq!(
+            copyleft_added("GPL-2.0-only", "GPL-2.0-only AND GPL-3.0-only"),
+            licenses(&["GPL-3.0-only"])
+        );
+    }
+
+    #[test]
+    fn test_copyleft_obligations_added_falls_back_past_max_choices() {
+        let wide = "(MIT OR Apache-2.0) AND (BSD-2-Clause OR BSD-3-Clause) \
+                    AND (ISC OR Zlib) AND (MPL-2.0 OR EPL-2.0) \
+                    AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) \
+                    AND (CC0-1.0 OR Unlicense)";
+
+        assert_eq!(
+            copyleft_added("MIT", wide),
+            licenses(&[
+                "GPL-2.0-only",
+                "GPL-3.0-only",
+                "LGPL-2.1-only",
+                "LGPL-3.0-only",
+                "MPL-2.0",
+            ])
         );
     }
 

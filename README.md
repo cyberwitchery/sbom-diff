@@ -99,10 +99,13 @@ expression the sbom declared, so the operators decide the verdict:
   only fires when no satisfying choice lies inside the allow-list, so
   `(MIT OR Apache-2.0) AND BSD-3-Clause` is allowed by
   `--allow-license mit --allow-license bsd-3-clause`.
-- `--fail-on copyleft-added` fires when the new expression cannot be satisfied
-  without a copyleft license the old one did not already force. gaining a
-  copyleft alternative (`MIT` to `MIT OR GPL-3.0-only`) is not a violation;
-  losing the permissive alternative (`MIT OR GPL-3.0-only` to `GPL-3.0-only`) is.
+- `--fail-on copyleft-added` fires when the new expression offers no way to
+  satisfy it whose copyleft obligations the old expression already offered, and
+  names only the licenses no satisfying choice avoids. gaining a copyleft
+  alternative (`MIT` to `MIT OR GPL-3.0-only`) is not a violation, and neither
+  is a choice between copyleft licenses both sides offer
+  (`GPL-2.0-only OR GPL-3.0-only`); losing the permissive alternative
+  (`MIT OR GPL-3.0-only` to `GPL-3.0-only`) is.
 - a `WITH` exception is part of the license: dropping it is reported as a
   license change even though the identifiers are unchanged, and it is nameable
   in a policy list by its full spelling,
@@ -118,6 +121,11 @@ changes, and neither is spelling out a conjunction the other side leaves as a
 bare identifier set; losing an `OR` alternative is, including when
 `MIT OR GPL-3.0-only` collapses into a bare `MIT`/`GPL-3.0-only` pair that no
 longer offers the choice.
+
+an expression that expands to more than 64 alternatives is compared by its parse
+tree instead: reordering its operands does count as a change, and
+`--fail-on copyleft-added` falls back to naming every copyleft license it
+mentions that the old side did not already force.
 
 ## exit codes
 

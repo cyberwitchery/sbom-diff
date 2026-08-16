@@ -2097,6 +2097,34 @@ fn fail_on_copyleft_added_fires_on_a_conjunction() {
 }
 
 #[test]
+fn fail_on_copyleft_added_ignores_an_unchanged_copyleft_choice() {
+    let out = sbom_diff()
+        .arg(fixture("copyleft-unchanged-choice-old.json"))
+        .arg(fixture("copyleft-unchanged-choice-new.json"))
+        .arg("--fail-on")
+        .arg("copyleft-added")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "only the permissive operand changed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = sbom_diff()
+        .arg(fixture("copyleft-unchanged-choice-old.json"))
+        .arg(fixture("copyleft-unchanged-choice-new.json"))
+        .arg("--fail-on")
+        .arg("license-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
 fn dropping_a_license_exception_is_a_license_change() {
     let out = sbom_diff()
         .arg(fixture("license-exception-old.spdx.json"))
