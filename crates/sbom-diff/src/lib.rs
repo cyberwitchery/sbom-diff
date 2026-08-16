@@ -1,7 +1,7 @@
 #![doc = include_str!("../readme.md")]
 
 use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
-use sbom_model::{license_expressions_equivalent, Component, ComponentId, DependencyKind, Sbom};
+use sbom_model::{licensings_equivalent, Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -303,18 +303,6 @@ pub fn pair_ecosystem<'a>(old: &'a Component, new: &'a Component) -> Option<&'a 
     match (old.ecosystem.as_deref(), new.ecosystem.as_deref()) {
         (Some(a), Some(b)) if a != b => None,
         (a, b) => a.or(b),
-    }
-}
-
-/// compares two declared license expressions.
-///
-/// a side without a declared expression is described only by its flattened
-/// identifier set, which the caller has already compared, so it never counts as
-/// a difference.
-fn expressions_equivalent(old: Option<&str>, new: Option<&str>) -> bool {
-    match (old, new) {
-        (Some(old), Some(new)) => license_expressions_equivalent(old, new),
-        _ => true,
     }
 }
 
@@ -934,10 +922,7 @@ impl Differ {
                     old.licenses.clone(),
                     new.licenses.clone(),
                 ));
-            } else if !expressions_equivalent(
-                old.license_expression.as_deref(),
-                new.license_expression.as_deref(),
-            ) {
+            } else if !licensings_equivalent(old.licensing(), new.licensing()) {
                 changes.push(FieldChange::LicenseExpression(
                     old.license_expression.clone(),
                     new.license_expression.clone(),

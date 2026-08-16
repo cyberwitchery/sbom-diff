@@ -637,6 +637,21 @@ impl<'a> Licensing<'a> {
         self.ids.iter().map(LicenseRequirement::new).collect()
     }
 
+    /// returns the minimal requirement sets that satisfy the licensing, or
+    /// `None` when the expression expands past `MAX_CHOICES`.
+    fn choices(&self) -> Option<Choices> {
+        if let Some(expression) = self.expression {
+            if let Ok(expr) = spdx::Expression::parse(expression) {
+                return expression_choices(&expr);
+            }
+        }
+        Some(BTreeSet::from([self
+            .ids
+            .iter()
+            .map(LicenseRequirement::new)
+            .collect()]))
+    }
+
     /// returns the copyleft identifiers no satisfying choice can avoid.
     fn mandatory_copyleft(&self) -> BTreeSet<String> {
         self.requirements()
@@ -645,6 +660,89 @@ impl<'a> Licensing<'a> {
             .filter(|r| !self.satisfiable(|other| other.license != r.license))
             .map(|r| r.license)
             .collect()
+    }
+}
+
+/// the alternative requirement sets an expression offers a consumer.
+type Choices = BTreeSet<BTreeSet<LicenseRequirement>>;
+
+/// the largest number of alternatives an expression is expanded into before it
+/// is compared by spelling instead.
+const MAX_CHOICES: usize = 64;
+
+/// drops every alternative that another alternative is a strict subset of.
+fn minimal_choices(choices: Choices) -> Choices {
+    choices
+        .iter()
+        .filter(|set| {
+            !choices
+                .iter()
+                .any(|other| other != *set && other.is_subset(set))
+        })
+        .cloned()
+        .collect()
+}
+
+/// expands a parsed expression into its minimal satisfying requirement sets.
+fn expression_choices(expr: &spdx::Expression) -> Option<Choices> {
+    let mut stack: Vec<Choices> = Vec::new();
+
+    for node in expr.iter() {
+        match node {
+            spdx::expression::ExprNode::Req(req) => {
+                stack.push(BTreeSet::from([BTreeSet::from([to_requirement(&req.req)])]));
+            }
+            spdx::expression::ExprNode::Op(op) => {
+                let rhs = stack.pop()?;
+                let lhs = stack.pop()?;
+                let combined: Choices = match op {
+                    spdx::expression::Operator::Or => lhs.union(&rhs).cloned().collect(),
+                    spdx::expression::Operator::And => lhs
+                        .iter()
+                        .flat_map(|l| rhs.iter().map(|r| l.union(r).cloned().collect()))
+                        .collect(),
+                };
+                if combined.len() > MAX_CHOICES {
+                    return None;
+                }
+                stack.push(minimal_choices(combined));
+            }
+        }
+    }
+
+    let choices = stack.pop()?;
+    stack.is_empty().then_some(choices)
+}
+
+/// reports whether two licensings impose the same obligations.
+///
+/// a licensing without a declared expression is read as a conjunction of its
+/// identifiers, so it differs from one with an expression only when that
+/// expression means something a bare identifier set cannot. an expression too
+/// wide to expand is compared by spelling and never matches a bare set.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::{licensings_equivalent, Licensing};
+/// use std::collections::BTreeSet;
+///
+/// let ids: BTreeSet<String> = ["GPL-3.0-only".into(), "MIT".into()].into();
+/// let flat = Licensing::from_ids(&ids);
+///
+/// let both = Licensing { expression: Some("MIT AND GPL-3.0-only"), ids: &ids };
+/// assert!(licensings_equivalent(both, flat));
+///
+/// let choice = Licensing { expression: Some("MIT OR GPL-3.0-only"), ids: &ids };
+/// assert!(!licensings_equivalent(choice, flat));
+/// ```
+pub fn licensings_equivalent(a: Licensing<'_>, b: Licensing<'_>) -> bool {
+    match (a.choices(), b.choices()) {
+        (Some(x), Some(y)) => x == y,
+        _ => match (a.expression, b.expression) {
+            (Some(x), Some(y)) => license_expressions_equivalent(x, y),
+            _ => false,
+        },
     }
 }
 
@@ -683,18 +781,19 @@ pub fn copyleft_obligations_added(old: Licensing<'_>, new: Licensing<'_>) -> BTr
         .collect()
 }
 
-/// reports whether two SPDX license expressions declare the same licensing.
+/// reports whether two SPDX license expressions impose the same obligations.
 ///
-/// redundant parentheses and whitespace do not count as a difference; operand
-/// order and `WITH` exceptions do. expressions that fail to parse compare as
-/// plain strings.
+/// spelling that does not change which licenses satisfy the expression —
+/// redundant parentheses, whitespace, operand order — is not a difference;
+/// `AND` against `OR`, `WITH` exceptions and `+` are. an expression too wide to
+/// expand compares by parse tree, and one that fails to parse as a plain string.
 ///
 /// # Example
 ///
 /// ```
 /// use sbom_model::license_expressions_equivalent;
 ///
-/// assert!(license_expressions_equivalent("MIT OR Apache-2.0", "(MIT OR (Apache-2.0))"));
+/// assert!(license_expressions_equivalent("MIT OR Apache-2.0", "(Apache-2.0 OR MIT)"));
 /// assert!(!license_expressions_equivalent("MIT OR Apache-2.0", "MIT AND Apache-2.0"));
 /// assert!(!license_expressions_equivalent(
 ///     "GPL-2.0-only",
@@ -703,7 +802,10 @@ pub fn copyleft_obligations_added(old: Licensing<'_>, new: Licensing<'_>) -> BTr
 /// ```
 pub fn license_expressions_equivalent(a: &str, b: &str) -> bool {
     match (spdx::Expression::parse(a), spdx::Expression::parse(b)) {
-        (Ok(a), Ok(b)) => a == b,
+        (Ok(x), Ok(y)) => match (expression_choices(&x), expression_choices(&y)) {
+            (Some(cx), Some(cy)) => cx == cy,
+            _ => x == y,
+        },
         _ => a == b,
     }
 }
@@ -1064,6 +1166,111 @@ mod tests {
         ));
         assert!(license_expressions_equivalent("Custom Text", "Custom Text"));
         assert!(!license_expressions_equivalent("Custom Text", "Other Text"));
+    }
+
+    #[test]
+    fn test_license_expressions_equivalent_falls_back_past_max_choices() {
+        let wide = "(MIT OR Apache-2.0) AND (BSD-2-Clause OR BSD-3-Clause) \
+                    AND (ISC OR Zlib) AND (MPL-2.0 OR EPL-2.0) \
+                    AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) \
+                    AND (CC0-1.0 OR Unlicense)";
+
+        assert!(license_expressions_equivalent(wide, wide));
+        assert!(license_expressions_equivalent(
+            wide,
+            &wide.replace("(MIT OR Apache-2.0)", "((MIT OR Apache-2.0))")
+        ));
+        assert!(!license_expressions_equivalent(
+            wide,
+            &wide.replace("MIT OR Apache-2.0", "Apache-2.0 OR MIT")
+        ));
+
+        let ids: BTreeSet<String> = wide
+            .split_whitespace()
+            .map(|word| word.trim_matches(['(', ')']).to_string())
+            .filter(|word| word != "AND" && word != "OR")
+            .collect();
+        assert!(!licensings_equivalent(
+            Licensing {
+                expression: Some(wide),
+                ids: &ids,
+            },
+            Licensing::from_ids(&ids)
+        ));
+    }
+
+    #[test]
+    fn test_license_expressions_equivalent_ignores_operand_order() {
+        assert!(license_expressions_equivalent(
+            "MIT OR Apache-2.0",
+            "Apache-2.0 OR MIT"
+        ));
+        assert!(license_expressions_equivalent(
+            "(MIT OR Apache-2.0) AND BSD-3-Clause",
+            "(BSD-3-Clause AND Apache-2.0) OR (BSD-3-Clause AND MIT)"
+        ));
+        assert!(license_expressions_equivalent(
+            "MIT",
+            "MIT OR (MIT AND Apache-2.0)"
+        ));
+        assert!(!license_expressions_equivalent(
+            "MIT OR Apache-2.0",
+            "MIT OR BSD-3-Clause"
+        ));
+    }
+
+    #[test]
+    fn test_licensings_equivalent_reads_a_bare_set_as_a_conjunction() {
+        let ids: BTreeSet<String> = ["GPL-3.0-only".to_string(), "MIT".to_string()].into();
+        let flat = Licensing::from_ids(&ids);
+
+        assert!(licensings_equivalent(
+            Licensing {
+                expression: Some("MIT AND GPL-3.0-only"),
+                ids: &ids,
+            },
+            flat
+        ));
+        assert!(!licensings_equivalent(
+            Licensing {
+                expression: Some("MIT OR GPL-3.0-only"),
+                ids: &ids,
+            },
+            flat
+        ));
+        assert!(licensings_equivalent(flat, flat));
+    }
+
+    #[test]
+    fn test_licensings_equivalent_keeps_decorated_requirements() {
+        let gpl: BTreeSet<String> = ["GPL-2.0-only".to_string()].into();
+        assert!(!licensings_equivalent(
+            Licensing {
+                expression: Some("GPL-2.0-only WITH Classpath-exception-2.0"),
+                ids: &gpl,
+            },
+            Licensing::from_ids(&gpl)
+        ));
+        let apache: BTreeSet<String> = ["Apache-2.0".to_string()].into();
+        assert!(!licensings_equivalent(
+            Licensing {
+                expression: Some("Apache-2.0+"),
+                ids: &apache,
+            },
+            Licensing::from_ids(&apache)
+        ));
+    }
+
+    #[test]
+    fn test_licensings_equivalent_falls_back_to_the_identifier_set() {
+        let ids: BTreeSet<String> = ["Custom Text".to_string()].into();
+        assert!(licensings_equivalent(
+            Licensing {
+                expression: Some("Custom Text"),
+                ids: &ids,
+            },
+            Licensing::from_ids(&ids)
+        ));
     }
 
     #[test]

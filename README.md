@@ -112,6 +112,13 @@ components whose sbom declares no expression — free-text names, `LicenseRef-`
 identifiers, or per-license `id`/`name` entries — are gated on their identifier
 set, where every identifier applies.
 
+a license change is reported when the two sides are satisfied by different sets
+of licenses, and only then. reordering operands and adding parentheses are not
+changes, and neither is spelling out a conjunction the other side leaves as a
+bare identifier set; losing an `OR` alternative is, including when
+`MIT OR GPL-3.0-only` collapses into a bare `MIT`/`GPL-3.0-only` pair that no
+longer offers the choice.
+
 ## exit codes
 
 | code | meaning |
