@@ -227,8 +227,7 @@ impl Version {
     ///   Debian `dpkg` version-comparison algorithm
     /// - **Rpm vs Rpm**: epoch (numeric), then version, then release, via rpm's
     ///   `rpmvercmp` algorithm
-    /// - **Maven vs Maven**: token by token, via Maven's version-order
-    ///   algorithm
+    /// - **Maven vs Maven**: item by item, via Maven's version-order algorithm
     /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
     ///   other side is read as a PEP 440 version and both are ordered per PEP
     ///   440. a semver pre-release that isn't a PEP 440 suffix (say
@@ -870,110 +869,112 @@ fn is_maven_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '+')
 }
 
-/// the separator preceding a Maven token. `_` and a transition between ASCII
-/// digits and other characters both behave as `-`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MavenSep {
-    Dot,
-    Hyphen,
-}
-
-/// one Maven token together with the separator that preceded it.
+/// one node of a parsed Maven version: a run of ASCII digits with its leading
+/// zeros stripped, a qualifier folded to the spelling the ranking is defined
+/// on, or the sub-list a separator opens. each is null when empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MavenToken {
-    sep: MavenSep,
-    kind: MavenKind,
-}
-
-/// a run of ASCII digits with its leading zeros stripped, or a qualifier folded
-/// to the spelling the ranking is defined on. either is null when empty.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MavenKind {
+enum MavenItem {
     Num(String),
     Qual(String),
+    List(Vec<MavenItem>),
 }
 
-impl MavenToken {
+impl MavenItem {
     fn is_null(&self) -> bool {
-        match &self.kind {
-            MavenKind::Num(digits) => digits.is_empty(),
-            MavenKind::Qual(value) => value.is_empty(),
+        match self {
+            MavenItem::Num(digits) => digits.is_empty(),
+            MavenItem::Qual(value) => value.is_empty(),
+            MavenItem::List(items) => items.is_empty(),
         }
     }
 }
 
-/// orders two Maven versions with Maven's version-order algorithm: both are
-/// tokenized and trimmed, the shorter sequence is padded to the length of the
-/// longer, and the tokens are compared left to right.
+/// orders two Maven versions with Maven's version-order algorithm.
 fn maven_cmp(a: &str, b: &str) -> Ordering {
-    let mut a = maven_tokens(a);
-    let mut b = maven_tokens(b);
-
-    while a.len() < b.len() {
-        a.push(maven_null(&b[a.len()]));
-    }
-    while b.len() < a.len() {
-        b.push(maven_null(&a[b.len()]));
-    }
-
-    for (x, y) in a.iter().zip(&b) {
-        match maven_token_cmp(x, y) {
-            Ordering::Equal => {}
-            ord => return ord,
-        }
-    }
-
-    Ordering::Equal
+    maven_list_cmp(&maven_parse(a), &maven_parse(b))
 }
 
-/// splits a Maven version into trimmed tokens.
+/// parses a Maven version into its normalized item tree.
 ///
-/// tokens are separated by `.`, `-`, `_` and by any transition between ASCII
-/// digits and other characters, the last three all recorded as a hyphen. an
-/// empty token is Maven's `0`, so `1-.1` is `1-0.1`.
-fn maven_tokens(s: &str) -> Vec<MavenToken> {
-    let mut tokens = Vec::new();
-    let mut sep = MavenSep::Dot;
+/// items are separated by `.`, `-`, `_` and by any transition between ASCII
+/// digits and other characters; every separator but `.` opens a sub-list, as
+/// does a qualifier reached from a digit or introduced by a `.` after an
+/// item. an empty item is Maven's `0`, so `1-.1` is `1-0.1`.
+fn maven_parse(s: &str) -> Vec<MavenItem> {
+    let s = s.to_lowercase();
+    let mut stack: Vec<Vec<MavenItem>> = vec![Vec::new()];
+    let mut digits = false;
     let mut start = 0;
-    let mut digits: Option<bool> = None;
 
     for (i, c) in s.char_indices() {
         if matches!(c, '.' | '-' | '_') {
-            tokens.push(maven_token(sep, &s[start..i], false));
-            sep = if c == '.' {
-                MavenSep::Dot
+            let item = if i == start {
+                MavenItem::Num(String::new())
             } else {
-                MavenSep::Hyphen
+                maven_item(digits, &s[start..i])
             };
+            stack.last_mut().expect("stack is never emptied").push(item);
             start = i + c.len_utf8();
-            digits = None;
+            if c != '.' {
+                stack.push(Vec::new());
+            }
             continue;
         }
 
         let is_digit = c.is_ascii_digit();
-        if digits == Some(!is_digit) {
-            tokens.push(maven_token(sep, &s[start..i], is_digit));
-            sep = MavenSep::Hyphen;
+        if i > start && is_digit && !digits {
+            if !stack.last().expect("stack is never emptied").is_empty() {
+                stack.push(Vec::new());
+            }
+            let qualifier = MavenItem::Qual(maven_qualifier(&s[start..i], true));
+            stack
+                .last_mut()
+                .expect("stack is never emptied")
+                .push(qualifier);
             start = i;
+            stack.push(Vec::new());
+        } else if i > start && !is_digit && digits {
+            let number = maven_item(true, &s[start..i]);
+            stack
+                .last_mut()
+                .expect("stack is never emptied")
+                .push(number);
+            start = i;
+            stack.push(Vec::new());
         }
-        digits = Some(is_digit);
+        digits = is_digit;
     }
-    tokens.push(maven_token(sep, &s[start..], false));
 
-    maven_trim(&mut tokens);
-    tokens
+    if s.len() > start {
+        if !digits && !stack.last().expect("stack is never emptied").is_empty() {
+            stack.push(Vec::new());
+        }
+        let item = maven_item(digits, &s[start..]);
+        stack.last_mut().expect("stack is never emptied").push(item);
+    }
+
+    while stack.len() > 1 {
+        let mut child = stack.pop().expect("length is above one");
+        maven_normalize(&mut child);
+        stack
+            .last_mut()
+            .expect("stack is never emptied")
+            .push(MavenItem::List(child));
+    }
+
+    let mut items = stack.pop().expect("stack is never emptied");
+    maven_normalize(&mut items);
+    items
 }
 
-/// classifies one token's text. `followed_by_digit` only matters for the
+/// classifies one item's text. `followed_by_digit` only matters for the
 /// `a`/`b`/`m` shorthands.
-fn maven_token(sep: MavenSep, text: &str, followed_by_digit: bool) -> MavenToken {
-    let kind = if text.bytes().all(|b| b.is_ascii_digit()) {
-        MavenKind::Num(text.trim_start_matches('0').to_string())
+fn maven_item(digits: bool, text: &str) -> MavenItem {
+    if digits {
+        MavenItem::Num(text.trim_start_matches('0').to_string())
     } else {
-        MavenKind::Qual(maven_qualifier(text, followed_by_digit))
-    };
-
-    MavenToken { sep, kind }
+        MavenItem::Qual(maven_qualifier(text, false))
+    }
 }
 
 /// folds a qualifier to the spelling the ranking is defined on: lower case,
@@ -998,67 +999,71 @@ fn maven_qualifier(text: &str, followed_by_digit: bool) -> String {
     }
 }
 
-/// drops the sequence's trailing null tokens, then those ending the prefix
-/// before each remaining hyphen, from the end back to the start, so that
-/// `1.0.0`, `1.ga` and `1-0` all reduce to `1` and `1-ga-1` to `1-1`.
-fn maven_trim(tokens: &mut Vec<MavenToken>) {
-    while tokens.last().is_some_and(MavenToken::is_null) {
-        tokens.pop();
-    }
-
-    let mut i = tokens.len();
+/// drops a list's trailing null items, so that `1.0.0`, `1.ga` and `1-0` all
+/// reduce to `1`. a sub-list is stepped over rather than ending the scan.
+fn maven_normalize(items: &mut Vec<MavenItem>) {
+    let mut i = items.len();
     while i > 0 {
         i -= 1;
-        if tokens[i].sep == MavenSep::Hyphen {
-            let mut kept = i;
-            while kept > 0 && tokens[kept - 1].is_null() {
-                kept -= 1;
-            }
-            tokens.drain(kept..i);
-            i = kept;
+        if items[i].is_null() {
+            items.remove(i);
+        } else if !matches!(items[i], MavenItem::List(_)) {
+            break;
         }
     }
 }
 
-/// the null token padding a shorter sequence, taking the kind and separator of
-/// the token it faces: `0` against a number, the release qualifier against a
-/// qualifier.
-fn maven_null(facing: &MavenToken) -> MavenToken {
-    let kind = match &facing.kind {
-        MavenKind::Num(_) => MavenKind::Num(String::new()),
-        MavenKind::Qual(_) => MavenKind::Qual(String::new()),
-    };
+/// orders two item lists, padding the shorter with the null each unmatched item
+/// is measured against.
+fn maven_list_cmp(a: &[MavenItem], b: &[MavenItem]) -> Ordering {
+    for i in 0..a.len().max(b.len()) {
+        let ord = match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) => maven_item_cmp(x, y),
+            (Some(x), None) => maven_null_cmp(x),
+            (None, Some(y)) => maven_null_cmp(y).reverse(),
+            (None, None) => Ordering::Equal,
+        };
 
-    MavenToken {
-        sep: facing.sep,
-        kind,
+        if ord != Ordering::Equal {
+            return ord;
+        }
     }
+
+    Ordering::Equal
 }
 
-/// orders two Maven tokens on the ranking `qualifier < -number < .number`. the
-/// separator only enters for numbers: two qualifiers compare on
-/// [`maven_qualifier_rank`] whatever separators they carry, so `1.foo` equals
-/// `1-foo`.
-fn maven_token_cmp(a: &MavenToken, b: &MavenToken) -> Ordering {
-    match (&a.kind, &b.kind) {
-        (MavenKind::Qual(x), MavenKind::Qual(y)) => {
+/// orders two items on the ranking `qualifier < sub-list < number`.
+fn maven_item_cmp(a: &MavenItem, b: &MavenItem) -> Ordering {
+    match (a, b) {
+        (MavenItem::Num(x), MavenItem::Num(y)) => x.len().cmp(&y.len()).then_with(|| x.cmp(y)),
+        (MavenItem::Qual(x), MavenItem::Qual(y)) => {
             maven_qualifier_rank(x).cmp(&maven_qualifier_rank(y))
         }
-        (MavenKind::Num(x), MavenKind::Num(y)) => maven_sep_rank(a.sep)
-            .cmp(&maven_sep_rank(b.sep))
-            .then_with(|| x.len().cmp(&y.len()))
-            .then_with(|| x.cmp(y)),
-        (MavenKind::Qual(_), MavenKind::Num(_)) => Ordering::Less,
-        (MavenKind::Num(_), MavenKind::Qual(_)) => Ordering::Greater,
+        (MavenItem::List(x), MavenItem::List(y)) => maven_list_cmp(x, y),
+        (MavenItem::Num(_), _) => Ordering::Greater,
+        (_, MavenItem::Num(_)) => Ordering::Less,
+        (MavenItem::List(_), MavenItem::Qual(_)) => Ordering::Greater,
+        (MavenItem::Qual(_), MavenItem::List(_)) => Ordering::Less,
     }
 }
 
-/// where a number's separator places it: every `-number` sorts below every
-/// `.number`.
-fn maven_sep_rank(sep: MavenSep) -> u8 {
-    match sep {
-        MavenSep::Hyphen => 0,
-        MavenSep::Dot => 1,
+/// orders an item against the absent one facing it: a number against `0`, a
+/// qualifier against the release qualifier, a list against its own contents.
+fn maven_null_cmp(item: &MavenItem) -> Ordering {
+    match item {
+        MavenItem::Num(digits) => {
+            if digits.is_empty() {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+        MavenItem::Qual(value) => maven_qualifier_rank(value).cmp(&maven_qualifier_rank("")),
+        MavenItem::List(items) => items
+            .iter()
+            .map(maven_null_cmp)
+            .find(|ord| *ord != Ordering::Equal)
+            .unwrap_or(Ordering::Equal),
     }
 }
 
@@ -2758,7 +2763,7 @@ mod tests {
             ("1.0.0-foo.0.0", "1-foo"),
             ("1.0.0-0.0.0", "1"),
         ] {
-            assert_eq!(maven_tokens(version), maven_tokens(reduced), "{version}");
+            assert_eq!(maven_parse(version), maven_parse(reduced), "{version}");
         }
     }
 
@@ -2806,8 +2811,71 @@ mod tests {
         assert_eq!(maven_cmp("1-a.1", "1-alpha.1"), Ordering::Greater);
     }
 
-    /// only a total order if a qualifier ignores its separator and a pad takes
-    /// the kind of the token it faces.
+    #[test]
+    fn maven_folds_a_dotted_qualifier_to_the_hyphenated_form() {
+        for (a, b) in [
+            ("1.0.0.CR1", "1.0.0-RC1"),
+            ("1.0.0.Final", "1.0.0"),
+            ("1.0.0.GA", "1.0.0-ga"),
+            ("2.0.0.Final", "2.0.0-Final"),
+            ("1.0.0.Alpha1", "1.0.0-a1"),
+            ("3.1.0.RELEASE", "3.1.0"),
+        ] {
+            assert_eq!(maven_cmp(a, b), Ordering::Equal, "{a} vs {b}");
+        }
+
+        for (a, b) in [
+            ("1.0.0.CR1", "1.0.0-CR2"),
+            ("1.0.0.Alpha1", "1.0.0-RC1"),
+            ("1.0.0.CR1", "1.0.0"),
+            ("2.0.a", "2-1"),
+            ("3.1.0.M1", "3.1.0-RC1"),
+            ("1.0.0.Beta1", "1.0.0.CR1"),
+        ] {
+            assert_eq!(maven_cmp(a, b), Ordering::Less, "{a} vs {b}");
+            assert_eq!(maven_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+        }
+    }
+
+    /// JBoss, Spring, Hibernate and Netty, each rung also placed against the
+    /// hyphenated spelling of its neighbours.
+    #[test]
+    fn maven_orders_the_published_dotted_ladders() {
+        for ladder in [
+            &[
+                "1.0.0.Alpha1",
+                "1.0.0-Beta1",
+                "1.0.0.CR1",
+                "1.0.0-CR2",
+                "1.0.0.Final",
+            ][..],
+            &[
+                "3.1.0.M1",
+                "3.1.0-M2",
+                "3.1.0.RC1",
+                "3.1.0-RELEASE",
+                "3.1.1.RELEASE",
+            ][..],
+            &["5.4.2.Final", "5.4.10.Final", "5.5.0.Alpha1", "5.5.0.Final"][..],
+            &["4.1.9.Final", "4.1.65.Final", "4.1.65.1.Final"][..],
+        ] {
+            for (i, a) in ladder.iter().enumerate() {
+                for b in &ladder[i + 1..] {
+                    assert_eq!(maven_cmp(a, b), Ordering::Less, "{a} vs {b}");
+                    assert_eq!(maven_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maven_nests_a_qualifier_reached_past_an_item() {
+        assert_eq!(maven_cmp("1-0.alpha", "1-alpha"), Ordering::Greater);
+        assert_eq!(maven_cmp("1-0.beta", "1-0.alpha"), Ordering::Greater);
+        assert_eq!(maven_cmp("1-0.alpha", "1-1"), Ordering::Less);
+        assert_eq!(maven_cmp("1-0.alpha", "1"), Ordering::Less);
+    }
+
     #[test]
     fn maven_ordering_is_a_total_order() {
         const CORPUS: &[&str] = &[

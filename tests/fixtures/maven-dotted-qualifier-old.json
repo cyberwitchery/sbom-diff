@@ -1,0 +1,19 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "libfoo",
+      "version": "1.0.0.CR1",
+      "purl": "pkg:maven/org.example/libfoo@1.0.0.CR1"
+    },
+    {
+      "type": "library",
+      "name": "libbar",
+      "version": "3.1.0.M1",
+      "purl": "pkg:maven/org.example/libbar@3.1.0.M1"
+    }
+  ]
+}

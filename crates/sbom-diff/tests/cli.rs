@@ -811,6 +811,24 @@ fn fail_on_version_downgrade_maven_qualifier_upgrade_exits_0() {
 }
 
 #[test]
+fn fail_on_version_downgrade_maven_dotted_qualifier_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("maven-dotted-qualifier-old.json"))
+        .arg(fixture("maven-dotted-qualifier-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "1.0.0.CR1 -> 1.0.0-CR2 and 3.1.0.M1 -> 3.1.0.RELEASE are upgrades per Maven, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_maven_qualifier_downgrade_exits_3() {
     let out = sbom_diff()
         .arg(fixture("maven-upgrade-old.json"))
