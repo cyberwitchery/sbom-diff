@@ -632,7 +632,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "sbom-diff"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "sbom-model"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hex",
  "indexmap",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "sbom-model-cyclonedx"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cyclonedx-bom",
  "packageurl",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "sbom-model-spdx"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "packageurl",
  "sbom-model",
