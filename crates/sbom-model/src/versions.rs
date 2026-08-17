@@ -2,7 +2,8 @@
 //!
 //! provides lenient version parsing for SBOM component versions, supporting
 //! semver, dot-separated numeric strings, PEP 440 (Python) versions,
-//! Debian and RPM epoch/revision versions, and opaque version strings.
+//! Debian and RPM epoch/revision versions, Maven (Java) versions, and opaque
+//! version strings.
 //!
 //! two entry points parse a version string: [`Version::parse_lenient`] infers
 //! the format from the string alone, and [`Version::parse_for_ecosystem`]
@@ -21,6 +22,8 @@ use std::cmp::Ordering;
 /// - PEP 440 pre/post/dev releases and epochs (dominant in Python SBOMs)
 /// - Debian `epoch:upstream-revision` and RPM `epoch:version-release` (dominant
 ///   in OS/container SBOMs)
+/// - Maven versions, whose qualifiers (`1.0-SNAPSHOT`, `2.0-rc1`) look like
+///   semver pre-releases but are ranked by a named order
 /// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Version {
@@ -54,6 +57,12 @@ pub enum Version {
         version: String,
         release: String,
     },
+    /// Maven (Java) version, compared with Maven's own version-order algorithm,
+    /// under which `1.0-SNAPSHOT` sorts below `1.0` but `1.0-sp` above it. only
+    /// [`parse_for_ecosystem`](Version::parse_for_ecosystem) produces this
+    /// variant — the shape alone does not distinguish a Maven qualifier from a
+    /// semver pre-release or a Debian revision.
+    Maven(String),
     /// non-parseable version string where ordering cannot be determined.
     Opaque(String),
 }
@@ -159,10 +168,11 @@ impl Version {
     ///
     /// `deb` versions are read as [`Deb`](Version::Deb) and ordered by the
     /// `dpkg` algorithm, `rpm` versions as [`Rpm`](Version::Rpm) and ordered by
-    /// rpm's `rpmvercmp`. a leading `v`/`V` is stripped, as
-    /// [`parse_lenient`](Self::parse_lenient) does; a string that is still not a
-    /// valid version for that ecosystem is [`Opaque`](Version::Opaque) rather
-    /// than being retried as semver.
+    /// rpm's `rpmvercmp`, `maven` versions as [`Maven`](Version::Maven) and
+    /// ordered by Maven's version-order algorithm. a leading `v`/`V` is
+    /// stripped, as [`parse_lenient`](Self::parse_lenient) does; a string that
+    /// is still not a valid version for that ecosystem is
+    /// [`Opaque`](Version::Opaque) rather than being retried as semver.
     ///
     /// # Examples
     ///
@@ -180,6 +190,13 @@ impl Version {
     /// let new = Version::parse_for_ecosystem(Some("rpm"), "1.1");
     /// assert_eq!(old.partial_cmp_lenient(&new), Some(Ordering::Less));
     ///
+    /// // a Maven snapshot precedes its release, and `sp` follows it
+    /// let snapshot = Version::parse_for_ecosystem(Some("maven"), "1.0-SNAPSHOT");
+    /// let release = Version::parse_for_ecosystem(Some("maven"), "1.0");
+    /// let patched = Version::parse_for_ecosystem(Some("maven"), "1.0-sp1");
+    /// assert_eq!(snapshot.partial_cmp_lenient(&release), Some(Ordering::Less));
+    /// assert_eq!(patched.partial_cmp_lenient(&release), Some(Ordering::Greater));
+    ///
     /// let guessed = Version::parse_for_ecosystem(None, "1.2.3-1ubuntu2");
     /// assert_eq!(guessed, Version::parse_lenient("1.2.3-1ubuntu2"));
     /// ```
@@ -191,6 +208,9 @@ impl Version {
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
             Scheme::Rpm => parse_rpm(s)
                 .or_else(|| parse_rpm(strip_v_prefix(s)))
+                .unwrap_or_else(|| Version::Opaque(s.to_string())),
+            Scheme::Maven => parse_maven(s)
+                .or_else(|| parse_maven(strip_v_prefix(s)))
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
         }
     }
@@ -207,12 +227,15 @@ impl Version {
     ///   Debian `dpkg` version-comparison algorithm
     /// - **Rpm vs Rpm**: epoch (numeric), then version, then release, via rpm's
     ///   `rpmvercmp` algorithm
+    /// - **Maven vs Maven**: item by item, via Maven's version-order algorithm.
+    ///   a version nesting past the parser's depth cap is declined
     /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
     ///   other side is read as a PEP 440 version and both are ordered per PEP
     ///   440. a semver pre-release that isn't a PEP 440 suffix (say
     ///   `1.0.0-foo.bar`) has no PEP 440 reading, so that pair stays `None`
-    /// - **Any other pair** (including any Opaque, a Deb against an Rpm, or
-    ///   either against a semver/numeric/PEP 440 version): `None`
+    /// - **Any other pair** (including any Opaque, any two of Deb, Rpm and
+    ///   Maven, or any of them against a semver/numeric/PEP 440 version):
+    ///   `None`
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
     /// [`Opaque`](Version::Opaque) versions compare `None`.
@@ -269,6 +292,7 @@ impl Version {
                     release: brel,
                 },
             ) => Some(rpm_cmp((*ae, av, arel), (*be, bv, brel))),
+            (Version::Maven(a), Version::Maven(b)) => maven_cmp(a, b),
             (Version::Pep440(_), _) | (_, Version::Pep440(_)) => {
                 Some(pep440_cmp(&as_pep440(self)?, &as_pep440(other)?))
             }
@@ -306,6 +330,7 @@ enum Scheme {
     Infer,
     Deb,
     Rpm,
+    Maven,
 }
 
 impl Scheme {
@@ -313,6 +338,7 @@ impl Scheme {
         match ecosystem {
             Some(e) if e.eq_ignore_ascii_case("deb") => Scheme::Deb,
             Some(e) if e.eq_ignore_ascii_case("rpm") => Scheme::Rpm,
+            Some(e) if e.eq_ignore_ascii_case("maven") => Scheme::Maven,
             _ => Scheme::Infer,
         }
     }
@@ -478,7 +504,7 @@ fn as_pep440(v: &Version) -> Option<Pep440> {
         Version::Semver(s) => {
             parse_pep440(&format!("{}.{}.{}-{}", s.major, s.minor, s.patch, s.pre))
         }
-        Version::Deb { .. } | Version::Rpm { .. } | Version::Opaque(_) => None,
+        Version::Deb { .. } | Version::Rpm { .. } | Version::Maven(_) | Version::Opaque(_) => None,
     }
 }
 
@@ -820,6 +846,256 @@ fn strip_leading_zeros(s: &[u8]) -> &[u8] {
     &s[zeros..]
 }
 
+/// parses a Maven version.
+///
+/// returns `None` on the same grounds as [`parse_deb`]: the version must start
+/// with a digit and every character must be in the Maven version alphabet, so
+/// codenames like `RELEASE`, git hashes and other genuinely opaque strings stay
+/// [`Opaque`](Version::Opaque) rather than being force-ordered. a version whose
+/// item tree nests past [`MAVEN_MAX_DEPTH`] is declined the same way.
+fn parse_maven(s: &str) -> Option<Version> {
+    if !s.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    if !s.chars().all(is_maven_char) {
+        return None;
+    }
+    maven_parse(s)?;
+
+    Some(Version::Maven(s.to_string()))
+}
+
+/// characters permitted in a Maven version. wider than [`is_deb_char`]: `_` is
+/// a Maven separator, and non-ASCII letters and digits are ordinary qualifier
+/// characters.
+fn is_maven_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '+')
+}
+
+/// one node of a parsed Maven version: a run of ASCII digits with its leading
+/// zeros stripped, a qualifier folded to the spelling the ranking is defined
+/// on, or the sub-list a separator opens. each is null when empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MavenItem {
+    Num(String),
+    Qual(String),
+    List(Vec<MavenItem>),
+}
+
+impl MavenItem {
+    fn is_null(&self) -> bool {
+        match self {
+            MavenItem::Num(digits) => digits.is_empty(),
+            MavenItem::Qual(value) => value.is_empty(),
+            MavenItem::List(items) => items.is_empty(),
+        }
+    }
+}
+
+/// the deepest item tree [`maven_parse`] will build. every level costs a frame
+/// in [`maven_list_cmp`], and real Maven versions nest a handful.
+const MAVEN_MAX_DEPTH: usize = 64;
+
+/// orders two Maven versions with Maven's version-order algorithm, or `None`
+/// when either nests past [`MAVEN_MAX_DEPTH`].
+fn maven_cmp(a: &str, b: &str) -> Option<Ordering> {
+    Some(maven_list_cmp(&maven_parse(a)?, &maven_parse(b)?))
+}
+
+/// parses a Maven version into its normalized item tree, or `None` when it
+/// nests past [`MAVEN_MAX_DEPTH`].
+///
+/// items are separated by `.`, `-`, `_` and by any transition between ASCII
+/// digits and other characters; every separator but `.` opens a sub-list, as
+/// does a qualifier reached from a digit or introduced by a `.` after an
+/// item. an empty item is Maven's `0`, so `1-.1` is `1-0.1`.
+fn maven_parse(s: &str) -> Option<Vec<MavenItem>> {
+    let s = s.to_lowercase();
+    let mut stack: Vec<Vec<MavenItem>> = vec![Vec::new()];
+    let mut digits = false;
+    let mut start = 0;
+
+    for (i, c) in s.char_indices() {
+        if matches!(c, '.' | '-' | '_') {
+            let item = if i == start {
+                MavenItem::Num(String::new())
+            } else {
+                maven_item(digits, &s[start..i])
+            };
+            stack.last_mut().expect("stack is never emptied").push(item);
+            start = i + c.len_utf8();
+            if c != '.' {
+                maven_open(&mut stack)?;
+            }
+            continue;
+        }
+
+        let is_digit = c.is_ascii_digit();
+        if i > start && is_digit && !digits {
+            if !stack.last().expect("stack is never emptied").is_empty() {
+                maven_open(&mut stack)?;
+            }
+            let qualifier = MavenItem::Qual(maven_qualifier(&s[start..i], true));
+            stack
+                .last_mut()
+                .expect("stack is never emptied")
+                .push(qualifier);
+            start = i;
+            maven_open(&mut stack)?;
+        } else if i > start && !is_digit && digits {
+            let number = maven_item(true, &s[start..i]);
+            stack
+                .last_mut()
+                .expect("stack is never emptied")
+                .push(number);
+            start = i;
+            maven_open(&mut stack)?;
+        }
+        digits = is_digit;
+    }
+
+    if s.len() > start {
+        if !digits && !stack.last().expect("stack is never emptied").is_empty() {
+            maven_open(&mut stack)?;
+        }
+        let item = maven_item(digits, &s[start..]);
+        stack.last_mut().expect("stack is never emptied").push(item);
+    }
+
+    while stack.len() > 1 {
+        let mut child = stack.pop().expect("length is above one");
+        maven_normalize(&mut child);
+        stack
+            .last_mut()
+            .expect("stack is never emptied")
+            .push(MavenItem::List(child));
+    }
+
+    let mut items = stack.pop().expect("stack is never emptied");
+    maven_normalize(&mut items);
+    Some(items)
+}
+
+/// opens a sub-list, or `None` at [`MAVEN_MAX_DEPTH`].
+fn maven_open(stack: &mut Vec<Vec<MavenItem>>) -> Option<()> {
+    if stack.len() >= MAVEN_MAX_DEPTH {
+        return None;
+    }
+    stack.push(Vec::new());
+    Some(())
+}
+
+/// classifies one item's text. `followed_by_digit` only matters for the
+/// `a`/`b`/`m` shorthands.
+fn maven_item(digits: bool, text: &str) -> MavenItem {
+    if digits {
+        MavenItem::Num(text.trim_start_matches('0').to_string())
+    } else {
+        MavenItem::Qual(maven_qualifier(text, false))
+    }
+}
+
+/// folds a qualifier to the spelling the ranking is defined on: lower case,
+/// `ga`/`final`/`release` to the empty release qualifier, `cr` to `rc`, and a
+/// lone `a`/`b`/`m` directly followed by a digit to its long form.
+fn maven_qualifier(text: &str, followed_by_digit: bool) -> String {
+    let lower = text.to_lowercase();
+
+    if followed_by_digit {
+        match lower.as_str() {
+            "a" => return "alpha".to_string(),
+            "b" => return "beta".to_string(),
+            "m" => return "milestone".to_string(),
+            _ => {}
+        }
+    }
+
+    match lower.as_str() {
+        "ga" | "final" | "release" => String::new(),
+        "cr" => "rc".to_string(),
+        _ => lower,
+    }
+}
+
+/// drops a list's trailing null items, so that `1.0.0`, `1.ga` and `1-0` all
+/// reduce to `1`. a sub-list is stepped over rather than ending the scan.
+fn maven_normalize(items: &mut Vec<MavenItem>) {
+    let mut i = items.len();
+    while i > 0 {
+        i -= 1;
+        if items[i].is_null() {
+            items.remove(i);
+        } else if !matches!(items[i], MavenItem::List(_)) {
+            break;
+        }
+    }
+}
+
+/// orders two item lists, padding the shorter with the null each unmatched item
+/// is measured against.
+fn maven_list_cmp(a: &[MavenItem], b: &[MavenItem]) -> Ordering {
+    for i in 0..a.len().max(b.len()) {
+        let ord = match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) => maven_item_cmp(x, y),
+            (Some(x), None) => maven_null_cmp(x),
+            (None, Some(y)) => maven_null_cmp(y).reverse(),
+            (None, None) => Ordering::Equal,
+        };
+
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+
+    Ordering::Equal
+}
+
+/// orders two items on the ranking `qualifier < sub-list < number`.
+fn maven_item_cmp(a: &MavenItem, b: &MavenItem) -> Ordering {
+    match (a, b) {
+        (MavenItem::Num(x), MavenItem::Num(y)) => x.len().cmp(&y.len()).then_with(|| x.cmp(y)),
+        (MavenItem::Qual(x), MavenItem::Qual(y)) => {
+            maven_qualifier_rank(x).cmp(&maven_qualifier_rank(y))
+        }
+        (MavenItem::List(x), MavenItem::List(y)) => maven_list_cmp(x, y),
+        (MavenItem::Num(_), _) => Ordering::Greater,
+        (_, MavenItem::Num(_)) => Ordering::Less,
+        (MavenItem::List(_), MavenItem::Qual(_)) => Ordering::Greater,
+        (MavenItem::Qual(_), MavenItem::List(_)) => Ordering::Less,
+    }
+}
+
+/// orders an item against the absent one facing it: a number against `0`, a
+/// qualifier against the release qualifier, a list against its own contents.
+fn maven_null_cmp(item: &MavenItem) -> Ordering {
+    match item {
+        MavenItem::Num(digits) => {
+            if digits.is_empty() {
+                Ordering::Equal
+            } else {
+                Ordering::Greater
+            }
+        }
+        MavenItem::Qual(value) => maven_qualifier_rank(value).cmp(&maven_qualifier_rank("")),
+        MavenItem::List(items) => items
+            .iter()
+            .map(maven_null_cmp)
+            .find(|ord| *ord != Ordering::Equal)
+            .unwrap_or(Ordering::Equal),
+    }
+}
+
+/// the qualifier ranking: the named qualifiers in their documented order, then
+/// every other one, lexically, above them all.
+fn maven_qualifier_rank(q: &str) -> (usize, &str) {
+    const KNOWN: [&str; 7] = ["alpha", "beta", "milestone", "rc", "snapshot", "", "sp"];
+
+    match KNOWN.iter().position(|known| *known == q) {
+        Some(i) => (i, ""),
+        None => (KNOWN.len(), q),
+    }
+}
+
 /// convenience function: returns `true` if `new_ver` is a downgrade from `old_ver`.
 ///
 /// parses both strings with [`Version::parse_lenient`] and delegates to
@@ -902,6 +1178,10 @@ pub fn compare_versions_for_ecosystem(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn maven_cmp(a: &str, b: &str) -> Ordering {
+        super::maven_cmp(a, b).unwrap_or_else(|| panic!("{a} vs {b} exceeds the depth cap"))
+    }
 
     #[test]
     fn parse_standard_semver() {
@@ -1953,13 +2233,7 @@ mod tests {
 
     #[test]
     fn unknown_ecosystem_parses_exactly_like_parse_lenient() {
-        for eco in [
-            None,
-            Some("npm"),
-            Some("cargo"),
-            Some("maven"),
-            Some("golang"),
-        ] {
+        for eco in [None, Some("npm"), Some("cargo"), Some("golang")] {
             for s in ECOSYSTEM_CORPUS {
                 assert_eq!(
                     Version::parse_for_ecosystem(eco, s),
@@ -1972,13 +2246,7 @@ mod tests {
 
     #[test]
     fn unknown_ecosystem_orders_exactly_like_the_string_only_path() {
-        for eco in [
-            None,
-            Some("npm"),
-            Some("cargo"),
-            Some("maven"),
-            Some("golang"),
-        ] {
+        for eco in [None, Some("npm"), Some("cargo"), Some("golang")] {
             for a in ECOSYSTEM_CORPUS {
                 for b in ECOSYSTEM_CORPUS {
                     assert_eq!(
@@ -2463,6 +2731,424 @@ mod tests {
         {
             assert!(
                 !matches!(Version::parse_lenient(s), Version::Rpm { .. }),
+                "{s}"
+            );
+        }
+    }
+
+    /// Maven's documented "End Result Examples", one case per row.
+    /// `expected` is how `a` orders relative to `b`.
+    #[test]
+    fn maven_documented_ordering_examples() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("1", "1.1", Less),
+            ("1-snapshot", "1", Less),
+            ("1", "1-sp", Less),
+            ("1-foo2", "1-foo10", Less),
+            ("1.foo", "1-foo", Equal),
+            ("1-foo", "1-1", Less),
+            ("1-1", "1.1", Less),
+            ("1.ga", "1-ga", Equal),
+            ("1-ga", "1-0", Equal),
+            ("1-0", "1_0", Equal),
+            ("1_0", "1.0", Equal),
+            ("1.0", "1", Equal),
+            ("1-sp", "1-ga", Greater),
+            ("1-sp.1", "1-ga.1", Greater),
+            ("1-sp-1", "1-ga-1", Less),
+            ("1-a1", "1-alpha-1", Equal),
+            ("1.0-alpha1", "1.0-ALPHA1", Equal),
+            ("1.7", "1.K", Greater),
+            ("5.zebra", "5.aardvark", Greater),
+            ("1.α", "1.b", Greater),
+        ] {
+            assert_eq!(maven_cmp(a, b), expected, "{a} vs {b}");
+            assert_eq!(maven_cmp(b, a), expected.reverse(), "{b} vs {a}");
+        }
+    }
+
+    /// Maven's documented splitting and trimming examples: each row is a
+    /// version and the spelling it reduces to.
+    #[test]
+    fn maven_documented_splitting_and_trimming_examples() {
+        for (version, reduced) in [
+            ("1-1.foo-bar1baz-.1", "1-1.foo-bar-1-baz-0.1"),
+            ("1.0.0", "1"),
+            ("1.ga", "1"),
+            ("1.final", "1"),
+            ("1.0", "1"),
+            ("1.", "1"),
+            ("1-", "1"),
+            ("1_", "1"),
+            ("1.0.0-foo.0.0", "1-foo"),
+            ("1.0.0-0.0.0", "1"),
+        ] {
+            assert_eq!(maven_parse(version), maven_parse(reduced), "{version}");
+        }
+    }
+
+    #[test]
+    fn maven_ranks_qualifiers_in_the_documented_order() {
+        let ascending = [
+            "1-alpha",
+            "1-beta",
+            "1-milestone",
+            "1-rc",
+            "1-snapshot",
+            "1",
+            "1-sp",
+        ];
+
+        for (i, a) in ascending.iter().enumerate() {
+            for b in &ascending[i + 1..] {
+                assert_eq!(maven_cmp(a, b), Ordering::Less, "{a} vs {b}");
+                assert_eq!(maven_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+            }
+            // an unrecognized qualifier outranks every named one
+            assert_eq!(maven_cmp(a, "1-zzz"), Ordering::Less, "{a} vs 1-zzz");
+        }
+        assert_eq!(maven_cmp("1-zzz", "1-aaa"), Ordering::Greater);
+    }
+
+    #[test]
+    fn maven_folds_qualifier_aliases() {
+        for (a, b) in [
+            ("1-cr", "1-rc"),
+            ("1-cr1", "1-rc1"),
+            ("1-ga", "1"),
+            ("1-final", "1"),
+            ("1-release", "1"),
+            ("1-a1", "1-alpha1"),
+            ("1-b2", "1-beta2"),
+            ("1-m3", "1-milestone3"),
+            ("1-RC1", "1-rc1"),
+        ] {
+            assert_eq!(maven_cmp(a, b), Ordering::Equal, "{a} vs {b}");
+        }
+
+        // the one-letter shorthands expand only directly before a digit
+        assert_eq!(maven_cmp("1-a", "1-alpha"), Ordering::Greater);
+        assert_eq!(maven_cmp("1-a.1", "1-alpha.1"), Ordering::Greater);
+    }
+
+    #[test]
+    fn maven_folds_a_dotted_qualifier_to_the_hyphenated_form() {
+        for (a, b) in [
+            ("1.0.0.CR1", "1.0.0-RC1"),
+            ("1.0.0.Final", "1.0.0"),
+            ("1.0.0.GA", "1.0.0-ga"),
+            ("2.0.0.Final", "2.0.0-Final"),
+            ("1.0.0.Alpha1", "1.0.0-a1"),
+            ("3.1.0.RELEASE", "3.1.0"),
+        ] {
+            assert_eq!(maven_cmp(a, b), Ordering::Equal, "{a} vs {b}");
+        }
+
+        for (a, b) in [
+            ("1.0.0.CR1", "1.0.0-CR2"),
+            ("1.0.0.Alpha1", "1.0.0-RC1"),
+            ("1.0.0.CR1", "1.0.0"),
+            ("2.0.a", "2-1"),
+            ("3.1.0.M1", "3.1.0-RC1"),
+            ("1.0.0.Beta1", "1.0.0.CR1"),
+        ] {
+            assert_eq!(maven_cmp(a, b), Ordering::Less, "{a} vs {b}");
+            assert_eq!(maven_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+        }
+    }
+
+    /// JBoss, Spring, Hibernate and Netty, each rung also placed against the
+    /// hyphenated spelling of its neighbours.
+    #[test]
+    fn maven_orders_the_published_dotted_ladders() {
+        for ladder in [
+            &[
+                "1.0.0.Alpha1",
+                "1.0.0-Beta1",
+                "1.0.0.CR1",
+                "1.0.0-CR2",
+                "1.0.0.Final",
+            ][..],
+            &[
+                "3.1.0.M1",
+                "3.1.0-M2",
+                "3.1.0.RC1",
+                "3.1.0-RELEASE",
+                "3.1.1.RELEASE",
+            ][..],
+            &["5.4.2.Final", "5.4.10.Final", "5.5.0.Alpha1", "5.5.0.Final"][..],
+            &["4.1.9.Final", "4.1.65.Final", "4.1.65.1.Final"][..],
+        ] {
+            for (i, a) in ladder.iter().enumerate() {
+                for b in &ladder[i + 1..] {
+                    assert_eq!(maven_cmp(a, b), Ordering::Less, "{a} vs {b}");
+                    assert_eq!(maven_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maven_nests_a_qualifier_reached_past_an_item() {
+        assert_eq!(maven_cmp("1-0.alpha", "1-alpha"), Ordering::Greater);
+        assert_eq!(maven_cmp("1-0.beta", "1-0.alpha"), Ordering::Greater);
+        assert_eq!(maven_cmp("1-0.alpha", "1-1"), Ordering::Less);
+        assert_eq!(maven_cmp("1-0.alpha", "1"), Ordering::Less);
+    }
+
+    #[test]
+    fn maven_declines_a_version_nested_past_the_depth_cap() {
+        let ok = format!("1{}", "-1".repeat(MAVEN_MAX_DEPTH - 2));
+        let deep = format!("1{}", "-1".repeat(MAVEN_MAX_DEPTH));
+
+        assert!(super::maven_parse(&ok).is_some());
+        assert!(super::maven_parse(&deep).is_none());
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("maven"), &ok),
+            Version::Maven(ok)
+        );
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("maven"), &deep),
+            Version::Opaque(deep)
+        );
+    }
+
+    #[test]
+    fn maven_declines_a_version_that_would_overflow_the_stack() {
+        for deep in [format!("1{}", "-1".repeat(200_000)), "1a".repeat(200_000)] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("maven"), &deep),
+                Version::Opaque(deep.clone())
+            );
+            assert_eq!(
+                Version::Maven(deep.clone()).partial_cmp_lenient(&Version::Maven(deep)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn maven_ordering_is_antisymmetric_and_transitive_on_the_documented_vectors() {
+        const CORPUS: &[&str] = &[
+            "1",
+            "1.0",
+            "1.1",
+            "1-1",
+            "1.foo",
+            "1-foo",
+            "1.bar",
+            "1-bar",
+            "1-alpha",
+            "1-a1",
+            "1-beta",
+            "1-milestone",
+            "1-rc",
+            "1-cr",
+            "1-snapshot",
+            "1-ga",
+            "1-sp",
+            "1-sp.1",
+            "1-sp-1",
+            "1-ga-1",
+            "1.0.0-foo.0.0",
+            "1_0",
+            "2",
+            "1.0.1",
+            "1.0-alpha1",
+        ];
+
+        for a in CORPUS {
+            for b in CORPUS {
+                assert_eq!(
+                    maven_cmp(a, b),
+                    maven_cmp(b, a).reverse(),
+                    "asymmetric: {a} vs {b}"
+                );
+                for c in CORPUS {
+                    let (ab, bc) = (maven_cmp(a, b), maven_cmp(b, c));
+                    if ab == bc || bc == Ordering::Equal {
+                        assert_eq!(maven_cmp(a, c), ab, "intransitive: {a}, {b}, {c}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maven_compares_numeric_tokens_beyond_u64() {
+        assert_eq!(
+            maven_cmp("1.99999999999999999999999", "1.99999999999999999999998"),
+            Ordering::Greater
+        );
+        assert_eq!(maven_cmp("1.0000000000000000000001", "1.2"), Ordering::Less);
+    }
+
+    /// the case the string-only path cannot order at all: `1.0-SNAPSHOT` reads
+    /// as Debian and `1.0` as semver, and a mixed pair is `None`.
+    #[test]
+    fn maven_ecosystem_orders_a_snapshot_against_its_release() {
+        assert_eq!(compare_versions("1.0-SNAPSHOT", "1.0"), None);
+
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("maven"), "1.0-SNAPSHOT", "1.0"),
+            Some(Ordering::Less)
+        );
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("maven"),
+            "1.0-SNAPSHOT",
+            "1.0"
+        ));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("maven"),
+            "1.0",
+            "1.0-SNAPSHOT"
+        ));
+    }
+
+    #[test]
+    fn maven_ecosystem_makes_previously_uncomparable_pairs_comparable() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("1.0-SNAPSHOT", "1.0", Less),
+            ("1.0-M1", "1.0", Less),
+            ("1.0-sp1", "1.0", Greater),
+            // a JBoss-style `.Final` release is the release itself
+            ("2.0.0.Final", "2.0.0", Equal),
+            ("1.0-cr1", "1.0-rc1", Equal),
+            // `_` is outside the Debian alphabet, so a JDK version is opaque
+            ("1.7.0_80", "1.7.0_79", Greater),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("maven"), a, b),
+                Some(expected),
+                "{a} vs {b}"
+            );
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("maven"), b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn maven_ecosystem_reverses_a_gate_the_string_only_path_fires_backwards() {
+        // read as Debian revisions, `Final` sorts below `SNAPSHOT`; Maven ranks
+        // the release above every snapshot
+        assert_eq!(
+            compare_versions("1.0-Final", "1.0-SNAPSHOT"),
+            Some(Ordering::Less)
+        );
+        assert!(is_version_downgrade("1.0-SNAPSHOT", "1.0-Final"));
+        assert!(!is_version_downgrade("1.0-Final", "1.0-SNAPSHOT"));
+
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("maven"), "1.0-Final", "1.0-SNAPSHOT"),
+            Some(Ordering::Greater)
+        );
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("maven"),
+            "1.0-SNAPSHOT",
+            "1.0-Final"
+        ));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("maven"),
+            "1.0-Final",
+            "1.0-SNAPSHOT"
+        ));
+    }
+
+    #[test]
+    fn maven_ecosystem_parses_as_maven() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("maven"), "1.0-SNAPSHOT"),
+            Version::Maven("1.0-SNAPSHOT".into())
+        );
+        for s in [
+            "1.2.3",
+            "1.0.0-alpha.1",
+            "2.0.0.Final",
+            "1.7.0_80",
+            "1.0+b1",
+        ] {
+            assert!(
+                matches!(
+                    Version::parse_for_ecosystem(Some("maven"), s),
+                    Version::Maven(_)
+                ),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn maven_ecosystem_match_ignores_case() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("MAVEN"), "1.0-SNAPSHOT"),
+            Version::parse_for_ecosystem(Some("maven"), "1.0-SNAPSHOT")
+        );
+    }
+
+    #[test]
+    fn maven_ecosystem_keeps_codenames_and_hashes_opaque() {
+        for s in [
+            "deadbeef",
+            "RELEASE",
+            "LATEST",
+            "",
+            "master-SNAPSHOT",
+            "1.0 ",
+        ] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("maven"), s),
+                Version::Opaque(s.to_string()),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn maven_ecosystem_strips_a_v_prefix_instead_of_skipping_the_pair() {
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("maven"), "v1.2.3"),
+            Version::Maven(_)
+        ));
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("maven"), "v1.2.3", "v1.2.4"),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn maven_stays_uncomparable_against_every_other_parse_result() {
+        let maven = Version::parse_for_ecosystem(Some("maven"), "1.2.3-1");
+        for other in [
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
+            Version::parse_lenient("1.2.3"),
+            Version::parse_lenient("2024.01.15"),
+            Version::parse_lenient("4.2.0rc1"),
+            Version::parse_lenient("deadbeef"),
+        ] {
+            assert_eq!(maven.partial_cmp_lenient(&other), None, "{other:?}");
+            assert_eq!(other.partial_cmp_lenient(&maven), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn parse_lenient_never_produces_the_maven_variant() {
+        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
+            "1.0-SNAPSHOT",
+            "2.0.0.Final",
+            "1.7.0_80",
+            "1-sp",
+        ]) {
+            assert!(
+                !matches!(Version::parse_lenient(s), Version::Maven(_)),
                 "{s}"
             );
         }
