@@ -227,7 +227,8 @@ impl Version {
     ///   Debian `dpkg` version-comparison algorithm
     /// - **Rpm vs Rpm**: epoch (numeric), then version, then release, via rpm's
     ///   `rpmvercmp` algorithm
-    /// - **Maven vs Maven**: item by item, via Maven's version-order algorithm
+    /// - **Maven vs Maven**: item by item, via Maven's version-order algorithm.
+    ///   a version nesting past the parser's depth cap is declined
     /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
     ///   other side is read as a PEP 440 version and both are ordered per PEP
     ///   440. a semver pre-release that isn't a PEP 440 suffix (say
@@ -291,7 +292,7 @@ impl Version {
                     release: brel,
                 },
             ) => Some(rpm_cmp((*ae, av, arel), (*be, bv, brel))),
-            (Version::Maven(a), Version::Maven(b)) => Some(maven_cmp(a, b)),
+            (Version::Maven(a), Version::Maven(b)) => maven_cmp(a, b),
             (Version::Pep440(_), _) | (_, Version::Pep440(_)) => {
                 Some(pep440_cmp(&as_pep440(self)?, &as_pep440(other)?))
             }
@@ -850,7 +851,8 @@ fn strip_leading_zeros(s: &[u8]) -> &[u8] {
 /// returns `None` on the same grounds as [`parse_deb`]: the version must start
 /// with a digit and every character must be in the Maven version alphabet, so
 /// codenames like `RELEASE`, git hashes and other genuinely opaque strings stay
-/// [`Opaque`](Version::Opaque) rather than being force-ordered.
+/// [`Opaque`](Version::Opaque) rather than being force-ordered. a version whose
+/// item tree nests past [`MAVEN_MAX_DEPTH`] is declined the same way.
 fn parse_maven(s: &str) -> Option<Version> {
     if !s.starts_with(|c: char| c.is_ascii_digit()) {
         return None;
@@ -858,6 +860,7 @@ fn parse_maven(s: &str) -> Option<Version> {
     if !s.chars().all(is_maven_char) {
         return None;
     }
+    maven_parse(s)?;
 
     Some(Version::Maven(s.to_string()))
 }
@@ -889,18 +892,24 @@ impl MavenItem {
     }
 }
 
-/// orders two Maven versions with Maven's version-order algorithm.
-fn maven_cmp(a: &str, b: &str) -> Ordering {
-    maven_list_cmp(&maven_parse(a), &maven_parse(b))
+/// the deepest item tree [`maven_parse`] will build. every level costs a frame
+/// in [`maven_list_cmp`], and real Maven versions nest a handful.
+const MAVEN_MAX_DEPTH: usize = 64;
+
+/// orders two Maven versions with Maven's version-order algorithm, or `None`
+/// when either nests past [`MAVEN_MAX_DEPTH`].
+fn maven_cmp(a: &str, b: &str) -> Option<Ordering> {
+    Some(maven_list_cmp(&maven_parse(a)?, &maven_parse(b)?))
 }
 
-/// parses a Maven version into its normalized item tree.
+/// parses a Maven version into its normalized item tree, or `None` when it
+/// nests past [`MAVEN_MAX_DEPTH`].
 ///
 /// items are separated by `.`, `-`, `_` and by any transition between ASCII
 /// digits and other characters; every separator but `.` opens a sub-list, as
 /// does a qualifier reached from a digit or introduced by a `.` after an
 /// item. an empty item is Maven's `0`, so `1-.1` is `1-0.1`.
-fn maven_parse(s: &str) -> Vec<MavenItem> {
+fn maven_parse(s: &str) -> Option<Vec<MavenItem>> {
     let s = s.to_lowercase();
     let mut stack: Vec<Vec<MavenItem>> = vec![Vec::new()];
     let mut digits = false;
@@ -916,7 +925,7 @@ fn maven_parse(s: &str) -> Vec<MavenItem> {
             stack.last_mut().expect("stack is never emptied").push(item);
             start = i + c.len_utf8();
             if c != '.' {
-                stack.push(Vec::new());
+                maven_open(&mut stack)?;
             }
             continue;
         }
@@ -924,7 +933,7 @@ fn maven_parse(s: &str) -> Vec<MavenItem> {
         let is_digit = c.is_ascii_digit();
         if i > start && is_digit && !digits {
             if !stack.last().expect("stack is never emptied").is_empty() {
-                stack.push(Vec::new());
+                maven_open(&mut stack)?;
             }
             let qualifier = MavenItem::Qual(maven_qualifier(&s[start..i], true));
             stack
@@ -932,7 +941,7 @@ fn maven_parse(s: &str) -> Vec<MavenItem> {
                 .expect("stack is never emptied")
                 .push(qualifier);
             start = i;
-            stack.push(Vec::new());
+            maven_open(&mut stack)?;
         } else if i > start && !is_digit && digits {
             let number = maven_item(true, &s[start..i]);
             stack
@@ -940,14 +949,14 @@ fn maven_parse(s: &str) -> Vec<MavenItem> {
                 .expect("stack is never emptied")
                 .push(number);
             start = i;
-            stack.push(Vec::new());
+            maven_open(&mut stack)?;
         }
         digits = is_digit;
     }
 
     if s.len() > start {
         if !digits && !stack.last().expect("stack is never emptied").is_empty() {
-            stack.push(Vec::new());
+            maven_open(&mut stack)?;
         }
         let item = maven_item(digits, &s[start..]);
         stack.last_mut().expect("stack is never emptied").push(item);
@@ -964,7 +973,16 @@ fn maven_parse(s: &str) -> Vec<MavenItem> {
 
     let mut items = stack.pop().expect("stack is never emptied");
     maven_normalize(&mut items);
-    items
+    Some(items)
+}
+
+/// opens a sub-list, or `None` at [`MAVEN_MAX_DEPTH`].
+fn maven_open(stack: &mut Vec<Vec<MavenItem>>) -> Option<()> {
+    if stack.len() >= MAVEN_MAX_DEPTH {
+        return None;
+    }
+    stack.push(Vec::new());
+    Some(())
 }
 
 /// classifies one item's text. `followed_by_digit` only matters for the
@@ -1160,6 +1178,10 @@ pub fn compare_versions_for_ecosystem(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn maven_cmp(a: &str, b: &str) -> Ordering {
+        super::maven_cmp(a, b).unwrap_or_else(|| panic!("{a} vs {b} exceeds the depth cap"))
+    }
 
     #[test]
     fn parse_standard_semver() {
@@ -2877,7 +2899,38 @@ mod tests {
     }
 
     #[test]
-    fn maven_ordering_is_a_total_order() {
+    fn maven_declines_a_version_nested_past_the_depth_cap() {
+        let ok = format!("1{}", "-1".repeat(MAVEN_MAX_DEPTH - 2));
+        let deep = format!("1{}", "-1".repeat(MAVEN_MAX_DEPTH));
+
+        assert!(super::maven_parse(&ok).is_some());
+        assert!(super::maven_parse(&deep).is_none());
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("maven"), &ok),
+            Version::Maven(ok)
+        );
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("maven"), &deep),
+            Version::Opaque(deep)
+        );
+    }
+
+    #[test]
+    fn maven_declines_a_version_that_would_overflow_the_stack() {
+        for deep in [format!("1{}", "-1".repeat(200_000)), "1a".repeat(200_000)] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("maven"), &deep),
+                Version::Opaque(deep.clone())
+            );
+            assert_eq!(
+                Version::Maven(deep.clone()).partial_cmp_lenient(&Version::Maven(deep)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn maven_ordering_is_antisymmetric_and_transitive_on_the_documented_vectors() {
         const CORPUS: &[&str] = &[
             "1",
             "1.0",
