@@ -90,10 +90,22 @@ fn tag_lines(input: &str) -> impl Iterator<Item = &str> {
         let tagged = (!in_text).then(|| line.trim());
         let mut rest = line;
         loop {
-            let marker = if in_text { "</text>" } else { "<text>" };
-            let Some(at) = rest.find(marker) else { break };
+            if in_text {
+                let Some(at) = rest.find("</text>") else {
+                    break;
+                };
+                rest = &rest[at + "</text>".len()..];
+            } else {
+                // blocks open only at a value's head: after the colon, or on a continuation line.
+                let head = rest.trim_start();
+                let opened = head.strip_prefix("<text>").or_else(|| {
+                    head.split_once(':')
+                        .and_then(|(_, value)| value.trim_start().strip_prefix("<text>"))
+                });
+                let Some(after) = opened else { break };
+                rest = after;
+            }
             in_text = !in_text;
-            rest = &rest[at + marker.len()..];
         }
         tagged
     })
@@ -1909,6 +1921,76 @@ Created: 2023-01-01T00:00:00Z
     }
 
     #[test]
+    fn test_read_tag_value_text_mentioned_in_value_is_not_a_block() {
+        let tv = "\
+DocumentComment: see <text> for details
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_tag_value_creator_in_next_line_text_block_is_not_a_creator() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageDescription:
+<text>this package says:
+Creator: Tool: sneaky
+</text>
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_read_tag_value_text_mention_keeps_creators() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: how to use <text> markers
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: the-real-tool
+Creator: Organization: acme
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.metadata.tools, vec!["the-real-tool"]);
+        assert_eq!(sbom.metadata.authors, vec!["Organization: acme"]);
+    }
+
+    #[test]
     fn test_read_tag_value_with_checksums() {
         let tv = "\
 SPDXVersion: SPDX-2.3
@@ -2155,6 +2237,16 @@ D: 2
 </text>
 E: 3
 F: <text>trailing</text> G: 4
+J: mentions <text> mid-value
+K: 4
+L: <text>open again
+no colon in here
+</text>
+M:
+<text>value on its own line
+N: 5
+</text>
+O: 6
 H: <text>runs to eof
 I: 5
 ";
@@ -2166,6 +2258,12 @@ I: 5
                 "C: <text>open",
                 "E: 3",
                 "F: <text>trailing</text> G: 4",
+                "J: mentions <text> mid-value",
+                "K: 4",
+                "L: <text>open again",
+                "M:",
+                "<text>value on its own line",
+                "O: 6",
                 "H: <text>runs to eof",
             ]
         );
