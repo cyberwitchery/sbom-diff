@@ -467,13 +467,12 @@ impl SpdxReader {
 
     /// pre-check the `SPDXVersion` tag in a tag-value document.
     ///
-    /// scans for the first `SPDXVersion:` line and rejects non-2.x versions.
+    /// scans for the first `SPDXVersion:` tag and rejects non-2.x versions.
     /// also rejects input that has no `SPDXVersion:` at all, since the
     /// spdx-rs tag-value parser is permissive enough to "parse" arbitrary
     /// text files without error.
     fn check_spdx_version_tag_value(input: &str) -> Result<(), Error> {
-        for line in input.lines() {
-            let line = line.trim();
+        for line in tag_lines(input) {
             if let Some(value) = line.strip_prefix("SPDXVersion:") {
                 let version = value.trim();
                 if version.starts_with("SPDX-2.") {
@@ -1866,6 +1865,47 @@ Created: 2023-01-01T00:00:00Z
         let msg = err.to_string();
         assert!(msg.contains("unsupported SPDX version"));
         assert!(msg.contains("SPDX-3.0"));
+    }
+
+    #[test]
+    fn test_read_tag_value_version_in_document_comment_ignored() {
+        let tv = "\
+DocumentComment: <text>this file claims:
+SPDXVersion: SPDX-9.9
+</text>
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+    }
+
+    #[test]
+    fn test_read_tag_value_version_only_inside_text_block_rejected() {
+        let tv = "\
+DocumentComment: <text>this file claims:
+SPDXVersion: SPDX-2.3
+</text>
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+";
+        let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("no SPDXVersion tag found"));
     }
 
     #[test]
