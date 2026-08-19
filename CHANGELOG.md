@@ -3,7 +3,7 @@
 ## Unreleased
 
 - fix SPDX tag-value documents whose package fields carry a multi-line `<text>` block: a `Creator:` line quoted inside one was adopted as a document creator and could suppress the phantom-creator warning, and a quoted `ExternalRef:` or `PackageName:` line switched the flush-sentinel warning on or off wrongly
-- fix SPDX tag-value documents rejected outright as an unsupported SPDX version because a `<text>` block quoted an `SPDXVersion:` line ahead of the document's real one, as a `DocumentComment:` can; a document whose only `SPDXVersion:` sits inside a text block is now reported as having no version tag rather than taking the quoted one as its version, and so is one whose remaining tags all follow a `<text>` that is never closed
+- fix SPDX tag-value documents rejected outright as an unsupported SPDX version because a `<text>` block quoted an `SPDXVersion:` line ahead of the document's real one, as a `DocumentComment:` can; a document whose only `SPDXVersion:` sits inside a text block is now reported as having no version tag rather than taking the quoted one as its version. a `<text>` with no closing marker anywhere after it is not a block at all, matching the parser, so such a document still reports its version, creators and tools instead of losing every tag below it
 
 ## [0.8.0] - 2026-08-17
 

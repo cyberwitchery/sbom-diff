@@ -85,9 +85,16 @@ fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, Depen
 /// yields the trimmed lines of a tag-value document that begin outside a
 /// `<text>` ... `</text>` block, i.e. the ones that can carry a tag.
 fn tag_lines(input: &str) -> impl Iterator<Item = &str> {
+    let last_close = input
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("</text>"))
+        .map(|(i, _)| i)
+        .last();
     let mut in_text = false;
-    input.lines().filter_map(move |line| {
+    input.lines().enumerate().filter_map(move |(i, line)| {
         let tagged = (!in_text).then(|| line.trim());
+        let closes_below = matches!(last_close, Some(last) if last > i);
         let mut rest = line;
         loop {
             if in_text {
@@ -103,6 +110,10 @@ fn tag_lines(input: &str) -> impl Iterator<Item = &str> {
                         .and_then(|(_, value)| value.trim_start().strip_prefix("<text>"))
                 });
                 let Some(after) = opened else { break };
+                // and only where a `</text>` follows, which is where spdx-rs's take_until succeeds.
+                if !after.contains("</text>") && !closes_below {
+                    break;
+                }
                 rest = after;
             }
             in_text = !in_text;
@@ -2228,6 +2239,83 @@ PackageName: some-other-thing
     }
 
     #[test]
+    fn test_read_tag_value_unterminated_text_block_keeps_creators() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+DocumentComment: <text>never closed
+Creator: Tool: syft-1.2.3
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:cargo/pkg-a@1.0.0
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.metadata.tools, vec!["syft-1.2.3".to_string()]);
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("syft-1.2.3")),
+            "a real creator must not be reported as a phantom: {:?}",
+            sbom.warnings
+        );
+        assert!(
+            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
+            "the flush-sentinel diagnostic must survive an unterminated block: {:?}",
+            sbom.warnings
+        );
+    }
+
+    #[test]
+    fn test_read_tag_value_version_below_unterminated_text_block_is_read() {
+        let tv = "\
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+DocumentComment: <text>never closed
+SPDXVersion: SPDX-2.3
+Creator: Tool: syft-1.2.3
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.metadata.tools, vec!["syft-1.2.3".to_string()]);
+    }
+
+    #[test]
+    fn test_read_tag_value_closed_block_does_not_open_a_later_unterminated_one() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+DocumentComment: <text>quoted
+Creator: Tool: sneaky
+</text>
+DocumentComment: <text>never closed
+Creator: Tool: real
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.metadata.tools, vec!["real".to_string()]);
+    }
+
+    #[test]
     fn test_tag_lines_skips_text_blocks() {
         let input = "\
 A: 1
@@ -2265,6 +2353,7 @@ I: 5
                 "<text>value on its own line",
                 "O: 6",
                 "H: <text>runs to eof",
+                "I: 5",
             ]
         );
     }
