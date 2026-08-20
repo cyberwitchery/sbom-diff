@@ -10,7 +10,9 @@
 //! applies the rules of the component's ecosystem. inference cannot separate a
 //! Debian revision from a semver pre-release — `1.2.3-1ubuntu2` and
 //! `1.0.0-alpha.1` are the same shape, ordered in opposite directions — so
-//! callers that know the ecosystem should pass it.
+//! callers that know the ecosystem should pass it. the same holds for PEP 440:
+//! `1.0.2a` is a Python pre-release and a Debian upstream version, ordered on
+//! opposite sides of `1.0.2`.
 
 use std::cmp::Ordering;
 
@@ -33,8 +35,12 @@ pub enum Version {
     /// dot-separated numeric segments that don't qualify as semver
     /// (e.g., four-part versions or versions with leading zeros).
     Numeric(Vec<u64>),
-    /// PEP 440 (Python) version carrying an epoch, pre-release, post-release or
-    /// dev-release segment, ordered per the PEP.
+    /// PEP 440 (Python) version, ordered per the PEP. inference produces this
+    /// variant only for a version carrying an epoch, pre-release, post-release
+    /// or dev-release segment;
+    /// [`parse_for_ecosystem`](Version::parse_for_ecosystem) produces it for
+    /// every `pypi` version, including a plain release and the spellings a
+    /// Debian version shares (`1.0.2a`, `1.0-1`).
     Pep440(Pep440),
     /// Debian-style `epoch:upstream-revision` version, compared with the Debian
     /// `dpkg` algorithm. a `N!` epoch prefix is accepted too, for strings
@@ -146,7 +152,7 @@ impl Version {
             return Version::Numeric(segments);
         }
 
-        if let Some(pep) = parse_pep440(stripped) {
+        if let Some(pep) = parse_pep440(stripped, Pep440Grammar::Unambiguous) {
             // a plain release has no PEP 440-specific segment; leave its classification alone
             if pep.epoch > 0 || pep.pre.is_some() || pep.post.is_some() || pep.dev.is_some() {
                 return Version::Pep440(pep);
@@ -169,7 +175,8 @@ impl Version {
     /// `deb` versions are read as [`Deb`](Version::Deb) and ordered by the
     /// `dpkg` algorithm, `rpm` versions as [`Rpm`](Version::Rpm) and ordered by
     /// rpm's `rpmvercmp`, `maven` versions as [`Maven`](Version::Maven) and
-    /// ordered by Maven's version-order algorithm. a leading `v`/`V` is
+    /// ordered by Maven's version-order algorithm, `pypi` versions as
+    /// [`Pep440`](Version::Pep440) and ordered by PEP 440. a leading `v`/`V` is
     /// stripped, as [`parse_lenient`](Self::parse_lenient) does; a string that
     /// is still not a valid version for that ecosystem is
     /// [`Opaque`](Version::Opaque) rather than being retried as semver.
@@ -197,6 +204,11 @@ impl Version {
     /// assert_eq!(snapshot.partial_cmp_lenient(&release), Some(Ordering::Less));
     /// assert_eq!(patched.partial_cmp_lenient(&release), Some(Ordering::Greater));
     ///
+    /// // `1.0.2a` is PEP 440's `1.0.2a0`, a pre-release below its release
+    /// let pre = Version::parse_for_ecosystem(Some("pypi"), "1.0.2a");
+    /// let release = Version::parse_for_ecosystem(Some("pypi"), "1.0.2");
+    /// assert_eq!(pre.partial_cmp_lenient(&release), Some(Ordering::Less));
+    ///
     /// let guessed = Version::parse_for_ecosystem(None, "1.2.3-1ubuntu2");
     /// assert_eq!(guessed, Version::parse_lenient("1.2.3-1ubuntu2"));
     /// ```
@@ -211,6 +223,10 @@ impl Version {
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
             Scheme::Maven => parse_maven(s)
                 .or_else(|| parse_maven(strip_v_prefix(s)))
+                .unwrap_or_else(|| Version::Opaque(s.to_string())),
+            Scheme::Pypi => parse_pep440(s, Pep440Grammar::Full)
+                .or_else(|| parse_pep440(strip_v_prefix(s), Pep440Grammar::Full))
+                .map(Version::Pep440)
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
         }
     }
@@ -331,6 +347,7 @@ enum Scheme {
     Deb,
     Rpm,
     Maven,
+    Pypi,
 }
 
 impl Scheme {
@@ -339,6 +356,7 @@ impl Scheme {
             Some(e) if e.eq_ignore_ascii_case("deb") => Scheme::Deb,
             Some(e) if e.eq_ignore_ascii_case("rpm") => Scheme::Rpm,
             Some(e) if e.eq_ignore_ascii_case("maven") => Scheme::Maven,
+            Some(e) if e.eq_ignore_ascii_case("pypi") => Scheme::Pypi,
             _ => Scheme::Infer,
         }
     }
@@ -390,12 +408,21 @@ const POST_ALIASES: [(&str, ()); 3] = [("post", ()), ("rev", ()), ("r", ())];
 
 const DEV_ALIASES: [(&str, ()); 1] = [("dev", ())];
 
-/// parses a PEP 440 version, returning `None` for anything not confidently PEP
-/// 440 so Debian and opaque strings fall through to the next strategy. the
-/// implicit post-release form (`1.0-1`) and the bare single-letter suffix
-/// (`1.0.2a`, `2024h`, `1.1.1a-r0`) are rejected: both are indistinguishable
-/// from a Debian upstream version.
-fn parse_pep440(s: &str) -> Option<Pep440> {
+/// how much of PEP 440's grammar to accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pep440Grammar {
+    /// the whole PEP, for a version already known to be Python.
+    Full,
+    /// only the spellings no other ecosystem writes the same way. the implicit
+    /// post-release form (`1.0-1`) and the bare single-letter suffix
+    /// (`1.0.2a`, `2024h`, `1.1.1a-r0`) are declined: both are
+    /// indistinguishable from a Debian upstream version.
+    Unambiguous,
+}
+
+/// parses a PEP 440 version, returning `None` for anything the `grammar` does
+/// not accept, so Debian and opaque strings fall through to the next strategy.
+fn parse_pep440(s: &str, grammar: Pep440Grammar) -> Option<Pep440> {
     let lower = s.to_ascii_lowercase();
 
     let (head, local) = match lower.split_once('+') {
@@ -424,15 +451,15 @@ fn parse_pep440(s: &str) -> Option<Pep440> {
         }
     }
 
-    let (pre, rest) = match take_segment(rest, &PRE_ALIASES) {
+    let (pre, rest) = match take_segment(rest, &PRE_ALIASES, grammar) {
         Some((kind, n, rest)) => (Some((kind, n)), rest),
         None => (None, rest),
     };
-    let (post, rest) = match take_segment(rest, &POST_ALIASES) {
+    let (post, rest) = match take_segment(rest, &POST_ALIASES, grammar) {
         Some((_, n, rest)) => (Some(n), rest),
-        None => (None, rest),
+        None => take_implicit_post(rest, grammar),
     };
-    let (dev, rest) = match take_segment(rest, &DEV_ALIASES) {
+    let (dev, rest) = match take_segment(rest, &DEV_ALIASES, grammar) {
         Some((_, n, rest)) => (Some(n), rest),
         None => (None, rest),
     };
@@ -452,8 +479,11 @@ fn parse_pep440(s: &str) -> Option<Pep440> {
 
 /// consumes a `[-_.]?<keyword>[-_.]?<number>?` suffix, returning the matched
 /// keyword's tag, its number (an absent one is `0`, per PEP 440) and the rest.
-/// a single-letter keyword must be followed by at least one digit.
-fn take_segment<'a, T: Copy>(s: &'a str, aliases: &[(&str, T)]) -> Option<(T, u64, &'a str)> {
+fn take_segment<'a, T: Copy>(
+    s: &'a str,
+    aliases: &[(&str, T)],
+    grammar: Pep440Grammar,
+) -> Option<(T, u64, &'a str)> {
     let body = s.strip_prefix(['-', '_', '.']).unwrap_or(s);
     let (name, tag, rest) = aliases
         .iter()
@@ -463,11 +493,28 @@ fn take_segment<'a, T: Copy>(s: &'a str, aliases: &[(&str, T)]) -> Option<(T, u6
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(digits.len());
     let n = match end {
-        0 if name.len() == 1 => return None,
+        0 if name.len() == 1 && grammar == Pep440Grammar::Unambiguous => return None,
         0 => 0,
         _ => digits[..end].parse::<u64>().ok()?,
     };
     Some((tag, n, &digits[end..]))
+}
+
+/// consumes PEP 440's implicit post-release suffix, a bare `-<number>`.
+fn take_implicit_post(s: &str, grammar: Pep440Grammar) -> (Option<u64>, &str) {
+    if grammar == Pep440Grammar::Unambiguous {
+        return (None, s);
+    }
+    let Some(digits) = s.strip_prefix('-') else {
+        return (None, s);
+    };
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    match digits[..end].parse::<u64>() {
+        Ok(n) => (Some(n), &digits[end..]),
+        Err(_) => (None, s),
+    }
 }
 
 /// parses a PEP 440 local version label (the part after `+`).
@@ -501,9 +548,10 @@ fn as_pep440(v: &Version) -> Option<Pep440> {
         Version::Pep440(p) => Some(p.clone()),
         Version::Numeric(segments) => Some(plain(segments.clone())),
         Version::Semver(s) if s.pre.is_empty() => Some(plain(vec![s.major, s.minor, s.patch])),
-        Version::Semver(s) => {
-            parse_pep440(&format!("{}.{}.{}-{}", s.major, s.minor, s.patch, s.pre))
-        }
+        Version::Semver(s) => parse_pep440(
+            &format!("{}.{}.{}-{}", s.major, s.minor, s.patch, s.pre),
+            Pep440Grammar::Unambiguous,
+        ),
         Version::Deb { .. } | Version::Rpm { .. } | Version::Maven(_) | Version::Opaque(_) => None,
     }
 }
@@ -2233,7 +2281,13 @@ mod tests {
 
     #[test]
     fn unknown_ecosystem_parses_exactly_like_parse_lenient() {
-        for eco in [None, Some("npm"), Some("cargo"), Some("golang")] {
+        for eco in [
+            None,
+            Some("npm"),
+            Some("cargo"),
+            Some("golang"),
+            Some("python"),
+        ] {
             for s in ECOSYSTEM_CORPUS {
                 assert_eq!(
                     Version::parse_for_ecosystem(eco, s),
@@ -2246,7 +2300,13 @@ mod tests {
 
     #[test]
     fn unknown_ecosystem_orders_exactly_like_the_string_only_path() {
-        for eco in [None, Some("npm"), Some("cargo"), Some("golang")] {
+        for eco in [
+            None,
+            Some("npm"),
+            Some("cargo"),
+            Some("golang"),
+            Some("python"),
+        ] {
             for a in ECOSYSTEM_CORPUS {
                 for b in ECOSYSTEM_CORPUS {
                     assert_eq!(
@@ -3152,5 +3212,252 @@ mod tests {
                 "{s}"
             );
         }
+    }
+
+    #[test]
+    fn pypi_ecosystem_orders_a_bare_letter_pre_release_below_its_release() {
+        assert_eq!(compare_versions("1.0.2a", "1.0.2"), None);
+
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("pypi"), "1.0.2a", "1.0.2"),
+            Some(Ordering::Less)
+        );
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("pypi"),
+            "1.0.2a",
+            "1.0.2"
+        ));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("pypi"),
+            "1.0.2",
+            "1.0.2a"
+        ));
+    }
+
+    #[test]
+    fn pypi_ecosystem_makes_previously_uncomparable_pairs_comparable() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("1.0.2a", "1.0.2", Less),
+            ("1.0.2c", "1.0.2rc0", Equal),
+            ("1.0.2r", "1.0.2", Greater),
+            ("1.0-1", "1.0", Greater),
+            ("1.0-1", "1.0.post1", Equal),
+            ("1.0+abc", "1.0", Greater),
+            ("1.0+abc", "1.0.1", Less),
+            ("2024a", "2024", Less),
+            ("1.0.2a", "1!0.1", Less),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("pypi"), a, b),
+                Some(expected),
+                "{a} vs {b}"
+            );
+            assert_eq!(
+                compare_versions_for_ecosystem(Some("pypi"), b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn pypi_ecosystem_reverses_a_gate_the_string_only_path_fires_backwards() {
+        // read as Debian upstream versions, a letter sorts below `+`; PEP 440
+        // ranks a local label below the post release
+        assert_eq!(compare_versions("1.0+0", "1.0r"), Some(Ordering::Greater));
+        assert!(is_version_downgrade("1.0+0", "1.0r"));
+        assert!(!is_version_downgrade("1.0r", "1.0+0"));
+
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("pypi"), "1.0+0", "1.0r"),
+            Some(Ordering::Less)
+        );
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("pypi"),
+            "1.0+0",
+            "1.0r"
+        ));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("pypi"),
+            "1.0r",
+            "1.0+0"
+        ));
+    }
+
+    /// PEP 440 §"Summary of permitted suffixes and relative ordering", one
+    /// strictly ascending ladder.
+    #[test]
+    fn pypi_ecosystem_orders_the_documented_ladder() {
+        let ladder = [
+            "1.0.dev456",
+            "1.0a1",
+            "1.0a2.dev456",
+            "1.0a12.dev456",
+            "1.0a12",
+            "1.0b1.dev456",
+            "1.0b2",
+            "1.0b2.post345.dev456",
+            "1.0b2.post345",
+            "1.0rc1.dev456",
+            "1.0rc1",
+            "1.0",
+            "1.0+abc.5",
+            "1.0+abc.7",
+            "1.0+5",
+            "1.0.post456.dev34",
+            "1.0.post456",
+            "1.0.15",
+            "1.1.dev1",
+            "1.1",
+            "2!0.5",
+        ];
+        for (i, a) in ladder.iter().enumerate() {
+            for (j, b) in ladder.iter().enumerate() {
+                assert_eq!(
+                    compare_versions_for_ecosystem(Some("pypi"), a, b),
+                    Some(i.cmp(&j)),
+                    "{a} vs {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pypi_ecosystem_folds_spelling_aliases_and_separators() {
+        for (a, b) in [
+            ("1.0alpha1", "1.0a1"),
+            ("1.0-alpha-1", "1.0a1"),
+            ("1.0_ALPHA_1", "1.0a1"),
+            ("1.0.beta.2", "1.0b2"),
+            ("1.0pre1", "1.0rc1"),
+            ("1.0PREVIEW1", "1.0rc1"),
+            ("1.0c1", "1.0rc1"),
+            ("1.0a", "1.0a0"),
+            ("1.0.rev2", "1.0.post2"),
+            ("1.0-r2", "1.0.post2"),
+            ("1.0-2", "1.0.post2"),
+            ("1.0.dev", "1.0.dev0"),
+            ("V1.0", "1.0"),
+        ] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("pypi"), a),
+                Version::parse_for_ecosystem(Some("pypi"), b),
+                "{a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn pypi_ecosystem_parses_as_pep440() {
+        for s in [
+            "1",
+            "1.0",
+            "1.2.3",
+            "1.2.3.4",
+            "v1.2.3",
+            "1.0.2a",
+            "1!1.0",
+            "1.0.post1",
+            "1.0.dev1",
+            "1.0+ubuntu1",
+            "1.0-1",
+        ] {
+            assert!(
+                matches!(
+                    Version::parse_for_ecosystem(Some("pypi"), s),
+                    Version::Pep440(_)
+                ),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn pypi_ecosystem_match_ignores_case() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("PyPI"), "1.0.2a"),
+            Version::parse_for_ecosystem(Some("pypi"), "1.0.2a")
+        );
+    }
+
+    #[test]
+    fn pypi_ecosystem_keeps_non_pep440_strings_opaque() {
+        for s in [
+            "deadbeef",
+            "",
+            "1.0 ",
+            "1.0.1x",
+            "1.0_1",
+            "1.0~rc1",
+            "2:1.0-3",
+            "1.2.3-1ubuntu2",
+            "4.4.2-2.el7_9",
+            "1.0.0-foo.bar",
+            "2024h",
+            "1.0-1-1",
+            "1.0.post1-1",
+            "1.0+",
+        ] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("pypi"), s),
+                Version::Opaque(s.to_string()),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn pypi_ecosystem_strips_a_v_prefix_instead_of_skipping_the_pair() {
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("pypi"), "v1.2.3"),
+            Version::Pep440(_)
+        ));
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("pypi"), "v1.2.3", "v1.2.4"),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn pypi_stays_uncomparable_against_the_other_ecosystem_variants() {
+        let pypi = Version::parse_for_ecosystem(Some("pypi"), "1.2.3");
+        for other in [
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("maven"), "1.2.3-1"),
+            Version::parse_lenient("deadbeef"),
+        ] {
+            assert_eq!(pypi.partial_cmp_lenient(&other), None, "{other:?}");
+            assert_eq!(other.partial_cmp_lenient(&pypi), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn pypi_leaves_the_inferred_path_alone() {
+        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
+            "1.0.2a",
+            "2024h",
+            "1.1.1a-r0",
+            "1.0-1",
+            "1.0+abc",
+            "1.0r",
+        ]) {
+            assert_eq!(
+                Version::parse_for_ecosystem(None, s),
+                Version::parse_lenient(s),
+                "{s}"
+            );
+        }
+        assert!(matches!(
+            Version::parse_lenient("1.0.2a"),
+            Version::Deb { .. }
+        ));
+        assert!(matches!(
+            Version::parse_lenient("1.0-1"),
+            Version::Deb { .. }
+        ));
     }
 }

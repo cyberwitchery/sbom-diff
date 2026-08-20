@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix `--fail-on version-downgrade` for Python versions: a `pkg:pypi/...` component is now ordered by PEP 440, so `1.0.2a` is the pre-release `1.0.2a0` that sits below `1.0.2` instead of a Debian upstream version that sits above it. the gate no longer misses a release-to-pre-release downgrade, and no longer fires on an upgrade like `1.0+0` -> `1.0r`
+
 ## [0.8.0] - 2026-08-17
 
 - gate licenses on the declared SPDX expression instead of a flattened identifier set: `--deny-license gpl-3.0-only` no longer blocks a `MIT OR GPL-3.0-only` component that can be taken under MIT, `--allow-license mit --allow-license bsd-3-clause` no longer rejects `(MIT OR Apache-2.0) AND BSD-3-Clause`, and `--fail-on copyleft-added` fires only when the new expression offers no way to satisfy it whose copyleft obligations the old one already offered, naming the copyleft the new side's least burdensome choices carry minus what the old side already forced — an unchanged `GPL-2.0-only OR GPL-3.0-only` choice is not an introduction, `MIT` -> `GPL-3.0-only AND (MPL-2.0 OR ISC)` names `GPL-3.0-only` alone because the ISC choice avoids `MPL-2.0`, and `MIT` -> `GPL-2.0-only OR AGPL-3.0-only` names both because neither choice avoids the other
