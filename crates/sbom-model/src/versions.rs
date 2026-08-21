@@ -2,8 +2,8 @@
 //!
 //! provides lenient version parsing for SBOM component versions, supporting
 //! semver, dot-separated numeric strings, PEP 440 (Python) versions,
-//! Debian and RPM epoch/revision versions, Maven (Java) versions, and opaque
-//! version strings.
+//! Debian and RPM epoch/revision versions, Maven (Java) versions, NuGet
+//! (.NET) versions, and opaque version strings.
 //!
 //! two entry points parse a version string: [`Version::parse_lenient`] infers
 //! the format from the string alone, and [`Version::parse_for_ecosystem`]
@@ -24,6 +24,8 @@ use std::cmp::Ordering;
 ///   in OS/container SBOMs)
 /// - Maven versions, whose qualifiers (`1.0-SNAPSHOT`, `2.0-rc1`) look like
 ///   semver pre-releases but are ranked by a named order
+/// - NuGet versions, which carry a fourth numeric field and compare their
+///   release labels case-insensitively
 /// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Version {
@@ -63,6 +65,18 @@ pub enum Version {
     /// variant — the shape alone does not distinguish a Maven qualifier from a
     /// semver pre-release or a Debian revision.
     Maven(String),
+    /// NuGet (.NET) version `major.minor.patch[.revision][-release][+metadata]`,
+    /// compared with NuGet.Versioning's rules: four numeric fields, an absent
+    /// one being `0`, then dot-separated release labels compared
+    /// case-insensitively. build metadata is not kept: NuGet ignores it for
+    /// both ordering and equality. only
+    /// [`parse_for_ecosystem`](Version::parse_for_ecosystem) produces this
+    /// variant — the shape alone does not distinguish a NuGet release label
+    /// from a semver pre-release.
+    Nuget {
+        version: [u64; 4],
+        release: Vec<String>,
+    },
     /// non-parseable version string where ordering cannot be determined.
     Opaque(String),
 }
@@ -169,9 +183,10 @@ impl Version {
     /// `deb` versions are read as [`Deb`](Version::Deb) and ordered by the
     /// `dpkg` algorithm, `rpm` versions as [`Rpm`](Version::Rpm) and ordered by
     /// rpm's `rpmvercmp`, `maven` versions as [`Maven`](Version::Maven) and
-    /// ordered by Maven's version-order algorithm. a leading `v`/`V` is
-    /// stripped, as [`parse_lenient`](Self::parse_lenient) does; a string that
-    /// is still not a valid version for that ecosystem is
+    /// ordered by Maven's version-order algorithm, and `nuget` versions as
+    /// [`Nuget`](Version::Nuget) and ordered by NuGet.Versioning's rules. a
+    /// leading `v`/`V` is stripped, as [`parse_lenient`](Self::parse_lenient)
+    /// does; a string that is still not a valid version for that ecosystem is
     /// [`Opaque`](Version::Opaque) rather than being retried as semver.
     ///
     /// # Examples
@@ -197,6 +212,14 @@ impl Version {
     /// assert_eq!(snapshot.partial_cmp_lenient(&release), Some(Ordering::Less));
     /// assert_eq!(patched.partial_cmp_lenient(&release), Some(Ordering::Greater));
     ///
+    /// // NuGet compares release labels case-insensitively, and the fourth
+    /// // field outranks the release
+    /// let preview = Version::parse_for_ecosystem(Some("nuget"), "5.0.0-preview.1");
+    /// let rc = Version::parse_for_ecosystem(Some("nuget"), "5.0.0-RC.1");
+    /// let revision = Version::parse_for_ecosystem(Some("nuget"), "5.0.0.1");
+    /// assert_eq!(preview.partial_cmp_lenient(&rc), Some(Ordering::Less));
+    /// assert_eq!(rc.partial_cmp_lenient(&revision), Some(Ordering::Less));
+    ///
     /// let guessed = Version::parse_for_ecosystem(None, "1.2.3-1ubuntu2");
     /// assert_eq!(guessed, Version::parse_lenient("1.2.3-1ubuntu2"));
     /// ```
@@ -211,6 +234,9 @@ impl Version {
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
             Scheme::Maven => parse_maven(s)
                 .or_else(|| parse_maven(strip_v_prefix(s)))
+                .unwrap_or_else(|| Version::Opaque(s.to_string())),
+            Scheme::Nuget => parse_nuget(s)
+                .or_else(|| parse_nuget(strip_v_prefix(s)))
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
         }
     }
@@ -229,12 +255,14 @@ impl Version {
     ///   `rpmvercmp` algorithm
     /// - **Maven vs Maven**: item by item, via Maven's version-order algorithm.
     ///   a version nesting past the parser's depth cap is declined
+    /// - **Nuget vs Nuget**: the four numeric fields, then a version carrying
+    ///   release labels below one that carries none, then the labels
     /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
     ///   other side is read as a PEP 440 version and both are ordered per PEP
     ///   440. a semver pre-release that isn't a PEP 440 suffix (say
     ///   `1.0.0-foo.bar`) has no PEP 440 reading, so that pair stays `None`
-    /// - **Any other pair** (including any Opaque, any two of Deb, Rpm and
-    ///   Maven, or any of them against a semver/numeric/PEP 440 version):
+    /// - **Any other pair** (including any Opaque, any two of Deb, Rpm, Maven
+    ///   and Nuget, or any of them against a semver/numeric/PEP 440 version):
     ///   `None`
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
@@ -293,6 +321,16 @@ impl Version {
                 },
             ) => Some(rpm_cmp((*ae, av, arel), (*be, bv, brel))),
             (Version::Maven(a), Version::Maven(b)) => maven_cmp(a, b),
+            (
+                Version::Nuget {
+                    version: av,
+                    release: arel,
+                },
+                Version::Nuget {
+                    version: bv,
+                    release: brel,
+                },
+            ) => Some(nuget_cmp((av, arel), (bv, brel))),
             (Version::Pep440(_), _) | (_, Version::Pep440(_)) => {
                 Some(pep440_cmp(&as_pep440(self)?, &as_pep440(other)?))
             }
@@ -331,6 +369,7 @@ enum Scheme {
     Deb,
     Rpm,
     Maven,
+    Nuget,
 }
 
 impl Scheme {
@@ -339,6 +378,7 @@ impl Scheme {
             Some(e) if e.eq_ignore_ascii_case("deb") => Scheme::Deb,
             Some(e) if e.eq_ignore_ascii_case("rpm") => Scheme::Rpm,
             Some(e) if e.eq_ignore_ascii_case("maven") => Scheme::Maven,
+            Some(e) if e.eq_ignore_ascii_case("nuget") => Scheme::Nuget,
             _ => Scheme::Infer,
         }
     }
@@ -504,7 +544,11 @@ fn as_pep440(v: &Version) -> Option<Pep440> {
         Version::Semver(s) => {
             parse_pep440(&format!("{}.{}.{}-{}", s.major, s.minor, s.patch, s.pre))
         }
-        Version::Deb { .. } | Version::Rpm { .. } | Version::Maven(_) | Version::Opaque(_) => None,
+        Version::Deb { .. }
+        | Version::Rpm { .. }
+        | Version::Maven(_)
+        | Version::Nuget { .. }
+        | Version::Opaque(_) => None,
     }
 }
 
@@ -1093,6 +1137,109 @@ fn maven_qualifier_rank(q: &str) -> (usize, &str) {
     match KNOWN.iter().position(|known| *known == q) {
         Some(i) => (i, ""),
         None => (KNOWN.len(), q),
+    }
+}
+
+/// parses a NuGet version.
+///
+/// returns `None` on the same grounds as [`parse_deb`]: the string must be one
+/// to four dot-separated numeric fields, optionally followed by a `-` release
+/// label list and a `+` build metadata suffix, so codenames, git hashes and
+/// other genuinely opaque strings stay [`Opaque`](Version::Opaque).
+fn parse_nuget(s: &str) -> Option<Version> {
+    let (core, rest) = match s.find(['-', '+']) {
+        Some(idx) => (&s[..idx], &s[idx..]),
+        None => (s, ""),
+    };
+
+    let mut version = [0u64; 4];
+    for (i, field) in core.split('.').enumerate() {
+        if i == version.len() || field.is_empty() || !field.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        version[i] = field.parse().ok()?;
+    }
+
+    // a `+` ahead of any `-` opens the metadata, so the rest is never a label
+    let (labels, metadata) = match rest.strip_prefix('-') {
+        Some(tail) => match tail.split_once('+') {
+            Some((labels, metadata)) => (labels, Some(metadata)),
+            None => (tail, None),
+        },
+        None => ("", rest.strip_prefix('+')),
+    };
+
+    if let Some(metadata) = metadata {
+        if metadata.is_empty()
+            || !metadata
+                .bytes()
+                .all(|b| is_nuget_label_byte(b) || b == b'.')
+        {
+            return None;
+        }
+    }
+
+    let release: Vec<String> = if labels.is_empty() {
+        Vec::new()
+    } else {
+        labels.split('.').map(str::to_string).collect()
+    };
+    if release
+        .iter()
+        .any(|label| label.is_empty() || !label.bytes().all(is_nuget_label_byte))
+    {
+        return None;
+    }
+
+    Some(Version::Nuget { version, release })
+}
+
+/// characters permitted in a NuGet release label or metadata part.
+fn is_nuget_label_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-'
+}
+
+/// orders two NuGet versions given as `(numeric fields, release labels)`: the
+/// four fields in order, then a version carrying release labels below one that
+/// carries none, then the labels themselves.
+fn nuget_cmp(a: (&[u64; 4], &[String]), b: (&[u64; 4], &[String])) -> Ordering {
+    a.0.cmp(b.0)
+        .then_with(|| a.1.is_empty().cmp(&b.1.is_empty()))
+        .then_with(|| nuget_release_cmp(a.1, b.1))
+}
+
+/// orders two release-label lists label by label, a list that runs out first
+/// sorting below the one that continues.
+fn nuget_release_cmp(a: &[String], b: &[String]) -> Ordering {
+    for i in 0..a.len().max(b.len()) {
+        let ord = match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) => nuget_label_cmp(x, y),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal,
+        };
+
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+
+    Ordering::Equal
+}
+
+/// orders two release labels: two labels NuGet reads as numbers compare
+/// numerically, a number sorts below a label that is not one, and any other
+/// pair compares case-insensitively. the `i32` is NuGet's `int.TryParse`: a
+/// digit run too long for one is an ordinary string.
+fn nuget_label_cmp(a: &str, b: &str) -> Ordering {
+    match (a.parse::<i32>().ok(), b.parse::<i32>().ok()) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a
+            .bytes()
+            .map(|b| b.to_ascii_uppercase())
+            .cmp(b.bytes().map(|b| b.to_ascii_uppercase())),
     }
 }
 
@@ -3136,6 +3283,288 @@ mod tests {
         ] {
             assert_eq!(maven.partial_cmp_lenient(&other), None, "{other:?}");
             assert_eq!(other.partial_cmp_lenient(&maven), None, "{other:?}");
+        }
+    }
+
+    fn nuget_cmp(a: &str, b: &str) -> Ordering {
+        compare_versions_for_ecosystem(Some("nuget"), a, b)
+            .unwrap_or_else(|| panic!("{a} vs {b} is not a NuGet version"))
+    }
+
+    /// asserts the strings are in strictly ascending NuGet order, every pair.
+    fn assert_nuget_ascending(versions: &[&str]) {
+        for (i, a) in versions.iter().enumerate() {
+            for b in &versions[i + 1..] {
+                assert_eq!(nuget_cmp(a, b), Ordering::Less, "{a} vs {b}");
+                assert_eq!(nuget_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+                assert!(
+                    is_version_downgrade_for_ecosystem(Some("nuget"), b, a),
+                    "expected {b} -> {a} downgrade"
+                );
+                assert!(
+                    !is_version_downgrade_for_ecosystem(Some("nuget"), a, b),
+                    "expected {a} -> {b} upgrade"
+                );
+            }
+        }
+    }
+
+    /// every pair derived from NuGet.Versioning's documented rules.
+    #[test]
+    fn nuget_documented_ordering_examples() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("1", "1.0.0.0", Equal),
+            ("1.0", "1.0.0.0", Equal),
+            ("1.0.0", "1.0.0.0", Equal),
+            ("1.01", "1.1", Equal),
+            ("1.0.0.010", "1.0.0.10", Equal),
+            ("1.0.0.1", "1.0.0", Greater),
+            ("1.0.0.9", "1.0.1", Less),
+            ("1.0.0-alpha", "1.0.0", Less),
+            ("1.0.0.1-alpha", "1.0.0.1", Less),
+            ("2.0.0.0", "2.0.0-rc", Greater),
+            ("1.0.0-alpha", "1.0.0-BETA", Less),
+            ("1.0.0-Alpha", "1.0.0-alpha", Equal),
+            ("1.0.0-1", "1.0.0-alpha", Less),
+            ("1.0.0-01", "1.0.0-1", Equal),
+            ("1.0.0-2", "1.0.0-10", Less),
+            ("1.0.0-alpha", "1.0.0-alpha.1", Less),
+            ("1.0.0-alpha", "1.0.0-Alpha.1", Less),
+            ("1.0.0-rc.1+build", "1.0.0-rc.2", Less),
+            // an empty label list is not a pre-release
+            ("1.0.0-", "1.0.0", Equal),
+            // a digit run past NuGet's `int.TryParse` is an ordinary string
+            ("1.0.0-99999999999", "1.0.0-alpha", Less),
+        ] {
+            assert_eq!(nuget_cmp(a, b), expected, "{a} vs {b}");
+            assert_eq!(nuget_cmp(b, a), expected.reverse(), "{b} vs {a}");
+        }
+    }
+
+    #[test]
+    fn nuget_ignores_build_metadata_for_ordering_and_equality() {
+        for (a, b) in [
+            ("1.0.0+sha1", "1.0.0+sha2"),
+            ("1.0.0+a", "1.0.0"),
+            ("1.0.0-rc+a", "1.0.0-rc+b"),
+            ("1.0.0+meta-with-dashes", "1.0.0+0.1"),
+        ] {
+            assert_eq!(nuget_cmp(a, b), Ordering::Equal, "{a} vs {b}");
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("nuget"), a),
+                Version::parse_for_ecosystem(Some("nuget"), b),
+                "{a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn nuget_orders_the_dotnet_release_ladder() {
+        assert_nuget_ascending(&[
+            "6.0.0-alpha.1",
+            "6.0.0-Beta.1",
+            "6.0.0-preview.7.21377.19",
+            "6.0.0-RC.1.21451.13",
+            "6.0.0-rc.2.21480.5",
+            "6.0.0",
+            "6.0.0.1",
+            "6.0.1-preview.1",
+            "6.0.1",
+            "6.1.0",
+        ]);
+        assert_nuget_ascending(&["1.0.0-1", "1.0.0-2", "1.0.0-10", "1.0.0-a", "1.0.0-a.1"]);
+        assert_nuget_ascending(&["13.0.1", "13.0.3", "13.0.10", "13.1.0"]);
+    }
+
+    #[test]
+    fn nuget_ordering_is_antisymmetric_and_transitive() {
+        const CORPUS: &[&str] = &[
+            "1",
+            "1.0",
+            "1.0.0",
+            "1.0.0.0",
+            "1.0.0.1",
+            "1.0.1",
+            "1.1",
+            "2",
+            "1.0.0-alpha",
+            "1.0.0-ALPHA",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-rc",
+            "1.0.0-1",
+            "1.0.0-01",
+            "1.0.0-2",
+            "1.0.0-10",
+            "1.0.0+meta",
+            "1.0.0-rc+meta",
+            "1.0.0.1-rc",
+        ];
+
+        for a in CORPUS {
+            for b in CORPUS {
+                assert_eq!(
+                    nuget_cmp(a, b),
+                    nuget_cmp(b, a).reverse(),
+                    "asymmetric: {a} vs {b}"
+                );
+                for c in CORPUS {
+                    let (ab, bc) = (nuget_cmp(a, b), nuget_cmp(b, c));
+                    if ab == bc || bc == Ordering::Equal {
+                        assert_eq!(nuget_cmp(a, c), ab, "intransitive: {a}, {b}, {c}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// a leading zero in a release label is not a semver identifier, so the
+    /// string-only path reads the version as Debian and every pair is mixed.
+    #[test]
+    fn nuget_ecosystem_makes_previously_uncomparable_pairs_comparable() {
+        use Ordering::{Equal, Less};
+
+        for (a, b, expected) in [
+            ("1.0.0-01", "1.0.0-1", Equal),
+            ("1.0.0-01", "1.0.0-alpha", Less),
+            ("1.0.0-01", "1.0.0", Less),
+            ("1.0.0-01", "1.0.0.1", Less),
+            ("1.0.0-01", "1.0.0-rc.1", Less),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert_eq!(nuget_cmp(a, b), expected, "{a} vs {b}");
+            assert_eq!(nuget_cmp(b, a), expected.reverse(), "{b} vs {a}");
+        }
+    }
+
+    /// semver orders release labels case-sensitively, so an upper-case label
+    /// sorts below every lower-case one.
+    #[test]
+    fn nuget_ecosystem_reverses_gates_the_string_only_path_fires_backwards() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, inferred, nuget) in [
+            ("1.0.0-alpha", "1.0.0-BETA", Greater, Less),
+            ("3.0.0-beta", "3.0.0-RC", Greater, Less),
+            ("5.0.0-preview.1", "5.0.0-RC.1", Greater, Less),
+            ("1.0.0-Alpha", "1.0.0-alpha", Less, Equal),
+            ("1.0.0-alpha", "1.0.0-Alpha.1", Greater, Less),
+            // the inferred numeric reading drops the pre-release entirely
+            ("2.0.0.0", "2.0.0-rc", Equal, Greater),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(inferred), "{a} vs {b}");
+            assert_eq!(nuget_cmp(a, b), nuget, "{a} vs {b}");
+        }
+
+        assert!(is_version_downgrade("3.0.0-beta", "3.0.0-RC"));
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("nuget"),
+            "3.0.0-beta",
+            "3.0.0-RC"
+        ));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("nuget"),
+            "3.0.0-RC",
+            "3.0.0-beta"
+        ));
+    }
+
+    #[test]
+    fn nuget_ecosystem_parses_as_nuget() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("nuget"), "1.2.3.4-rc.1+sha"),
+            Version::Nuget {
+                version: [1, 2, 3, 4],
+                release: vec!["rc".into(), "1".into()],
+            }
+        );
+        for s in ["1", "1.2", "1.2.3", "1.2.3.4", "1.0.0-alpha.1", "1.0.0+b1"] {
+            assert!(
+                matches!(
+                    Version::parse_for_ecosystem(Some("nuget"), s),
+                    Version::Nuget { .. }
+                ),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn nuget_ecosystem_match_ignores_case() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("NuGet"), "1.0.0-rc"),
+            Version::parse_for_ecosystem(Some("nuget"), "1.0.0-rc")
+        );
+    }
+
+    #[test]
+    fn nuget_ecosystem_keeps_codenames_and_hashes_opaque() {
+        for s in [
+            "deadbeef",
+            "",
+            "latest",
+            "1.0.0.0.0",
+            "1.0.0.99999999999999999999",
+            "1.0.0+",
+            "1.0.0+α",
+            "1.0.0-α",
+            "1.0.0-a..b",
+            "1.0.0 ",
+            "1.0.0~rc1",
+            "2:1.0-3",
+        ] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some("nuget"), s),
+                Version::Opaque(s.to_string()),
+                "{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn nuget_ecosystem_strips_a_v_prefix_instead_of_skipping_the_pair() {
+        assert!(matches!(
+            Version::parse_for_ecosystem(Some("nuget"), "v1.2.3"),
+            Version::Nuget { .. }
+        ));
+        assert_eq!(
+            compare_versions_for_ecosystem(Some("nuget"), "v1.2.3", "v1.2.4"),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn nuget_stays_uncomparable_against_every_other_parse_result() {
+        let nuget = Version::parse_for_ecosystem(Some("nuget"), "1.2.3-1");
+        for other in [
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("maven"), "1.2.3-1"),
+            Version::parse_lenient("1.2.3"),
+            Version::parse_lenient("2024.01.15"),
+            Version::parse_lenient("4.2.0rc1"),
+            Version::parse_lenient("deadbeef"),
+        ] {
+            assert_eq!(nuget.partial_cmp_lenient(&other), None, "{other:?}");
+            assert_eq!(other.partial_cmp_lenient(&nuget), None, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn parse_lenient_never_produces_the_nuget_variant() {
+        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
+            "1.0.0-alpha",
+            "1.2.3.4",
+            "1.0.0+sha",
+            "1.0.0.1-rc.1",
+        ]) {
+            assert!(
+                !matches!(Version::parse_lenient(s), Version::Nuget { .. }),
+                "{s}"
+            );
         }
     }
 
