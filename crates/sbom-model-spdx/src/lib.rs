@@ -82,6 +82,46 @@ fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, Depen
     }
 }
 
+/// yields the trimmed lines of a tag-value document that begin outside a
+/// `<text>` ... `</text>` block, i.e. the ones that can carry a tag.
+fn tag_lines(input: &str) -> impl Iterator<Item = &str> {
+    let last_close = input
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("</text>"))
+        .map(|(i, _)| i)
+        .last();
+    let mut in_text = false;
+    input.lines().enumerate().filter_map(move |(i, line)| {
+        let tagged = (!in_text).then(|| line.trim());
+        let closes_below = matches!(last_close, Some(last) if last > i);
+        let mut rest = line;
+        loop {
+            if in_text {
+                let Some(at) = rest.find("</text>") else {
+                    break;
+                };
+                rest = &rest[at + "</text>".len()..];
+            } else {
+                // blocks open only at a value's head: after the colon, or on a continuation line.
+                let head = rest.trim_start();
+                let opened = head.strip_prefix("<text>").or_else(|| {
+                    head.split_once(':')
+                        .and_then(|(_, value)| value.trim_start().strip_prefix("<text>"))
+                });
+                let Some(after) = opened else { break };
+                // and only where a `</text>` follows, which is where spdx-rs's take_until succeeds.
+                if !after.contains("</text>") && !closes_below {
+                    break;
+                }
+                rest = after;
+            }
+            in_text = !in_text;
+        }
+        tagged
+    })
+}
+
 /// parser for SPDX documents.
 ///
 /// converts SPDX 2.x JSON, XML, and tag-value input into the format-agnostic
@@ -188,11 +228,10 @@ impl SpdxReader {
         // package in the raw input have ExternalRef lines?  If so, spdx-rs
         // 0.5 would have silently dropped the last one without the sentinel.
         let mut last_pkg_has_ext_ref = false;
-        for line in input.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("PackageName:") {
+        for line in tag_lines(input) {
+            if line.starts_with("PackageName:") {
                 last_pkg_has_ext_ref = false;
-            } else if trimmed.starts_with("ExternalRef:") {
+            } else if line.starts_with("ExternalRef:") {
                 last_pkg_has_ext_ref = true;
             }
         }
@@ -211,13 +250,8 @@ impl SpdxReader {
             .creation_info
             .creators
             .clone();
-        let actual_creators: Vec<String> = input
-            .lines()
-            .filter_map(|line| {
-                line.trim()
-                    .strip_prefix("Creator:")
-                    .map(|v| v.trim().to_string())
-            })
+        let actual_creators: Vec<String> = tag_lines(input)
+            .filter_map(|line| line.strip_prefix("Creator:").map(|v| v.trim().to_string()))
             .collect();
         spdx_doc
             .document_creation_information
@@ -456,13 +490,12 @@ impl SpdxReader {
 
     /// pre-check the `SPDXVersion` tag in a tag-value document.
     ///
-    /// scans for the first `SPDXVersion:` line and rejects non-2.x versions.
+    /// scans for the first `SPDXVersion:` tag and rejects non-2.x versions.
     /// also rejects input that has no `SPDXVersion:` at all, since the
     /// spdx-rs tag-value parser is permissive enough to "parse" arbitrary
     /// text files without error.
     fn check_spdx_version_tag_value(input: &str) -> Result<(), Error> {
-        for line in input.lines() {
-            let line = line.trim();
+        for line in tag_lines(input) {
             if let Some(value) = line.strip_prefix("SPDXVersion:") {
                 let version = value.trim();
                 if version.starts_with("SPDX-2.") {
@@ -1858,6 +1891,117 @@ Created: 2023-01-01T00:00:00Z
     }
 
     #[test]
+    fn test_read_tag_value_version_in_document_comment_ignored() {
+        let tv = "\
+DocumentComment: <text>this file claims:
+SPDXVersion: SPDX-9.9
+</text>
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+    }
+
+    #[test]
+    fn test_read_tag_value_version_only_inside_text_block_rejected() {
+        let tv = "\
+DocumentComment: <text>this file claims:
+SPDXVersion: SPDX-2.3
+</text>
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+";
+        let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("no SPDXVersion tag found"));
+    }
+
+    #[test]
+    fn test_read_tag_value_text_mentioned_in_value_is_not_a_block() {
+        let tv = "\
+DocumentComment: see <text> for details
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].name, "pkg-a");
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_tag_value_creator_in_next_line_text_block_is_not_a_creator() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageDescription:
+<text>this package says:
+Creator: Tool: sneaky
+</text>
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+    }
+
+    #[test]
+    fn test_read_tag_value_text_mention_keeps_creators() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: how to use <text> markers
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: the-real-tool
+Creator: Organization: acme
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.metadata.tools, vec!["the-real-tool"]);
+        assert_eq!(sbom.metadata.authors, vec!["Organization: acme"]);
+    }
+
+    #[test]
     fn test_read_tag_value_with_checksums() {
         let tv = "\
 SPDXVersion: SPDX-2.3
@@ -2007,6 +2151,211 @@ PackageCopyrightText: NOASSERTION
                 "phantom warning should identify the injected creator: {w}"
             );
         }
+    }
+
+    const TV_HEADER: &str = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: NOASSERTION
+PackageCopyrightText: NOASSERTION
+";
+
+    #[test]
+    fn test_tag_value_creator_inside_text_block_is_not_a_creator() {
+        let tv = format!(
+            "{TV_HEADER}PackageDescription: <text>quotes a document header:
+Creator: Tool: not-a-real-tool
+</text>
+"
+        );
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+
+        assert_eq!(sbom.metadata.tools, vec!["manual"]);
+        assert!(sbom.metadata.authors.is_empty());
+    }
+
+    #[test]
+    fn test_tag_value_text_block_does_not_mask_phantom_creator() {
+        let quoted = format!(
+            "{TV_HEADER}PackageDescription: <text>quotes a document header:
+Creator: Tool: LicenseFind-1.0
+</text>
+"
+        );
+        let control = SpdxReader::read_tag_value(TV_HEADER.as_bytes()).unwrap();
+        let sbom = SpdxReader::read_tag_value(quoted.as_bytes()).unwrap();
+
+        assert_eq!(sbom.warnings, control.warnings);
+    }
+
+    #[test]
+    fn test_tag_value_external_ref_inside_text_block_does_not_warn() {
+        let tv = format!(
+            "{TV_HEADER}PackageComment: <text>documented like so:
+ExternalRef: PACKAGE-MANAGER purl pkg:cargo/nope@0.0.0
+</text>
+"
+        );
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+
+        assert!(sbom.components[0].purl.is_none());
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
+            "quoted ExternalRef should not trip the flush-sentinel warning: {:?}",
+            sbom.warnings
+        );
+    }
+
+    #[test]
+    fn test_tag_value_package_name_inside_text_block_still_warns() {
+        let tv = format!(
+            "{TV_HEADER}ExternalRef: PACKAGE-MANAGER purl pkg:cargo/pkg-a@1.0.0
+PackageComment: <text>see also:
+PackageName: some-other-thing
+</text>
+"
+        );
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+
+        assert_eq!(
+            sbom.components[0].purl,
+            Some("pkg:cargo/pkg-a@1.0.0".to_string())
+        );
+        assert!(
+            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
+            "quoted PackageName should not mask the flush-sentinel warning: {:?}",
+            sbom.warnings
+        );
+    }
+
+    #[test]
+    fn test_read_tag_value_unterminated_text_block_keeps_creators() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+DocumentComment: <text>never closed
+Creator: Tool: syft-1.2.3
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:cargo/pkg-a@1.0.0
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.metadata.tools, vec!["syft-1.2.3".to_string()]);
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("syft-1.2.3")),
+            "a real creator must not be reported as a phantom: {:?}",
+            sbom.warnings
+        );
+        assert!(
+            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
+            "the flush-sentinel diagnostic must survive an unterminated block: {:?}",
+            sbom.warnings
+        );
+    }
+
+    #[test]
+    fn test_read_tag_value_version_below_unterminated_text_block_is_read() {
+        let tv = "\
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+DocumentComment: <text>never closed
+SPDXVersion: SPDX-2.3
+Creator: Tool: syft-1.2.3
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.metadata.tools, vec!["syft-1.2.3".to_string()]);
+    }
+
+    #[test]
+    fn test_read_tag_value_closed_block_does_not_open_a_later_unterminated_one() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+DocumentComment: <text>quoted
+Creator: Tool: sneaky
+</text>
+DocumentComment: <text>never closed
+Creator: Tool: real
+Created: 2023-01-01T00:00:00Z
+
+PackageName: pkg-a
+SPDXID: SPDXRef-pkg-a
+PackageDownloadLocation: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(sbom.metadata.tools, vec!["real".to_string()]);
+    }
+
+    #[test]
+    fn test_tag_lines_skips_text_blocks() {
+        let input = "\
+A: 1
+B: <text>one</text>
+C: <text>open
+D: 2
+</text>
+E: 3
+F: <text>trailing</text> G: 4
+J: mentions <text> mid-value
+K: 4
+L: <text>open again
+no colon in here
+</text>
+M:
+<text>value on its own line
+N: 5
+</text>
+O: 6
+H: <text>runs to eof
+I: 5
+";
+        assert_eq!(
+            tag_lines(input).collect::<Vec<_>>(),
+            vec![
+                "A: 1",
+                "B: <text>one</text>",
+                "C: <text>open",
+                "E: 3",
+                "F: <text>trailing</text> G: 4",
+                "J: mentions <text> mid-value",
+                "K: 4",
+                "L: <text>open again",
+                "M:",
+                "<text>value on its own line",
+                "O: 6",
+                "H: <text>runs to eof",
+                "I: 5",
+            ]
+        );
     }
 
     #[test]
