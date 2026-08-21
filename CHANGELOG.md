@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix `--fail-on version-downgrade` for NuGet versions, which were ordered by a guess: release labels are compared case-insensitively, so `3.0.0-beta` -> `3.0.0-RC` is no longer reported as a downgrade and the .NET `preview` -> `rc` -> release ladder runs forwards; the fourth field is a real version field, so `2.0.0-rc` no longer compares equal to `2.0.0.0`; and `1.0.0-01` and `1.0.0-1` are the same version rather than an unorderable pair the gate waves through
+
 ## [0.8.0] - 2026-08-17
 
 - gate licenses on the declared SPDX expression instead of a flattened identifier set: `--deny-license gpl-3.0-only` no longer blocks a `MIT OR GPL-3.0-only` component that can be taken under MIT, `--allow-license mit --allow-license bsd-3-clause` no longer rejects `(MIT OR Apache-2.0) AND BSD-3-Clause`, and `--fail-on copyleft-added` fires only when the new expression offers no way to satisfy it whose copyleft obligations the old one already offered, naming the copyleft the new side's least burdensome choices carry minus what the old side already forced — an unchanged `GPL-2.0-only OR GPL-3.0-only` choice is not an introduction, `MIT` -> `GPL-3.0-only AND (MPL-2.0 OR ISC)` names `GPL-3.0-only` alone because the ISC choice avoids `MPL-2.0`, and `MIT` -> `GPL-2.0-only OR AGPL-3.0-only` names both because neither choice avoids the other
