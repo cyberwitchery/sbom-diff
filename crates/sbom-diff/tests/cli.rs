@@ -847,6 +847,42 @@ fn fail_on_version_downgrade_maven_qualifier_downgrade_exits_3() {
 }
 
 #[test]
+fn fail_on_version_downgrade_pypi_pre_release_upgrade_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("pypi-upgrade-old.json"))
+        .arg(fixture("pypi-upgrade-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "1.0.2a -> 1.0.2 and 1.0+0 -> 1.0r are upgrades per PEP 440, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn fail_on_version_downgrade_pypi_pre_release_downgrade_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("pypi-upgrade-new.json"))
+        .arg(fixture("pypi-upgrade-old.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("1.0.2 -> 1.0.2a"),
+        "stderr should report the pre-release downgrade, got: {stderr}"
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_upgrade_exits_0() {
     // golden fixtures only have upgrades (1.0.0 -> 1.1.0)
     let out = sbom_diff()
