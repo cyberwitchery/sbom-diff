@@ -3,7 +3,7 @@
 //! provides lenient version parsing for SBOM component versions, supporting
 //! semver, dot-separated numeric strings, PEP 440 (Python) versions,
 //! Debian and RPM epoch/revision versions, Maven (Java) versions, NuGet
-//! (.NET) versions, and opaque version strings.
+//! (.NET) versions, Alpine `apk` versions, and opaque version strings.
 //!
 //! two entry points parse a version string: [`Version::parse_lenient`] infers
 //! the format from the string alone, and [`Version::parse_for_ecosystem`]
@@ -12,7 +12,9 @@
 //! `1.0.0-alpha.1` are the same shape, ordered in opposite directions — so
 //! callers that know the ecosystem should pass it. the same holds for PEP 440:
 //! `1.0.2a` is a Python pre-release and a Debian upstream version, ordered on
-//! opposite sides of `1.0.2`.
+//! opposite sides of `1.0.2`. and for Alpine: `1.2.3-r4` is a rebuild of
+//! `1.2.3` that sits above it, where semver reads `-r4` as a pre-release below
+//! it.
 
 use std::cmp::Ordering;
 
@@ -28,6 +30,8 @@ use std::cmp::Ordering;
 ///   semver pre-releases but are ranked by a named order
 /// - NuGet versions, which carry a fourth numeric field and compare their
 ///   release labels case-insensitively
+/// - Alpine `apk` versions, whose `-rN` package revision looks like a semver
+///   pre-release but ranks above the bare version
 /// - opaque strings that cannot be compared
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Version {
@@ -83,6 +87,16 @@ pub enum Version {
         version: [u64; 4],
         release: Vec<String>,
     },
+    /// Alpine `apk` version `digits{.digits}[letter]{_suffix[number]}[~hash][-rN]`,
+    /// compared with apk-tools' own algorithm: the `-rN` package revision ranks
+    /// above the bare version rather than below it as a semver pre-release
+    /// would, a dot-separated part written with a leading zero compares as a
+    /// string, and a missing part is absent rather than zero, so `1.0` sits
+    /// below `1.0.0`. only
+    /// [`parse_for_ecosystem`](Version::parse_for_ecosystem) produces this
+    /// variant — the shape alone does not distinguish `1.2.3-r4` from a semver
+    /// pre-release.
+    Apk(String),
     /// non-parseable version string where ordering cannot be determined.
     Opaque(String),
 }
@@ -190,9 +204,10 @@ impl Version {
     /// `dpkg` algorithm, `rpm` versions as [`Rpm`](Version::Rpm) and ordered by
     /// rpm's `rpmvercmp`, `maven` versions as [`Maven`](Version::Maven) and
     /// ordered by Maven's version-order algorithm, `nuget` versions as
-    /// [`Nuget`](Version::Nuget) and ordered by NuGet.Versioning's rules, and
-    /// `pypi` versions as [`Pep440`](Version::Pep440) and ordered by PEP 440. a
-    /// leading `v`/`V` is stripped, as [`parse_lenient`](Self::parse_lenient)
+    /// [`Nuget`](Version::Nuget) and ordered by NuGet.Versioning's rules,
+    /// `pypi` versions as [`Pep440`](Version::Pep440) and ordered by PEP 440,
+    /// and `apk` versions as [`Apk`](Version::Apk) and ordered by apk-tools'
+    /// own algorithm. a leading `v`/`V` is stripped, as [`parse_lenient`](Self::parse_lenient)
     /// does; a string that is still not a valid version for that ecosystem is
     /// [`Opaque`](Version::Opaque) rather than being retried as semver.
     ///
@@ -232,6 +247,11 @@ impl Version {
     /// let release = Version::parse_for_ecosystem(Some("pypi"), "1.0.2");
     /// assert_eq!(pre.partial_cmp_lenient(&release), Some(Ordering::Less));
     ///
+    /// // `-r4` is an Alpine package revision, above the version it rebuilds
+    /// let rebuild = Version::parse_for_ecosystem(Some("apk"), "1.2.3-r4");
+    /// let base = Version::parse_for_ecosystem(Some("apk"), "1.2.3");
+    /// assert_eq!(rebuild.partial_cmp_lenient(&base), Some(Ordering::Greater));
+    ///
     /// let guessed = Version::parse_for_ecosystem(None, "1.2.3-1ubuntu2");
     /// assert_eq!(guessed, Version::parse_lenient("1.2.3-1ubuntu2"));
     /// ```
@@ -254,6 +274,9 @@ impl Version {
                 .or_else(|| parse_pep440(strip_v_prefix(s), Pep440Grammar::Full))
                 .map(Version::Pep440)
                 .unwrap_or_else(|| Version::Opaque(s.to_string())),
+            Scheme::Apk => parse_apk(s)
+                .or_else(|| parse_apk(strip_v_prefix(s)))
+                .unwrap_or_else(|| Version::Opaque(s.to_string())),
         }
     }
 
@@ -273,13 +296,15 @@ impl Version {
     ///   a version nesting past the parser's depth cap is declined
     /// - **Nuget vs Nuget**: the four numeric fields, then a version carrying
     ///   release labels below one that carries none, then the labels
+    /// - **Apk vs Apk**: token by token, via apk-tools' own algorithm. a
+    ///   version apk's tokenizer rejects is declined
     /// - **Pep440 against Pep440, Semver or Numeric** (either direction): the
     ///   other side is read as a PEP 440 version and both are ordered per PEP
     ///   440. a semver pre-release that isn't a PEP 440 suffix (say
     ///   `1.0.0-foo.bar`) has no PEP 440 reading, so that pair stays `None`
-    /// - **Any other pair** (including any Opaque, any two of Deb, Rpm, Maven
-    ///   and Nuget, or any of them against a semver/numeric/PEP 440 version):
-    ///   `None`
+    /// - **Any other pair** (including any Opaque, any two of Deb, Rpm, Maven,
+    ///   Nuget and Apk, or any of them against a semver/numeric/PEP 440
+    ///   version): `None`
     ///
     /// deliberately weaker than [`PartialOrd`]: even two identical
     /// [`Opaque`](Version::Opaque) versions compare `None`.
@@ -347,6 +372,7 @@ impl Version {
                     release: brel,
                 },
             ) => Some(nuget_cmp((av, arel), (bv, brel))),
+            (Version::Apk(a), Version::Apk(b)) => apk_cmp(a, b),
             (Version::Pep440(_), _) | (_, Version::Pep440(_)) => {
                 Some(pep440_cmp(&as_pep440(self)?, &as_pep440(other)?))
             }
@@ -387,6 +413,7 @@ enum Scheme {
     Maven,
     Nuget,
     Pypi,
+    Apk,
 }
 
 impl Scheme {
@@ -397,6 +424,7 @@ impl Scheme {
             Some(e) if e.eq_ignore_ascii_case("maven") => Scheme::Maven,
             Some(e) if e.eq_ignore_ascii_case("nuget") => Scheme::Nuget,
             Some(e) if e.eq_ignore_ascii_case("pypi") => Scheme::Pypi,
+            Some(e) if e.eq_ignore_ascii_case("apk") => Scheme::Apk,
             _ => Scheme::Infer,
         }
     }
@@ -596,6 +624,7 @@ fn as_pep440(v: &Version) -> Option<Pep440> {
         | Version::Rpm { .. }
         | Version::Maven(_)
         | Version::Nuget { .. }
+        | Version::Apk(_)
         | Version::Opaque(_) => None,
     }
 }
@@ -1291,6 +1320,228 @@ fn nuget_label_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
+/// parses an Alpine `apk` version, declining any string apk's own tokenizer
+/// does not run to the end of.
+fn parse_apk(s: &str) -> Option<Version> {
+    apk_parse(s)?;
+    Some(Version::Apk(s.to_string()))
+}
+
+/// apk's version token kinds, in its own order: where two versions first
+/// differ, the side whose next token comes later here is the lesser. `End` is
+/// the token a version that has run out of them gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ApkToken {
+    InitialDigit,
+    Digit,
+    Letter,
+    Suffix,
+    SuffixNo,
+    CommitHash,
+    RevisionNo,
+    End,
+}
+
+/// an apk `_suffix`, in ascending order. `alpha` through `rc` rank below a
+/// version carrying no suffix at all; `cvs` through `p` rank above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ApkSuffix {
+    Alpha,
+    Beta,
+    Pre,
+    Rc,
+    Cvs,
+    Svn,
+    Git,
+    Hg,
+    P,
+}
+
+impl ApkSuffix {
+    fn is_pre_release(self) -> bool {
+        self <= ApkSuffix::Rc
+    }
+}
+
+/// one token of a parsed apk version. `Digit` keeps the digits as written
+/// because a leading zero makes the token compare as a string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ApkPart<'a> {
+    InitialDigit(u64),
+    Digit { number: u64, digits: &'a str },
+    Letter(u8),
+    Suffix(ApkSuffix),
+    SuffixNo(u64),
+    CommitHash(&'a str),
+    RevisionNo(u64),
+}
+
+impl ApkPart<'_> {
+    fn token(&self) -> ApkToken {
+        match self {
+            ApkPart::InitialDigit(_) => ApkToken::InitialDigit,
+            ApkPart::Digit { .. } => ApkToken::Digit,
+            ApkPart::Letter(_) => ApkToken::Letter,
+            ApkPart::Suffix(_) => ApkToken::Suffix,
+            ApkPart::SuffixNo(_) => ApkToken::SuffixNo,
+            ApkPart::CommitHash(_) => ApkToken::CommitHash,
+            ApkPart::RevisionNo(_) => ApkToken::RevisionNo,
+        }
+    }
+}
+
+/// the `_suffix` spellings apk knows; any other makes the version unparseable.
+fn apk_suffix(s: &str) -> Option<ApkSuffix> {
+    match s {
+        "alpha" => Some(ApkSuffix::Alpha),
+        "beta" => Some(ApkSuffix::Beta),
+        "pre" => Some(ApkSuffix::Pre),
+        "rc" => Some(ApkSuffix::Rc),
+        "cvs" => Some(ApkSuffix::Cvs),
+        "svn" => Some(ApkSuffix::Svn),
+        "git" => Some(ApkSuffix::Git),
+        "hg" => Some(ApkSuffix::Hg),
+        "p" => Some(ApkSuffix::P),
+        _ => None,
+    }
+}
+
+/// tokenizes an apk version. it opens with a digit run, and each token limits
+/// which tokens may follow it: a letter or a further dot-part only after a
+/// digit run, a `_suffix` number only after the suffix it belongs to, a
+/// `~commithash` only before the `-rN` revision, and one `-rN` last.
+fn apk_parse(s: &str) -> Option<Vec<ApkPart<'_>>> {
+    let bytes = s.as_bytes();
+    let mut pos = 0;
+    let mut parts = vec![ApkPart::InitialDigit(apk_digits(s, &mut pos)?.0)];
+
+    while pos < bytes.len() {
+        let prev = parts[parts.len() - 1].token();
+        let part = match bytes[pos] {
+            b'a'..=b'z' if prev <= ApkToken::Digit => {
+                pos += 1;
+                ApkPart::Letter(bytes[pos - 1])
+            }
+            b'.' if prev <= ApkToken::Digit => {
+                pos += 1;
+                let (number, digits) = apk_digits(s, &mut pos)?;
+                ApkPart::Digit { number, digits }
+            }
+            b'0'..=b'9' if prev == ApkToken::Suffix => {
+                ApkPart::SuffixNo(apk_digits(s, &mut pos)?.0)
+            }
+            b'_' if prev <= ApkToken::SuffixNo => {
+                pos += 1;
+                ApkPart::Suffix(apk_suffix(apk_span(s, &mut pos, |b| {
+                    b.is_ascii_lowercase()
+                }))?)
+            }
+            b'~' if prev < ApkToken::CommitHash => {
+                pos += 1;
+                let hash = apk_span(s, &mut pos, |b| {
+                    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                });
+                if hash.is_empty() {
+                    return None;
+                }
+                ApkPart::CommitHash(hash)
+            }
+            b'-' if prev < ApkToken::RevisionNo => {
+                if !s[pos..].starts_with("-r") {
+                    return None;
+                }
+                pos += 2;
+                ApkPart::RevisionNo(apk_digits(s, &mut pos)?.0)
+            }
+            _ => return None,
+        };
+        parts.push(part);
+    }
+
+    Some(parts)
+}
+
+/// the run of ASCII digits at `pos`, as a number and as written. declines an
+/// empty run, or one too long for a `u64`.
+fn apk_digits<'a>(s: &'a str, pos: &mut usize) -> Option<(u64, &'a str)> {
+    let digits = apk_span(s, pos, |b| b.is_ascii_digit());
+    Some((digits.parse().ok()?, digits))
+}
+
+/// the run of bytes at `pos` satisfying `pred`, advancing past it.
+fn apk_span<'a>(s: &'a str, pos: &mut usize, pred: fn(u8) -> bool) -> &'a str {
+    let start = *pos;
+    while s.as_bytes().get(*pos).is_some_and(|b| pred(*b)) {
+        *pos += 1;
+    }
+    &s[start..*pos]
+}
+
+/// orders two apk version strings, declining a string apk would reject.
+fn apk_cmp(a: &str, b: &str) -> Option<Ordering> {
+    let (a, b) = (apk_parse(a)?, apk_parse(b)?);
+
+    for i in 0..a.len().max(b.len()) {
+        match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) if x.token() == y.token() => {
+                let ord = apk_part_cmp(x, y);
+                if ord != Ordering::Equal {
+                    return Some(ord);
+                }
+            }
+            (x, y) => return Some(apk_tail_cmp(x, y)),
+        }
+    }
+
+    Some(Ordering::Equal)
+}
+
+/// orders two tokens of the same kind. a dot-part with a leading zero on
+/// either side compares as a string, as does a commit hash; every other
+/// numeric token compares as a number.
+fn apk_part_cmp(a: &ApkPart, b: &ApkPart) -> Ordering {
+    match (a, b) {
+        (ApkPart::InitialDigit(x), ApkPart::InitialDigit(y))
+        | (ApkPart::SuffixNo(x), ApkPart::SuffixNo(y))
+        | (ApkPart::RevisionNo(x), ApkPart::RevisionNo(y)) => x.cmp(y),
+        (
+            ApkPart::Digit {
+                number: x,
+                digits: xs,
+            },
+            ApkPart::Digit {
+                number: y,
+                digits: ys,
+            },
+        ) => {
+            if xs.starts_with('0') || ys.starts_with('0') {
+                xs.cmp(ys)
+            } else {
+                x.cmp(y)
+            }
+        }
+        (ApkPart::Letter(x), ApkPart::Letter(y)) => x.cmp(y),
+        (ApkPart::Suffix(x), ApkPart::Suffix(y)) => x.cmp(y),
+        (ApkPart::CommitHash(x), ApkPart::CommitHash(y)) => x.cmp(y),
+        _ => Ordering::Equal,
+    }
+}
+
+/// orders two versions at the token where their kinds diverge, `None` being a
+/// version that has run out of tokens. the side that continues is the greater,
+/// unless it continues with a pre-release suffix.
+fn apk_tail_cmp(a: Option<&ApkPart>, b: Option<&ApkPart>) -> Ordering {
+    if matches!(a, Some(ApkPart::Suffix(s)) if s.is_pre_release()) {
+        return Ordering::Less;
+    }
+    if matches!(b, Some(ApkPart::Suffix(s)) if s.is_pre_release()) {
+        return Ordering::Greater;
+    }
+
+    let token = |p: Option<&ApkPart>| p.map_or(ApkToken::End, ApkPart::token);
+    token(b).cmp(&token(a))
+}
+
 /// convenience function: returns `true` if `new_ver` is a downgrade from `old_ver`.
 ///
 /// parses both strings with [`Version::parse_lenient`] and delegates to
@@ -1327,6 +1578,10 @@ pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
 ///     "1.2.3-2"
 /// ));
 /// assert!(is_version_downgrade_for_ecosystem(Some("deb"), "1.2.3-2", "1.2.3-1ubuntu2"));
+///
+/// // an Alpine rebuild, whose revision semver would read as a pre-release
+/// assert!(!is_version_downgrade_for_ecosystem(Some("apk"), "1.2.3-r4", "1.2.3-r10"));
+/// assert!(is_version_downgrade_for_ecosystem(Some("apk"), "1.2.3-r10", "1.2.3-r4"));
 /// ```
 pub fn is_version_downgrade_for_ecosystem(
     ecosystem: Option<&str>,
@@ -1359,6 +1614,12 @@ pub fn is_version_downgrade_for_ecosystem(
 /// assert_eq!(
 ///     compare_versions_for_ecosystem(Some("rpm"), "1.0^20200101git", "1.0"),
 ///     Some(Ordering::Greater)
+/// );
+///
+/// // apk pads nothing: a missing part is absent, not zero
+/// assert_eq!(
+///     compare_versions_for_ecosystem(Some("apk"), "1.0", "1.0.0"),
+///     Some(Ordering::Less)
 /// );
 /// ```
 pub fn compare_versions_for_ecosystem(
@@ -3629,6 +3890,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_lenient_never_produces_the_apk_variant() {
+        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
+            "1.2.3-r4",
+            "1.0_alpha1",
+            "1.0~abcdef",
+            "1.2.3a-r1",
+        ]) {
+            assert!(!matches!(Version::parse_lenient(s), Version::Apk(_)), "{s}");
+        }
+    }
+
+    #[test]
     fn parse_lenient_never_produces_the_maven_variant() {
         for s in ECOSYSTEM_CORPUS.iter().copied().chain([
             "1.0-SNAPSHOT",
@@ -3888,5 +4161,270 @@ mod tests {
             Version::parse_lenient("1.0-1"),
             Version::Deb { .. }
         ));
+    }
+
+    fn apk_cmp(a: &str, b: &str) -> Ordering {
+        compare_versions_for_ecosystem(Some("apk"), a, b)
+            .unwrap_or_else(|| panic!("{a} vs {b} is not an apk version"))
+    }
+
+    /// asserts the strings are in strictly ascending apk order, every pair.
+    fn assert_apk_ascending(versions: &[&str]) {
+        for (i, a) in versions.iter().enumerate() {
+            for b in &versions[i + 1..] {
+                assert_eq!(apk_cmp(a, b), Ordering::Less, "{a} vs {b}");
+                assert_eq!(apk_cmp(b, a), Ordering::Greater, "{b} vs {a}");
+                assert!(
+                    is_version_downgrade_for_ecosystem(Some("apk"), b, a),
+                    "expected {b} -> {a} downgrade"
+                );
+                assert!(
+                    !is_version_downgrade_for_ecosystem(Some("apk"), a, b),
+                    "expected {a} -> {b} upgrade"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apk_orders_the_package_revision_above_the_version_it_rebuilds() {
+        assert_apk_ascending(&[
+            "1.2.3",
+            "1.2.3-r0",
+            "1.2.3-r1",
+            "1.2.3-r9",
+            "1.2.3-r10",
+            "1.2.4-r0",
+        ]);
+    }
+
+    #[test]
+    fn apk_ranks_the_suffix_ladder() {
+        assert_apk_ascending(&[
+            "1.0_alpha",
+            "1.0_alpha1",
+            "1.0_alpha2",
+            "1.0_beta",
+            "1.0_pre",
+            "1.0_pre1",
+            "1.0_rc",
+            "1.0_rc2",
+            "1.0",
+            "1.0_cvs",
+            "1.0_svn",
+            "1.0_git",
+            "1.0_hg",
+            "1.0_p",
+            "1.0_p1",
+        ]);
+        assert_apk_ascending(&["1.0_alpha1", "1.0_alpha1_git", "1.0_alpha1_git1", "1.0"]);
+    }
+
+    /// every pair derived from apk-tools' own token rules.
+    #[test]
+    fn apk_documented_ordering_examples() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            // a missing part is absent, not an implicit zero
+            ("1.0", "1.0.0", Less),
+            ("1.0", "1.0a", Less),
+            ("1.0a", "1.0b", Less),
+            // a leading zero turns the part into a string comparison
+            ("1.07", "1.1", Less),
+            ("1.007", "1.07", Less),
+            ("1.0", "1.00", Less),
+            ("1.10", "1.9", Greater),
+            // the leading part is numeric whatever it is written like
+            ("01.0", "1.0", Equal),
+            // `~hash` is a post-suffix, and outranks the package revision
+            ("1.0", "1.0~abc", Less),
+            ("1.0~abc", "1.0~abd", Less),
+            ("1.0-r1", "1.0~abc", Less),
+            ("1.0~abc", "1.0~abc-r1", Less),
+            // a suffix number is present or absent, not an implicit zero
+            ("1.0_alpha", "1.0_alpha0", Less),
+        ] {
+            assert_eq!(apk_cmp(a, b), expected, "{a} vs {b}");
+            assert_eq!(apk_cmp(b, a), expected.reverse(), "{b} vs {a}");
+        }
+    }
+
+    /// the `-rN` revision the string-only path reads as a semver pre-release.
+    #[test]
+    fn apk_ecosystem_reverses_gates_the_string_only_path_fires_backwards() {
+        use Ordering::{Greater, Less};
+
+        for (a, b, inferred, apk) in [
+            ("1.2.3-r4", "1.2.3", Less, Greater),
+            ("1.2.3-r4", "1.2.3-r10", Greater, Less),
+            ("1.2.3-r9", "1.2.3-r10", Greater, Less),
+            ("3.1.4-r2", "3.1.4-r13", Greater, Less),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(inferred), "{a} vs {b}");
+            assert_eq!(apk_cmp(a, b), apk, "{a} vs {b}");
+        }
+
+        // the rebuild the string-only path calls a downgrade
+        assert!(is_version_downgrade("1.2.3-r4", "1.2.3-r10"));
+        assert!(!is_version_downgrade_for_ecosystem(
+            Some("apk"),
+            "1.2.3-r4",
+            "1.2.3-r10"
+        ));
+
+        // the downgrade the string-only path waves through
+        assert!(!is_version_downgrade("1.2.3-r10", "1.2.3-r4"));
+        assert!(is_version_downgrade_for_ecosystem(
+            Some("apk"),
+            "1.2.3-r10",
+            "1.2.3-r4"
+        ));
+    }
+
+    /// a `_suffix` version the string-only path cannot read at all.
+    #[test]
+    fn apk_ecosystem_makes_previously_uncomparable_pairs_comparable() {
+        use Ordering::{Greater, Less};
+
+        for (a, b, expected) in [
+            ("1.0_p1", "1.0", Greater),
+            ("1.0_git20240101", "1.0", Greater),
+            ("1.0_cvs", "1.0_svn", Less),
+            ("1.0_p1", "1.0_p2", Less),
+            ("1.0~abc", "1.0", Greater),
+        ] {
+            assert_eq!(compare_versions(a, b), None, "{a} vs {b}");
+            assert_eq!(apk_cmp(a, b), expected, "{a} vs {b}");
+            assert_eq!(apk_cmp(b, a), expected.reverse(), "{b} vs {a}");
+        }
+    }
+
+    #[test]
+    fn apk_ecosystem_parses_as_apk() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("apk"), "v1.2.3a_alpha1~abcdef-r4"),
+            Version::Apk("1.2.3a_alpha1~abcdef-r4".to_string())
+        );
+        for s in ["1", "1.2.3", "1.2.3a", "1.2.3-r0", "1.0_pre2", "20240101"] {
+            assert!(
+                matches!(
+                    Version::parse_for_ecosystem(Some("apk"), s),
+                    Version::Apk(_)
+                ),
+                "{s}"
+            );
+        }
+    }
+
+    /// the spellings apk's own tokenizer does not run to the end of.
+    #[test]
+    fn apk_ecosystem_declines_what_apk_rejects() {
+        for s in [
+            "",
+            "abc",
+            "1.0.",
+            "1.0a1",
+            "1.0ab",
+            "1.0_",
+            "1.0_foo",
+            "1.0_p1_",
+            "1.0~",
+            "1.0~zz",
+            "1.0+meta",
+            "1.0-1",
+            "1.0-r",
+            "1.0-r1-r2",
+            "1.0-r1~abc",
+            "1.0-1ubuntu2",
+            "-r1",
+            "1:1.0-r0",
+        ] {
+            assert!(
+                matches!(
+                    Version::parse_for_ecosystem(Some("apk"), s),
+                    Version::Opaque(_)
+                ),
+                "{s} should be opaque"
+            );
+        }
+    }
+
+    #[test]
+    fn apk_ecosystem_match_ignores_case() {
+        assert_eq!(
+            Version::parse_for_ecosystem(Some("APK"), "1.0-r1"),
+            Version::parse_for_ecosystem(Some("apk"), "1.0-r1")
+        );
+    }
+
+    #[test]
+    fn apk_ordering_is_antisymmetric_and_transitive() {
+        const CORPUS: &[&str] = &[
+            "1",
+            "1.0",
+            "1.00",
+            "01.0",
+            "1.0.0",
+            "1.0.1",
+            "1.0a",
+            "1.0b",
+            "1.07",
+            "1.1",
+            "1.10",
+            "1.9",
+            "2",
+            "1.0_alpha",
+            "1.0_alpha0",
+            "1.0_alpha1",
+            "1.0_beta",
+            "1.0_pre",
+            "1.0_rc1",
+            "1.0_cvs",
+            "1.0_git",
+            "1.0_p",
+            "1.0_p1",
+            "1.0~abc",
+            "1.0~abd",
+            "1.0-r0",
+            "1.0-r1",
+            "1.0-r10",
+            "1.0~abc-r1",
+            "1.0_p1-r1",
+        ];
+
+        for a in CORPUS {
+            for b in CORPUS {
+                assert_eq!(
+                    apk_cmp(a, b),
+                    apk_cmp(b, a).reverse(),
+                    "asymmetric: {a} vs {b}"
+                );
+                for c in CORPUS {
+                    let (ab, bc) = (apk_cmp(a, b), apk_cmp(b, c));
+                    if ab == bc || bc == Ordering::Equal {
+                        assert_eq!(apk_cmp(a, c), ab, "intransitive: {a}, {b}, {c}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apk_stays_uncomparable_against_every_other_parse_result() {
+        let apk = Version::parse_for_ecosystem(Some("apk"), "1.2.3-r1");
+        for other in [
+            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("maven"), "1.2.3"),
+            Version::parse_for_ecosystem(Some("nuget"), "1.2.3"),
+            Version::parse_lenient("1.2.3"),
+            Version::parse_lenient("2024.01.15"),
+            Version::parse_lenient("4.2.0rc1"),
+            Version::parse_lenient("deadbeef"),
+        ] {
+            assert_eq!(apk.partial_cmp_lenient(&other), None, "{other:?}");
+            assert_eq!(other.partial_cmp_lenient(&apk), None, "{other:?}");
+        }
     }
 }
