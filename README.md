@@ -150,7 +150,7 @@ release re-published under the same version, or a moved tag.
   `--fail-on missing-hashes`, and replacing the strongest one with a weaker one
   is `--fail-on hash-algorithm-downgrade`.
 - digests are compared case-insensitively, so the same digest written in the
-  upper case SPDX prefers and the lower case CycloneDX prefers is not a
+  upper case CycloneDX permits and the lower case SPDX mandates is not a
   violation.
 
 ## exit codes
