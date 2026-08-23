@@ -37,6 +37,9 @@ sbom-diff old.json new.json --fail-on copyleft-added
 sbom-diff old.json new.json --fail-on purl-changed
 sbom-diff old.json new.json --fail-on ecosystem-changed
 
+# block a re-published artifact: same version, different digest (exit code 3)
+sbom-diff old.json new.json --fail-on checksum-changed
+
 # summary only (counts without details)
 sbom-diff old.json new.json --summary
 
@@ -131,6 +134,24 @@ an expression that expands to more than 64 alternatives is compared by its parse
 tree instead: reordering its operands does count as a change, and
 `--fail-on copyleft-added` falls back to naming every copyleft license it
 mentions that the old side did not already force.
+
+## checksum gating
+
+`--fail-on checksum-changed` (exit code 3) fires when a component's digest
+changed under an algorithm both sides record while its version did not — a
+release re-published under the same version, or a moved tag.
+
+- a version change is expected to bring a new digest, so a component whose
+  version differs is never reported. `--only hashes` does not weaken this: the
+  versions are read from the component, not from the diff.
+- only algorithms both sides record are compared. an algorithm added or dropped
+  is an algorithm change, not a value mismatch, and two sides sharing no
+  algorithm have nothing to compare. dropping every checksum is
+  `--fail-on missing-hashes`, and replacing the strongest one with a weaker one
+  is `--fail-on hash-algorithm-downgrade`.
+- digests are compared case-insensitively, so the same digest written in the
+  upper case SPDX prefers and the lower case CycloneDX prefers is not a
+  violation.
 
 ## exit codes
 
