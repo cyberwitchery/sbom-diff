@@ -44,6 +44,11 @@ both adapters produce:
 
 - parser: `sbom-model-spdx` using `spdx-rs` + `serde_json`
 - input formats: json, xml, and tag-value (2.x; 2.3 field names)
+- tag-value handling: the underlying parser stops at the first line it cannot read and throws away everything below it, so those lines are removed before parsing and listed in the parser warnings:
+  - a line that is not a `Tag: value` pair, or whose tag is not one the parser recognizes
+  - a value the parser crashes on: an unrecognized `ExternalRef` category, checksum algorithm, `Relationship` type, `FileType`, or `AnnotationType`
+  - a `<text>` block belongs to its tag's value, so its interior is never read as a tag line, and dropping a tag drops its whole block
+  - a document the parser still cuts short is reported as an error naming the first package lost, never returned as a partial SBOM
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`
   - repeated sibling elements become a json array; a field the schema types as an array becomes a one-element array even when it occurs once

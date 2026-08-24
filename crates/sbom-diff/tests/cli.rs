@@ -2365,3 +2365,53 @@ fn reordering_expression_operands_is_not_a_license_change() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn spdx_tag_value_unreadable_line_does_not_hide_an_added_component() {
+    let out = sbom_diff()
+        .arg(fixture("unreadable-line-old.spdx"))
+        .arg(fixture("unreadable-line-new.spdx"))
+        .arg("--fail-on")
+        .arg("added-components")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("gamma"), "gamma is added: {stdout}");
+}
+
+#[test]
+fn spdx_tag_value_unreadable_line_is_reported_on_stderr() {
+    let out = sbom_diff()
+        .arg(fixture("unreadable-line-old.spdx"))
+        .arg(fixture("unreadable-line-new.spdx"))
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dropped 1 unreadable line(s)")
+            && stderr.contains("this line carries no tag at all"),
+        "the dropped line must be named: {stderr}"
+    );
+}
+
+#[test]
+fn spdx_tag_value_unreadable_line_does_not_invent_a_removed_component() {
+    let out = sbom_diff()
+        .arg(fixture("unreadable-line-new.spdx"))
+        .arg(fixture("unreadable-line-old.spdx"))
+        .arg("--fail-on")
+        .arg("removed-components")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("gamma") && !stdout.contains("alpha"),
+        "only gamma is removed: {stdout}"
+    );
+}
