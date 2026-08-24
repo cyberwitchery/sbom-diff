@@ -42,6 +42,13 @@
         <license><id>MIT</id></license>
       </licenses>
       <purl>pkg:npm/lib-a@1.2.3</purl>
+      <components>
+        <component type="library" bom-ref="lib-a-inner">
+          <name>lib-a-inner</name>
+          <version>0.1.0</version>
+          <purl>pkg:npm/lib-a-inner@0.1.0</purl>
+        </component>
+      </components>
     </component>
     <component type="library" bom-ref="lib-b">
       <supplier><name>lib-b maintainers</name></supplier>

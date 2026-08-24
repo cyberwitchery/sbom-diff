@@ -28,6 +28,12 @@
         <author><name>grace</name></author>
       </authors>
       <tags><tag>cli</tag></tags>
+      <evidence>
+        <identity>
+          <field>purl</field>
+          <confidence>1.0</confidence>
+        </identity>
+      </evidence>
     </component>
     <manufacturer><name>acme inc</name></manufacturer>
   </metadata>
@@ -51,6 +57,29 @@
       <omniborId>gitoid:blob:sha1:261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64</omniborId>
       <swhid>swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2</swhid>
       <tags><tag>runtime</tag></tags>
+      <components>
+        <component type="library" bom-ref="lib-a-inner">
+          <name>lib-a-inner</name>
+          <version>0.1.0</version>
+          <purl>pkg:npm/lib-a-inner@0.1.0</purl>
+          <evidence>
+            <identity>
+              <field>purl</field>
+              <confidence>1.0</confidence>
+            </identity>
+          </evidence>
+        </component>
+      </components>
+      <evidence>
+        <identity>
+          <field>purl</field>
+          <confidence>0.9</confidence>
+        </identity>
+        <identity>
+          <field>name</field>
+          <confidence>0.6</confidence>
+        </identity>
+      </evidence>
     </component>
     <component type="library" bom-ref="lib-b">
       <supplier><name>lib-b maintainers</name></supplier>

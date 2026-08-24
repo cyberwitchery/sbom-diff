@@ -56,7 +56,16 @@
           }
         }
       ],
-      "author": "alan"
+      "author": "alan",
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "lib-a-inner",
+          "name": "lib-a-inner",
+          "version": "0.1.0",
+          "purl": "pkg:npm/lib-a-inner@0.1.0"
+        }
+      ]
     },
     {
       "type": "library",

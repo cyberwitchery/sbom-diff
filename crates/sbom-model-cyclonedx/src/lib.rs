@@ -85,24 +85,24 @@ impl CycloneDxReader {
         // strip a leading UTF-8 BOM; the JSON parser does not skip it.
         let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
 
-        let version = Self::check_cyclonedx_version(buf)?;
+        let mut value: serde_json::Value =
+            serde_json::from_slice(buf).map_err(cyclonedx_bom::errors::JsonReadError::from)?;
+
+        let version = Self::check_cyclonedx_version(&value)?;
         let downgraded = version
             .as_deref()
             .is_some_and(|v| DOWNGRADED_SPEC_VERSIONS.contains(&v));
 
-        let bom = if downgraded {
-            let mut value: serde_json::Value =
-                serde_json::from_slice(buf).map_err(cyclonedx_bom::errors::JsonReadError::from)?;
+        if downgraded {
             if let Some(object) = value.as_object_mut() {
                 object.insert(
                     "specVersion".to_string(),
                     serde_json::Value::String(READ_AS_SPEC_VERSION.to_string()),
                 );
             }
-            cyclonedx_bom::prelude::Bom::parse_json_value(value)?
-        } else {
-            cyclonedx_bom::prelude::Bom::parse_from_json(buf)?
-        };
+            Self::strip_evidence(&mut value);
+        }
+        let bom = cyclonedx_bom::prelude::Bom::parse_json_value(value)?;
 
         let mut sbom = Self::bom_to_sbom(bom)?;
         if downgraded {
@@ -188,7 +188,8 @@ impl CycloneDxReader {
              metadata timestamp, tools and authors, and the dependency graph are unchanged \
              between the two and are read in full; fields {version} adds are dropped, including \
              component authors, manufacturer, omniborId, swhid and tags, license acknowledgement, \
-             cryptoProperties, and the declarations and definitions sections"
+             cryptoProperties, and the declarations and definitions sections. component evidence, \
+             which both revisions have, is dropped as well"
         )
     }
 
@@ -196,35 +197,39 @@ impl CycloneDxReader {
     ///
     /// returns the version when it is one this crate reads, `None` when the
     /// document has none to check, and an error otherwise.
-    fn check_cyclonedx_version(data: &[u8]) -> Result<Option<String>, Error> {
-        #[derive(serde::Deserialize)]
-        struct VersionProbe {
-            #[serde(rename = "specVersion")]
-            spec_version: Option<String>,
-        }
-
-        let probe: VersionProbe = match serde_json::from_slice(data) {
-            Ok(p) => p,
-            // not valid JSON — let the full parser produce a proper error.
-            Err(_) => return Ok(None),
+    fn check_cyclonedx_version(value: &serde_json::Value) -> Result<Option<String>, Error> {
+        // absent, or not a string — let the full parser produce the error.
+        let Some(version) = value.get("specVersion").and_then(serde_json::Value::as_str) else {
+            return Ok(None);
         };
 
-        match probe.spec_version {
-            Some(v)
-                if NATIVE_SPEC_VERSIONS.contains(&v.as_str())
-                    || DOWNGRADED_SPEC_VERSIONS.contains(&v.as_str()) =>
-            {
-                Ok(Some(v))
+        if NATIVE_SPEC_VERSIONS.contains(&version) || DOWNGRADED_SPEC_VERSIONS.contains(&version) {
+            Ok(Some(version.to_string()))
+        } else {
+            Err(Error::UnsupportedVersion {
+                version: version.to_string(),
+            })
+        }
+    }
+
+    /// removes every `evidence` member: 1.6 widens `evidence.identity` to an
+    /// array, which the 1.5 model refuses rather than ignores.
+    fn strip_evidence(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(members) => {
+                members.remove("evidence");
+                for member in members.values_mut() {
+                    Self::strip_evidence(member);
+                }
             }
-            Some(version) => Err(Error::UnsupportedVersion { version }),
-            // missing specVersion — let the full parser handle it.
-            None => Ok(None),
+            serde_json::Value::Array(items) => items.iter_mut().for_each(Self::strip_evidence),
+            _ => {}
         }
     }
 
     /// pre-check the CycloneDX namespace version in an XML document.
     ///
-    /// the version is read from the root element's default namespace declaration.
+    /// the version is read from the root element's namespace.
     fn check_cyclonedx_version_xml(data: &[u8]) -> Result<Option<String>, Error> {
         let Some(namespace) = Self::xml_root_namespace(data) else {
             return Ok(None);
@@ -246,14 +251,24 @@ impl CycloneDxReader {
         }
     }
 
-    /// the default namespace declared on the document's root element.
+    /// the namespace of the document's root element.
+    ///
+    /// the default declaration wins; a prefixed root is consulted only when
+    /// that leaves no CycloneDX namespace.
     fn xml_root_namespace(data: &[u8]) -> Option<String> {
+        let is_cyclonedx = |ns: &String| ns.starts_with(XML_NS_PREFIX);
         for event in xml::EventReader::new(data) {
             match event {
-                Ok(xml::reader::XmlEvent::StartElement { namespace, .. }) => {
-                    return namespace
+                Ok(xml::reader::XmlEvent::StartElement {
+                    name, namespace, ..
+                }) => {
+                    let default = namespace
                         .get(xml::namespace::NS_NO_PREFIX)
                         .map(str::to_owned);
+                    return match default {
+                        Some(ns) if is_cyclonedx(&ns) => Some(ns),
+                        default => name.namespace.filter(is_cyclonedx).or(default),
+                    };
                 }
                 Err(_) => return None,
                 _ => {}

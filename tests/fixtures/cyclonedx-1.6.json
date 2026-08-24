@@ -20,7 +20,16 @@
       "purl": "pkg:npm/app@2.0.0",
       "authors": [{ "name": "grace" }],
       "manufacturer": { "name": "acme inc" },
-      "tags": ["cli"]
+      "tags": ["cli"],
+      "evidence": {
+        "identity": [
+          {
+            "field": "purl",
+            "confidence": 1.0,
+            "concludedValue": "pkg:npm/app@2.0.0"
+          }
+        ]
+      }
     }
   },
   "components": [
@@ -45,6 +54,24 @@
       ],
       "licenses": [
         { "license": { "id": "MIT", "acknowledgement": "declared" } }
+      ],
+      "evidence": {
+        "identity": [
+          { "field": "purl", "confidence": 0.9 },
+          { "field": "name", "confidence": 0.6 }
+        ]
+      },
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "lib-a-inner",
+          "name": "lib-a-inner",
+          "version": "0.1.0",
+          "purl": "pkg:npm/lib-a-inner@0.1.0",
+          "evidence": {
+            "identity": [{ "field": "purl", "confidence": 1.0 }]
+          }
+        }
       ]
     },
     {

@@ -72,6 +72,7 @@ fn the_1_6_warning_names_the_version_and_what_is_dropped() {
         "swhid",
         "acknowledgement",
         "declarations",
+        "evidence",
     ] {
         assert!(warning.contains(dropped), "{warning} should name {dropped}");
     }
@@ -176,5 +177,101 @@ fn a_1_3_document_is_untouched() {
         !sbom.warnings.iter().any(|w| w.contains("read under")),
         "{:?}",
         sbom.warnings
+    );
+}
+
+#[test]
+fn the_1_6_spelling_of_evidence_identity_reads() {
+    let json = br#"{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,
+ "components":[{"type":"library","name":"a","version":"1","purl":"pkg:npm/a@1",
+   "evidence":{"identity":[{"field":"purl","confidence":1.0}]}}]}"#;
+    let sbom = CycloneDxReader::read_json(json.as_slice()).unwrap();
+    let a = sbom.components.values().next().expect("a");
+    assert_eq!(a.name, "a");
+    assert_eq!(a.purl.as_deref(), Some("pkg:npm/a@1"));
+}
+
+#[test]
+fn evidence_is_dropped_at_every_nesting_level() {
+    let evidence =
+        r#""evidence":{"identity":[{"field":"purl","confidence":1.0},{"field":"name"}]}"#;
+    let json = format!(
+        r#"{{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,
+ "metadata":{{
+   "tools":{{"components":[{{"type":"application","name":"cdxgen","version":"10.4.0",{evidence}}}]}},
+   "component":{{"type":"application","bom-ref":"root","name":"root","version":"2",{evidence},
+     "components":[{{"type":"library","bom-ref":"under-root","name":"under-root","version":"1",{evidence}}}]}}}},
+ "components":[{{"type":"library","bom-ref":"outer","name":"outer","version":"1",{evidence},
+   "components":[{{"type":"library","bom-ref":"middle","name":"middle","version":"1",{evidence},
+     "components":[{{"type":"library","bom-ref":"inner","name":"inner","version":"1",{evidence}}}]}}]}}]}}"#
+    );
+
+    let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+    let mut names: Vec<_> = sbom.components.values().map(|c| c.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["inner", "middle", "outer", "root", "under-root"]);
+    assert_eq!(sbom.metadata.tools, ["cdxgen 10.4.0"]);
+}
+
+#[test]
+fn a_nested_1_6_component_carrying_evidence_keeps_the_fields_the_diff_reads() {
+    for sbom in [
+        CycloneDxReader::read_json(fixture("cyclonedx-1.6.json").as_slice()).unwrap(),
+        CycloneDxReader::read_xml(&fixture("cyclonedx-1.6.cdx.xml")).unwrap(),
+    ] {
+        let inner = sbom
+            .components
+            .values()
+            .find(|c| c.name == "lib-a-inner")
+            .expect("lib-a-inner");
+        assert_eq!(inner.version.as_deref(), Some("0.1.0"));
+        assert_eq!(inner.purl.as_deref(), Some("pkg:npm/lib-a-inner@0.1.0"));
+    }
+}
+
+#[test]
+fn the_1_6_xml_spelling_of_evidence_identity_is_read_by_the_1_5_reader() {
+    let xml = br#"<?xml version="1.0"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
+  <components>
+    <component type="library" bom-ref="a">
+      <name>a</name>
+      <version>1.0.0</version>
+      <purl>pkg:npm/a@1.0.0</purl>
+      <evidence>
+        <identity><field>purl</field><confidence>1.0</confidence></identity>
+        <identity><field>name</field><confidence>0.5</confidence></identity>
+      </evidence>
+    </component>
+  </components>
+</bom>"#;
+    let sbom = CycloneDxReader::read_xml(xml).unwrap();
+    let a = sbom.components.values().next().expect("a");
+    assert_eq!(a.name, "a");
+    assert_eq!(a.purl.as_deref(), Some("pkg:npm/a@1.0.0"));
+}
+
+#[test]
+fn a_1_6_document_that_stops_mid_element_reports_the_rewrite_failure() {
+    let xml = br#"<?xml version="1.0"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
+  <components>
+    <component type="library"><name>a</name>
+"#;
+    let err = CycloneDxReader::read_xml(xml).unwrap_err();
+    assert!(
+        matches!(err, Error::XmlRewrite(_)),
+        "expected a rewrite failure: {err}"
+    );
+}
+
+#[test]
+fn an_unsupported_version_on_a_prefixed_root_is_named() {
+    let xml = br#"<?xml version="1.0"?>
+<cdx:bom xmlns:cdx="http://cyclonedx.org/schema/bom/1.7" version="1"/>"#;
+    let err = CycloneDxReader::read_xml(xml).unwrap_err();
+    assert!(
+        matches!(&err, Error::UnsupportedVersion { version } if version == "1.7"),
+        "{err}"
     );
 }
