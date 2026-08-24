@@ -33,7 +33,7 @@ assert_eq!(sbom.components[0].name, "serde");
 
 ## supported features
 
-- cyclonedx 1.3/1.4/1.5 json and xml formats
+- cyclonedx 1.3/1.4/1.5/1.6 json and xml formats; 1.6 is read under 1.5 rules and pushes a warning onto `Sbom::warnings` naming the fields that drops
 - components with name, version, purl, licenses, hashes
 - supplier information
 - bom-ref based dependency graph

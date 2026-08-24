@@ -1,0 +1,102 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2024-04-09T00:00:00Z",
+    "authors": [
+      {
+        "name": "ada",
+        "email": "ada@example.com"
+      }
+    ],
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "name": "cdxgen",
+          "version": "10.4.0"
+        }
+      ]
+    },
+    "component": {
+      "type": "application",
+      "bom-ref": "root-app",
+      "name": "app",
+      "version": "2.0.0",
+      "purl": "pkg:npm/app@2.0.0",
+      "author": "grace"
+    },
+    "manufacture": {
+      "name": "acme inc"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "lib-a",
+      "name": "lib-a",
+      "version": "1.2.3",
+      "description": "a library",
+      "purl": "pkg:npm/lib-a@1.2.3",
+      "supplier": {
+        "name": "lib-a maintainers"
+      },
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0000000000000000000000000000000000000000000000000000000000000001"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "author": "alan"
+    },
+    {
+      "type": "library",
+      "bom-ref": "lib-b",
+      "name": "lib-b",
+      "version": "4.5.6",
+      "purl": "pkg:npm/lib-b@4.5.6",
+      "supplier": {
+        "name": "lib-b maintainers"
+      },
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "cipher-1",
+      "name": "AES-256-GCM",
+      "version": "1"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "root-app",
+      "dependsOn": [
+        "lib-a",
+        "lib-b"
+      ]
+    },
+    {
+      "ref": "lib-a",
+      "dependsOn": [
+        "lib-b"
+      ]
+    },
+    {
+      "ref": "lib-b",
+      "dependsOn": []
+    }
+  ]
+}
