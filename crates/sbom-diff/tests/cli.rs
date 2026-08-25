@@ -2415,3 +2415,71 @@ fn spdx_tag_value_unreadable_line_does_not_invent_a_removed_component() {
         "only gamma is removed: {stdout}"
     );
 }
+
+#[test]
+fn a_cyclonedx_1_6_document_diffs_against_its_1_5_downgrade_as_unchanged() {
+    for (old, new) in [
+        ("cyclonedx-1.6-as-1.5.json", "cyclonedx-1.6.json"),
+        ("cyclonedx-1.6-as-1.5.cdx.xml", "cyclonedx-1.6.cdx.xml"),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .args([
+                "--fail-on",
+                "added-components",
+                "--fail-on",
+                "removed-components",
+                "--fail-on",
+                "changed-components",
+                "--fail-on",
+                "deps",
+                "--fail-on",
+                "metadata-changed",
+            ])
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{old} -> {new}: {}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_cyclonedx_1_6_document_warns_that_it_was_read_as_1_5() {
+    for name in ["cyclonedx-1.6.json", "cyclonedx-1.6.cdx.xml"] {
+        let out = sbom_diff()
+            .arg(fixture(name))
+            .arg(fixture(name))
+            .output()
+            .unwrap();
+
+        assert_eq!(out.status.code(), Some(0));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("specVersion 1.6 document read under 1.5 rules"),
+            "{name}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_cyclonedx_1_7_document_is_still_refused() {
+    let out = sbom_diff()
+        .arg(fixture("cyclonedx-1.6.json"))
+        .arg(fixture("cyclonedx-1.7.json"))
+        .output()
+        .unwrap();
+
+    assert_ne!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unsupported CycloneDX specVersion '1.7'") && stderr.contains("1.3–1.6"),
+        "{stderr}"
+    );
+}
