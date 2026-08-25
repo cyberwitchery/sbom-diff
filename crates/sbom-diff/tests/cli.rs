@@ -1346,6 +1346,144 @@ fn fail_on_hash_algorithm_downgrade_exits_3() {
 }
 
 #[test]
+fn fail_on_checksum_changed_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("checksum-changed-old.json"))
+        .arg(fixture("checksum-changed-new.json"))
+        .arg("--fail-on")
+        .arg("checksum-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--fail-on checksum-changed"),
+        "stderr should mention the violated condition, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("same-version"),
+        "stderr should report the re-published component, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_checksum_changed_only_fires_on_unchanged_version() {
+    let out = sbom_diff()
+        .arg(fixture("checksum-changed-old.json"))
+        .arg(fixture("checksum-changed-new.json"))
+        .arg("--fail-on")
+        .arg("checksum-changed")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for quiet in [
+        "bumped-version",
+        "recased-digest",
+        "algo-added",
+        "disjoint-algos",
+    ] {
+        assert!(
+            !stderr.contains(quiet),
+            "{} should not be reported, got: {}",
+            quiet,
+            stderr
+        );
+    }
+}
+
+#[test]
+fn fail_on_checksum_changed_components_are_matched_pairs() {
+    // the components the gate stays quiet about must be matched changes, not
+    // add/remove pairs it never sees.
+    let out = sbom_diff()
+        .arg(fixture("checksum-changed-old.json"))
+        .arg(fixture("checksum-changed-new.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("valid JSON");
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+    assert_eq!(v["changed"], 4);
+    assert_eq!(v["unchanged"], 1, "the recased digest is not a change");
+}
+
+#[test]
+fn fail_on_checksum_changed_no_change_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("checksum-changed-old.json"))
+        .arg(fixture("checksum-changed-old.json"))
+        .arg("--fail-on")
+        .arg("checksum-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn fail_on_checksum_changed_is_independent_of_algorithm_downgrade() {
+    // pkg-a: SHA-256 -> MD5 (no shared algorithm), pkg-b: SHA-512 changed at the same version
+    let out = sbom_diff()
+        .arg(fixture("hash-downgrade-old.json"))
+        .arg(fixture("hash-downgrade-new.json"))
+        .arg("--fail-on")
+        .arg("checksum-changed")
+        .arg("--fail-on")
+        .arg("hash-algorithm-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("hash algorithm downgrade on component pkg:npm/pkg-a@1.0.0"),
+        "stderr should still report the algorithm downgrade, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("checksum changed on component pkg:npm/pkg-b@2.0.0"),
+        "stderr should report the changed checksum, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn fail_on_checksum_changed_survives_only_hashes() {
+    let out = sbom_diff()
+        .arg(fixture("checksum-changed-old.json"))
+        .arg(fixture("checksum-changed-new.json"))
+        .arg("--only")
+        .arg("hashes")
+        .arg("--fail-on")
+        .arg("checksum-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("same-version"),
+        "stderr should report the re-published component, got: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("bumped-version"),
+        "a bumped version is still a version change with --only hashes, got: {}",
+        stderr
+    );
+}
+
+#[test]
 fn fail_on_hash_algorithm_downgrade_no_change_exits_0() {
     let out = sbom_diff()
         .arg(fixture("hash-downgrade-old.json"))

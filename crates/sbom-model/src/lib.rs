@@ -976,6 +976,52 @@ pub fn is_hash_algorithm_downgrade(
     }
 }
 
+fn checksums_by_algorithm(hashes: &BTreeMap<String, String>) -> BTreeMap<String, &str> {
+    hashes
+        .iter()
+        .map(|(algo, value)| (canonical_algorithm_name(algo), value.trim()))
+        .collect()
+}
+
+/// finds checksums whose value changed under an algorithm both sides carry.
+///
+/// returns `(algorithm, old value, new value)` triples ordered by canonical
+/// algorithm name. an algorithm only one side carries is ignored, so two sets
+/// sharing no algorithm yield nothing. values are compared case-insensitively
+/// and ignoring surrounding whitespace.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::changed_checksums;
+/// use std::collections::BTreeMap;
+///
+/// let old: BTreeMap<String, String> = [("SHA-256".into(), "abc".into())].into();
+/// let new: BTreeMap<String, String> = [("sha256".into(), "def".into())].into();
+/// assert_eq!(
+///     changed_checksums(&old, &new),
+///     vec![("SHA-256".to_string(), "abc".to_string(), "def".to_string())]
+/// );
+///
+/// let recased: BTreeMap<String, String> = [("SHA-256".into(), "ABC".into())].into();
+/// assert!(changed_checksums(&old, &recased).is_empty());
+/// ```
+pub fn changed_checksums(
+    old_hashes: &BTreeMap<String, String>,
+    new_hashes: &BTreeMap<String, String>,
+) -> Vec<(String, String, String)> {
+    let new_side = checksums_by_algorithm(new_hashes);
+
+    checksums_by_algorithm(old_hashes)
+        .into_iter()
+        .filter_map(|(algo, old_value)| {
+            let new_value = new_side.get(algo.as_str())?;
+            (!old_value.eq_ignore_ascii_case(new_value))
+                .then(|| (algo, old_value.to_string(), (*new_value).to_string()))
+        })
+        .collect()
+}
+
 /// classifies an SPDX license identifier as copyleft.
 ///
 /// looks the ID up in the compile-time SPDX license list and returns whether
@@ -1983,6 +2029,110 @@ mod tests {
         let old: BTreeMap<String, String> = [("TIGER".into(), "abc".into())].into();
         let new: BTreeMap<String, String> = [("WHIRLPOOL".into(), "def".into())].into();
         assert!(!is_hash_algorithm_downgrade(&old, &new));
+    }
+
+    #[test]
+    fn test_changed_checksums_same_algorithm_different_value() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
+        assert_eq!(
+            changed_checksums(&old, &new),
+            vec![("SHA-256".to_string(), "abc".to_string(), "def".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_changed_checksums_identical_values() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        assert!(changed_checksums(&old, &old).is_empty());
+    }
+
+    #[test]
+    fn test_changed_checksums_case_only_difference() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "ABCDEF".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "abcdef".into())].into();
+        assert!(changed_checksums(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn test_changed_checksums_ignores_surrounding_whitespace() {
+        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "  abc\n".into())].into();
+        assert!(changed_checksums(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn test_changed_checksums_disjoint_algorithms() {
+        let old: BTreeMap<String, String> = [("sha-1".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
+        assert!(changed_checksums(&old, &new).is_empty());
+    }
+
+    #[test]
+    fn test_changed_checksums_only_compares_shared_algorithms() {
+        let old: BTreeMap<String, String> = [
+            ("sha-1".into(), "aaa".into()),
+            ("sha-256".into(), "bbb".into()),
+        ]
+        .into();
+        let new: BTreeMap<String, String> = [
+            ("sha-256".into(), "ccc".into()),
+            ("sha-512".into(), "ddd".into()),
+        ]
+        .into();
+        assert_eq!(
+            changed_checksums(&old, &new),
+            vec![("SHA-256".to_string(), "bbb".to_string(), "ccc".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_changed_checksums_pairs_across_algorithm_spellings() {
+        let old: BTreeMap<String, String> = [("SHA256".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
+        assert_eq!(
+            changed_checksums(&old, &new),
+            vec![("SHA-256".to_string(), "abc".to_string(), "def".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_changed_checksums_unknown_algorithm_pairs_by_name() {
+        let old: BTreeMap<String, String> = [("tiger".into(), "abc".into())].into();
+        let new: BTreeMap<String, String> = [("tiger".into(), "def".into())].into();
+        assert_eq!(
+            changed_checksums(&old, &new),
+            vec![("tiger".to_string(), "abc".to_string(), "def".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_changed_checksums_empty_sides() {
+        let empty: BTreeMap<String, String> = BTreeMap::new();
+        let some: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
+        assert!(changed_checksums(&empty, &some).is_empty());
+        assert!(changed_checksums(&some, &empty).is_empty());
+    }
+
+    #[test]
+    fn test_changed_checksums_reports_every_mismatching_algorithm() {
+        let old: BTreeMap<String, String> = [
+            ("sha-256".into(), "aaa".into()),
+            ("sha-512".into(), "bbb".into()),
+        ]
+        .into();
+        let new: BTreeMap<String, String> = [
+            ("sha-256".into(), "ccc".into()),
+            ("sha-512".into(), "ddd".into()),
+        ]
+        .into();
+        assert_eq!(
+            changed_checksums(&old, &new),
+            vec![
+                ("SHA-256".to_string(), "aaa".to_string(), "ccc".to_string()),
+                ("SHA-512".to_string(), "bbb".to_string(), "ddd".to_string()),
+            ]
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ use sbom_diff::{
     ComponentChange, Differ, Field, FieldChange,
 };
 use sbom_model::versions::is_version_downgrade_for_ecosystem;
-use sbom_model::{copyleft_obligations_added, is_hash_algorithm_downgrade};
+use sbom_model::{changed_checksums, copyleft_obligations_added, is_hash_algorithm_downgrade};
 use sbom_model::{ComponentId, DependencyKind, LicenseRequirement, Licensing, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
@@ -107,6 +107,8 @@ enum FailOn {
     PurlChanged,
     /// fail if any changed component's ecosystem changed.
     EcosystemChanged,
+    /// fail if a changed component's checksum differs under an algorithm both sides carry while its version is unchanged.
+    ChecksumChanged,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -182,6 +184,12 @@ enum Violation {
         id: ComponentId,
         old_algos: Vec<String>,
         new_algos: Vec<String>,
+    },
+    ChecksumChanged {
+        id: ComponentId,
+        algorithm: String,
+        old: String,
+        new: String,
     },
     DepsAdded {
         parent: ComponentId,
@@ -314,6 +322,18 @@ impl fmt::Display for Violation {
                     id,
                     old_algos.join(", "),
                     new_algos.join(", "),
+                )
+            }
+            Violation::ChecksumChanged {
+                id,
+                algorithm,
+                old,
+                new,
+            } => {
+                write!(
+                    f,
+                    "checksum changed on component {} without a version change: {} {} -> {} (--fail-on checksum-changed)",
+                    id, algorithm, old, new
                 )
             }
             Violation::DepsAdded { parent, child } => {
@@ -677,6 +697,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     let check_changed = active.contains(&FailOn::ChangedComponents);
     let check_version_downgrade = active.contains(&FailOn::VersionDowngrade);
     let check_hash_downgrade = active.contains(&FailOn::HashAlgorithmDowngrade);
+    let check_checksum_changed = active.contains(&FailOn::ChecksumChanged);
     let any_field_check = check_missing_hashes
         || check_license_changed
         || check_copyleft_added
@@ -684,7 +705,8 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
         || check_supplier_changed
         || check_hash_downgrade
         || check_purl_changed
-        || check_ecosystem_changed;
+        || check_ecosystem_changed
+        || check_checksum_changed;
 
     for change in &diff.changed {
         if check_changed {
@@ -760,14 +782,27 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                         });
                     }
                     FieldChange::Hashes(old_hashes, new_hashes)
-                        if check_hash_downgrade
-                            && is_hash_algorithm_downgrade(old_hashes, new_hashes) =>
+                        if check_hash_downgrade || check_checksum_changed =>
                     {
-                        violations.push(Violation::HashAlgorithmDowngrade {
-                            id: change.id.clone(),
-                            old_algos: old_hashes.keys().cloned().collect(),
-                            new_algos: new_hashes.keys().cloned().collect(),
-                        });
+                        if check_hash_downgrade
+                            && is_hash_algorithm_downgrade(old_hashes, new_hashes)
+                        {
+                            violations.push(Violation::HashAlgorithmDowngrade {
+                                id: change.id.clone(),
+                                old_algos: old_hashes.keys().cloned().collect(),
+                                new_algos: new_hashes.keys().cloned().collect(),
+                            });
+                        }
+                        if check_checksum_changed && change.old.version == change.new.version {
+                            for (algorithm, old, new) in changed_checksums(old_hashes, new_hashes) {
+                                violations.push(Violation::ChecksumChanged {
+                                    id: change.id.clone(),
+                                    algorithm,
+                                    old,
+                                    new,
+                                });
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -838,7 +873,9 @@ fn gate_field_dependencies(gate: FailOn) -> &'static [Field] {
         FailOn::SupplierChanged => &[Field::Supplier],
         FailOn::PurlChanged => &[Field::Purl],
         FailOn::EcosystemChanged => &[Field::Ecosystem],
-        FailOn::HashAlgorithmDowngrade | FailOn::MissingHashes => &[Field::Hashes],
+        FailOn::HashAlgorithmDowngrade | FailOn::MissingHashes | FailOn::ChecksumChanged => {
+            &[Field::Hashes]
+        }
         FailOn::Deps => &[Field::Deps],
         // a component only counts as "changed" when one of its compared fields
         // differs, so any excluded field can hide a change from this gate.
@@ -934,6 +971,10 @@ mod tests {
         );
         assert_eq!(
             gate_field_dependencies(FailOn::HashAlgorithmDowngrade),
+            &[Field::Hashes]
+        );
+        assert_eq!(
+            gate_field_dependencies(FailOn::ChecksumChanged),
             &[Field::Hashes]
         );
         assert_eq!(
@@ -2776,10 +2817,128 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::ChecksumChanged]).is_empty());
         // ChangedComponents should still fire
         assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
         // HashAlgorithmDowngrade should fire
         assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
+    }
+
+    fn hash_change_diff(
+        old_version: &str,
+        new_version: &str,
+        old_hashes: &[(&str, &str)],
+        new_hashes: &[(&str, &str)],
+    ) -> sbom_diff::Diff {
+        use sbom_diff::{ComponentChange, Diff, FieldChange};
+
+        let mut old = Component::new("pkg".into(), Some(old_version.into()));
+        old.hashes = old_hashes
+            .iter()
+            .map(|(a, v)| ((*a).to_string(), (*v).to_string()))
+            .collect();
+        let mut new = Component::new("pkg".into(), Some(new_version.into()));
+        new.hashes = new_hashes
+            .iter()
+            .map(|(a, v)| ((*a).to_string(), (*v).to_string()))
+            .collect();
+
+        let mut changes = Vec::new();
+        if old_version != new_version {
+            changes.push(FieldChange::Version(
+                Some(old_version.into()),
+                Some(new_version.into()),
+            ));
+        }
+        changes.push(FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()));
+
+        Diff {
+            changed: vec![ComponentChange {
+                id: old.id.clone(),
+                old,
+                new,
+                changes,
+                is_downgrade: false,
+            }],
+            ..Diff::default()
+        }
+    }
+
+    #[test]
+    fn test_collect_violations_checksum_changed_same_version() {
+        let diff = hash_change_diff(
+            "1.0.0",
+            "1.0.0",
+            &[("sha-256", "abc")],
+            &[("sha-256", "def")],
+        );
+
+        let violations = collect_violations(&diff, &[FailOn::ChecksumChanged]);
+        assert_eq!(violations.len(), 1);
+        let rendered = violations[0].to_string();
+        assert!(
+            rendered.contains("SHA-256") && rendered.contains("abc") && rendered.contains("def"),
+            "violation should name the algorithm and both digests, got: {rendered}"
+        );
+
+        assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_checksum_changed_version_changed_no_violation() {
+        let diff = hash_change_diff(
+            "1.0.0",
+            "1.1.0",
+            &[("sha-256", "abc")],
+            &[("sha-256", "def")],
+        );
+
+        assert!(collect_violations(&diff, &[FailOn::ChecksumChanged]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_checksum_changed_case_only_no_violation() {
+        let diff = hash_change_diff(
+            "1.0.0",
+            "1.0.0",
+            &[("sha-256", "ABC")],
+            &[("sha-256", "abc")],
+        );
+
+        assert!(collect_violations(&diff, &[FailOn::ChecksumChanged]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_checksum_changed_disjoint_algorithms_no_violation() {
+        let diff = hash_change_diff(
+            "1.0.0",
+            "1.0.0",
+            &[("sha-256", "abc")],
+            &[("sha-512", "def")],
+        );
+
+        assert!(collect_violations(&diff, &[FailOn::ChecksumChanged]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_checksum_changed_alongside_algorithm_downgrade() {
+        let diff = hash_change_diff(
+            "1.0.0",
+            "1.0.0",
+            &[("sha-256", "abc"), ("sha-512", "xyz")],
+            &[("sha-256", "def")],
+        );
+
+        let violations = collect_violations(
+            &diff,
+            &[FailOn::ChecksumChanged, FailOn::HashAlgorithmDowngrade],
+        );
+        assert_eq!(
+            violations.len(),
+            2,
+            "both gates should fire: {violations:?}"
+        );
     }
 
     #[test]
