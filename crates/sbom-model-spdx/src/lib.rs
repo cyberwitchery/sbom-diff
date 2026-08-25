@@ -316,9 +316,9 @@ fn elide(text: &str) -> String {
 }
 
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
-/// block, or `None` if it can. `continues_below` says the next line opens a
-/// `<text>` block, which spdx-rs reads as this line's value.
-fn unreadable_line(line: &str, continues_below: bool) -> Option<String> {
+/// block, or `None` if it can. `below` says whether the `<text>` block the next
+/// line opens is blank; spdx-rs reads that block as this line's value.
+fn unreadable_line(line: &str, below: Option<bool>) -> Option<String> {
     let line = line.trim_start();
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
         return None;
@@ -340,15 +340,29 @@ fn unreadable_line(line: &str, continues_below: bool) -> Option<String> {
     }
 
     let value = value.trim_start();
+    if LICENSE_EXPRESSION_TAGS.contains(&tag) {
+        return empty_license_expression(value, below)
+            .then(|| format!("tag '{tag}': the license expression is empty"));
+    }
     // a `<text>` value can run past this line, so its content is not ours to judge.
     if value.contains("<text>") {
         return None;
     }
-    // an expression whose `<text>` value sits below its tag is not the empty one.
-    if continues_below && value.trim_end().is_empty() && LICENSE_EXPRESSION_TAGS.contains(&tag) {
-        return None;
-    }
     unreadable_value(tag, value).map(|reason| format!("tag '{tag}': {reason}"))
+}
+
+/// whether spdx-rs 0.5 will parse a license tag's value as the empty
+/// expression it unwraps a parse error on. `below` says whether the `<text>`
+/// block the next line opens is blank, and is `None` if it opens none.
+fn empty_license_expression(value: &str, below: Option<bool>) -> bool {
+    match value.strip_prefix("<text>") {
+        // a block that closes on this line carries the whole value.
+        Some(open) => open
+            .split_once("</text>")
+            .is_some_and(|(content, _)| content.trim().is_empty()),
+        None if value.trim_end().is_empty() => below.unwrap_or(true),
+        None => false,
+    }
 }
 
 /// reports why spdx-rs 0.5 panics on a known tag's value, or `None`. Values
@@ -379,10 +393,6 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
         }
         "AnnotationType" => (!ANNOTATION_TYPES.contains(&value))
             .then(|| format!("'{value}' is not an annotation type")),
-        tag if LICENSE_EXPRESSION_TAGS.contains(&tag) => value
-            .trim()
-            .is_empty()
-            .then(|| "the license expression is empty".to_string()),
         _ => None,
     }
 }
@@ -396,19 +406,41 @@ fn unreadable_checksum(value: &str) -> Option<String> {
         .then(|| format!("'{algorithm}' is not a checksum algorithm"))
 }
 
-/// per line, whether it or the first non-blank line below it opens a `<text>`
-/// block.
-fn text_block_at_or_below(input: &str) -> Vec<bool> {
-    let mut opens: Vec<bool> = input
-        .lines()
-        .rev()
-        .scan(false, |carry, line| {
-            let head = line.trim_start();
-            *carry = head.starts_with("<text>") || (head.is_empty() && *carry);
-            Some(*carry)
-        })
-        .collect();
-    opens.reverse();
+/// per line, whether the `<text>` block it or the first non-blank line below
+/// it opens is blank, and `None` where neither opens one. A block spdx-rs
+/// never closes is not a block, matching [`scanned_lines`].
+fn text_block_at_or_below(input: &str) -> Vec<Option<bool>> {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut opens = vec![None; lines.len()];
+    let mut open_at: Option<(usize, bool)> = None;
+    for (number, line) in lines.iter().enumerate() {
+        match open_at {
+            Some((at, blank)) => match line.split_once("</text>") {
+                Some((content, _)) => {
+                    opens[at] = Some(blank && content.trim().is_empty());
+                    open_at = None;
+                }
+                None => open_at = Some((at, blank && line.trim().is_empty())),
+            },
+            None => {
+                let Some(open) = line.trim_start().strip_prefix("<text>") else {
+                    continue;
+                };
+                match open.split_once("</text>") {
+                    Some((content, _)) => opens[number] = Some(content.trim().is_empty()),
+                    None => open_at = Some((number, open.trim().is_empty())),
+                }
+            }
+        }
+    }
+    let mut carry = None;
+    for (slot, line) in opens.iter_mut().zip(&lines).rev() {
+        match slot {
+            Some(_) => carry = *slot,
+            None if line.trim().is_empty() => *slot = carry,
+            None => carry = None,
+        }
+    }
     opens
 }
 
@@ -418,13 +450,20 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     let mut kept = String::with_capacity(input.len());
     let mut dropped = Vec::new();
     let mut in_dropped_block = false;
-    let opens_text = text_block_at_or_below(input);
+    let mut value_below_dropped = false;
+    let blocks = text_block_at_or_below(input);
     for (number, (line, tagged)) in scanned_lines(input).enumerate() {
-        if tagged {
-            let continues_below = opens_text.get(number + 1).copied().unwrap_or(false);
-            in_dropped_block = match unreadable_line(line, continues_below) {
+        if tagged && value_below_dropped {
+            value_below_dropped = line.trim().is_empty();
+        } else if tagged {
+            let below = blocks.get(number + 1).copied().flatten();
+            in_dropped_block = match unreadable_line(line, below) {
                 Some(reason) => {
                     dropped.push(format!("line {}: {reason}", number + 1));
+                    value_below_dropped = below.is_some()
+                        && line
+                            .split_once(':')
+                            .is_some_and(|(_, v)| v.trim().is_empty());
                     true
                 }
                 None => false,
@@ -3075,6 +3114,66 @@ PackageDownloadLocation: NOASSERTION
                     sbom.warnings
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_empty_license_expression_in_a_text_block_is_dropped_not_panicked() {
+        for tag in EXPRESSION_UNWRAP_SITES {
+            for spelling in [
+                format!("{tag}: <text></text>"),
+                format!("{tag}: <text>   </text>"),
+                format!("{tag}:\n<text></text>"),
+                format!("{tag}:\n\n<text>\n \n</text>"),
+            ] {
+                let tv = tag_value_around(&format!("{}{spelling}", section_opening(tag)));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                    .unwrap_or_else(|e| panic!("{spelling:?} should be readable: {e}"));
+                assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+                let warning = dropped_warning(&sbom);
+                assert!(
+                    warning.contains(&format!("tag '{tag}': the license expression is empty")),
+                    "{spelling:?}: {warning}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_license_expression_in_a_text_block_is_kept() {
+        for tag in EXPRESSION_UNWRAP_SITES {
+            for spelling in [
+                format!("{tag}: <text>MIT</text>"),
+                format!("{tag}:\n<text>MIT</text>"),
+                format!("{tag}:\n<text>\nMIT\n</text>"),
+            ] {
+                let tv = tag_value_around(&format!("{}{spelling}", section_opening(tag)));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                    .unwrap_or_else(|e| panic!("{spelling:?} should be readable: {e}"));
+                assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+                assert!(
+                    !sbom.warnings.iter().any(|w| w.contains("unreadable line")),
+                    "{spelling:?} should not be dropped: {:?}",
+                    sbom.warnings
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_empty_text_block_on_a_tag_with_no_expression_is_kept() {
+        for spelling in [
+            "PackageComment: <text></text>",
+            "PackageComment:\n<text></text>",
+        ] {
+            let sbom = SpdxReader::read_tag_value(tag_value_around(spelling).as_bytes())
+                .unwrap_or_else(|e| panic!("{spelling:?} should be readable: {e}"));
+            assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+            assert!(
+                !sbom.warnings.iter().any(|w| w.contains("unreadable line")),
+                "{spelling:?} should not be dropped: {:?}",
+                sbom.warnings
+            );
         }
     }
 
