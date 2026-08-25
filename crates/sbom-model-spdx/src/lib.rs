@@ -316,9 +316,9 @@ fn elide(text: &str) -> String {
 }
 
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
-/// block, or `None` if it can. `below` says whether the `<text>` block the next
-/// line opens is blank; spdx-rs reads that block as this line's value.
-fn unreadable_line(line: &str, below: Option<bool>) -> Option<String> {
+/// block, or `None` if it can. `beside` and `below` describe the `<text>`
+/// blocks spdx-rs would read as this line's value.
+fn unreadable_line(line: &str, beside: Option<bool>, below: Option<bool>) -> Option<String> {
     let line = line.trim_start();
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
         return None;
@@ -341,7 +341,7 @@ fn unreadable_line(line: &str, below: Option<bool>) -> Option<String> {
 
     let value = value.trim_start();
     if LICENSE_EXPRESSION_TAGS.contains(&tag) {
-        return empty_license_expression(value, below)
+        return empty_license_expression(value, beside, below)
             .then(|| format!("tag '{tag}': the license expression is empty"));
     }
     // a `<text>` value can run past this line, so its content is not ours to judge.
@@ -352,17 +352,12 @@ fn unreadable_line(line: &str, below: Option<bool>) -> Option<String> {
 }
 
 /// whether spdx-rs 0.5 will parse a license tag's value as the empty
-/// expression it unwraps a parse error on. `below` says whether the `<text>`
-/// block the next line opens is blank, and is `None` if it opens none.
-fn empty_license_expression(value: &str, below: Option<bool>) -> bool {
-    match value.strip_prefix("<text>") {
-        // a block that closes on this line carries the whole value.
-        Some(open) => open
-            .split_once("</text>")
-            .is_some_and(|(content, _)| content.trim().is_empty()),
-        None if value.trim_end().is_empty() => below.unwrap_or(true),
-        None => false,
+/// expression it unwraps a parse error on.
+fn empty_license_expression(value: &str, beside: Option<bool>, below: Option<bool>) -> bool {
+    if value.starts_with("<text>") {
+        return beside.unwrap_or(false);
     }
+    value.trim_end().is_empty() && below.unwrap_or(true)
 }
 
 /// reports why spdx-rs 0.5 panics on a known tag's value, or `None`. Values
@@ -406,42 +401,54 @@ fn unreadable_checksum(value: &str) -> Option<String> {
         .then(|| format!("'{algorithm}' is not a checksum algorithm"))
 }
 
-/// per line, whether the `<text>` block it or the first non-blank line below
-/// it opens is blank, and `None` where neither opens one. A block spdx-rs
-/// never closes is not a block, matching [`scanned_lines`].
-fn text_block_at_or_below(input: &str) -> Vec<Option<bool>> {
+/// the `<text>` blocks a tag's value runs into: per line, whether the block
+/// opening beside the tag is blank, and whether the one an empty value
+/// continues into below the tag is blank. `None` where there is no such block;
+/// a block spdx-rs never closes is not one, matching [`scanned_lines`].
+fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
     let lines: Vec<&str> = input.lines().collect();
-    let mut opens = vec![None; lines.len()];
+    let mut beside = vec![None; lines.len()];
+    let mut at_head = vec![false; lines.len()];
     let mut open_at: Option<(usize, bool)> = None;
     for (number, line) in lines.iter().enumerate() {
         match open_at {
             Some((at, blank)) => match line.split_once("</text>") {
                 Some((content, _)) => {
-                    opens[at] = Some(blank && content.trim().is_empty());
+                    beside[at] = Some(blank && content.trim().is_empty());
                     open_at = None;
                 }
                 None => open_at = Some((at, blank && line.trim().is_empty())),
             },
             None => {
-                let Some(open) = line.trim_start().strip_prefix("<text>") else {
-                    continue;
+                let head = line.trim_start();
+                let open = match head.strip_prefix("<text>") {
+                    Some(open) => {
+                        at_head[number] = true;
+                        Some(open)
+                    }
+                    None => head
+                        .split_once(':')
+                        .and_then(|(_, value)| value.trim_start().strip_prefix("<text>")),
                 };
+                let Some(open) = open else { continue };
                 match open.split_once("</text>") {
-                    Some((content, _)) => opens[number] = Some(content.trim().is_empty()),
+                    Some((content, _)) => beside[number] = Some(content.trim().is_empty()),
                     None => open_at = Some((number, open.trim().is_empty())),
                 }
             }
         }
     }
+    let mut below = vec![None; lines.len()];
     let mut carry = None;
-    for (slot, line) in opens.iter_mut().zip(&lines).rev() {
-        match slot {
-            Some(_) => carry = *slot,
-            None if line.trim().is_empty() => *slot = carry,
-            None => carry = None,
+    for number in (0..lines.len()).rev() {
+        if at_head[number] {
+            carry = beside[number];
+        } else if !lines[number].trim().is_empty() {
+            carry = None;
         }
+        below[number] = carry;
     }
-    opens
+    (beside, below)
 }
 
 /// drops the lines spdx-rs 0.5 would panic on or stop at, returning the
@@ -451,13 +458,14 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     let mut dropped = Vec::new();
     let mut in_dropped_block = false;
     let mut value_below_dropped = false;
-    let blocks = text_block_at_or_below(input);
+    let (beside, below) = text_blocks(input);
     for (number, (line, tagged)) in scanned_lines(input).enumerate() {
         if tagged && value_below_dropped {
             value_below_dropped = line.trim().is_empty();
         } else if tagged {
-            let below = blocks.get(number + 1).copied().flatten();
-            in_dropped_block = match unreadable_line(line, below) {
+            let beside = beside.get(number).copied().flatten();
+            let below = below.get(number + 1).copied().flatten();
+            in_dropped_block = match unreadable_line(line, beside, below) {
                 Some(reason) => {
                     dropped.push(format!("line {}: {reason}", number + 1));
                     value_below_dropped = below.is_some()
@@ -3125,6 +3133,8 @@ PackageDownloadLocation: NOASSERTION
                 format!("{tag}: <text>   </text>"),
                 format!("{tag}:\n<text></text>"),
                 format!("{tag}:\n\n<text>\n \n</text>"),
+                format!("{tag}: <text>\n</text>"),
+                format!("{tag}: <text>\n   \n</text>"),
             ] {
                 let tv = tag_value_around(&format!("{}{spelling}", section_opening(tag)));
                 let sbom = SpdxReader::read_tag_value(tv.as_bytes())
@@ -3146,6 +3156,7 @@ PackageDownloadLocation: NOASSERTION
                 format!("{tag}: <text>MIT</text>"),
                 format!("{tag}:\n<text>MIT</text>"),
                 format!("{tag}:\n<text>\nMIT\n</text>"),
+                format!("{tag}: <text>\nMIT\n</text>"),
             ] {
                 let tv = tag_value_around(&format!("{}{spelling}", section_opening(tag)));
                 let sbom = SpdxReader::read_tag_value(tv.as_bytes())

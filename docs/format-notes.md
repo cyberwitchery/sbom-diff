@@ -51,12 +51,11 @@ both adapters produce:
 - tag-value handling: the underlying parser stops at the first line it cannot read and throws away everything below it, so those lines are removed before parsing and listed in the parser warnings:
   - a line that is not a `Tag: value` pair, or whose tag is not one the parser recognizes
   - a value the parser crashes on: an unrecognized `ExternalRef` category, checksum algorithm, `Relationship` type, `FileType`, or `AnnotationType`
-  - an empty or whitespace-only license expression written on the tag's own line, on `PackageLicenseConcluded`, `PackageLicenseDeclared`, `LicenseConcluded`, `LicenseInfoInFile` or `SnippetLicenseConcluded`
+  - an empty or whitespace-only license expression on `PackageLicenseConcluded`, `PackageLicenseDeclared`, `LicenseConcluded`, `LicenseInfoInFile` or `SnippetLicenseConcluded`, whether written on the tag's own line or delivered as a `<text>` block beside or below it
   - a `<text>` block belongs to its tag's value, so its interior is never read as a tag line, and dropping a tag drops its whole block
   - a document the parser still cuts short is reported as an error naming the first package lost, never returned as a partial SBOM
 - tag-value inputs that still abort the process rather than produce a diagnostic. all are `spdx-rs` panics on input this reader cannot recognize line by line, and all are the same on `main`:
-  - a *non-empty* license expression the SPDX expression parser rejects (`MIT AND`, `(MIT`) on one of the five tags above. only an empty value on the tag's own line is caught; a non-empty one needs an expression-level parse this reader does not do
-  - an *empty* license expression on one of those five tags delivered as a `<text>` block, either beside the tag (`PackageLicenseConcluded: <text></text>`) or on the line below it
+  - a *non-empty* license expression the SPDX expression parser rejects (`MIT AND`, `(MIT`) on one of the five tags above. only an empty value is caught; a non-empty one needs an expression-level parse this reader does not do
   - a `<text>` block used as the value of one of the enum-valued tags above (`FileType: <text>NOTATYPE</text>`). a `<text>` value can run past its own line, so its content is not judged, and an unrecognized one reaches the parser's crash
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`
