@@ -83,7 +83,7 @@ cargo install sbom-diff
 
 ## features
 
-- supports cyclonedx 1.3-1.5 (json and xml) and spdx 2.3 (json, xml, and tag-value)
+- supports cyclonedx 1.3-1.6 (json and xml) and spdx 2.3 (json, xml, and tag-value); 1.6 documents are read under 1.5 rules and say so in a warning
 - deterministic normalization for reproducible diffs
 - matches components by purl or identity (name/ecosystem)
 - zero network access - fully offline
@@ -185,7 +185,7 @@ sbom-diff/
 | crate | docs | description |
 |-------|------|-------------|
 | [`sbom-model`](crates/sbom-model) | [docs.rs](https://docs.rs/sbom-model) | core `Sbom`, `Component`, `ComponentId` types and query api |
-| [`sbom-model-cyclonedx`](crates/sbom-model-cyclonedx) | [docs.rs](https://docs.rs/sbom-model-cyclonedx) | parse cyclonedx 1.3-1.5 json and xml into `Sbom` |
+| [`sbom-model-cyclonedx`](crates/sbom-model-cyclonedx) | [docs.rs](https://docs.rs/sbom-model-cyclonedx) | parse cyclonedx 1.3-1.6 json and xml into `Sbom` |
 | [`sbom-model-spdx`](crates/sbom-model-spdx) | [docs.rs](https://docs.rs/sbom-model-spdx) | parse spdx 2.3 json, xml, and tag-value into `Sbom` |
 | [`sbom-diff`](crates/sbom-diff) | [docs.rs](https://docs.rs/sbom-diff) | `Differ` engine, renderers, and cli binary |
 

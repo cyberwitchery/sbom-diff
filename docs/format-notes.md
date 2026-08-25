@@ -15,8 +15,12 @@ both adapters produce:
 ## cyclonedx -> model
 
 - parser: `sbom-model-cyclonedx` using `cyclonedx-bom`
-- input formats: json and xml (1.3, 1.4, 1.5)
+- input formats: json and xml (1.3, 1.4, 1.5, 1.6)
 - xml version detection: tries 1.5, 1.4, 1.3 in order; first successful parse wins
+- 1.6 documents are read under 1.5 rules: `cyclonedx-bom` tops out at 1.5, and 1.6 is a superset of it for every field this model reads. json swaps `specVersion` in the parsed value and drops every `evidence` member from it, the one field whose type 1.6 widened (`evidence.identity` became an array of identities, which the 1.5 model refuses rather than ignores); xml re-encodes the document with the namespace pinned to 1.5, rewriting namespace declarations only, so element text and attribute values are left as the parser read them
+- a 1.6 document pushes a warning onto `Sbom.warnings` naming the version and the 1.6-only fields the read drops (component `authors`/`manufacturer`/`omniborId`/`swhid`/`tags`, license `acknowledgement`, `cryptoProperties`, `declarations`, `definitions`) plus component `evidence`, which no format this model reads surfaces
+- the xml version is read from the root element's namespace — its default declaration, or the prefix it is bound through when that declaration names no cyclonedx namespace — so the same url in a comment, in element text or in an unrelated attribute is not mistaken for it
+- 1.7 and later are refused with an unsupported-version error
 - purl extraction:
   - source: `component.purl`
   - target: `Component.purl`

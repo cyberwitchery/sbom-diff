@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- superseded draft: http://cyclonedx.org/schema/bom/1.3 -->
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://cyclonedx.org/schema/bom/1.6 http://cyclonedx.org/schema/bom/1.6/bom-1.6.xsd"
+     serialNumber="urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79" version="1">
+  <metadata>
+    <timestamp>2024-04-09T00:00:00Z</timestamp>
+    <authors>
+      <author>
+        <name>ada</name>
+        <email>ada@example.com</email>
+      </author>
+    </authors>
+    <tools>
+      <components>
+        <component type="application">
+          <name>cdxgen</name>
+          <version>10.4.0</version>
+        </component>
+      </components>
+    </tools>
+    <component type="application" bom-ref="root-app">
+      <name>app</name>
+      <version>2.0.0</version>
+      <purl>pkg:npm/app@2.0.0</purl>
+      <authors>
+        <author><name>grace</name></author>
+      </authors>
+      <tags><tag>cli</tag></tags>
+      <evidence>
+        <identity>
+          <field>purl</field>
+          <confidence>1.0</confidence>
+        </identity>
+      </evidence>
+    </component>
+    <manufacturer><name>acme inc</name></manufacturer>
+  </metadata>
+  <components>
+    <component type="library" bom-ref="lib-a">
+      <supplier><name>lib-a maintainers</name></supplier>
+      <authors>
+        <author><name>alan</name></author>
+      </authors>
+      <manufacturer><name>lib-a labs</name></manufacturer>
+      <name>lib-a</name>
+      <version>1.2.3</version>
+      <description><![CDATA[validated against http://cyclonedx.org/schema/bom/1.6/bom-1.6.xsd]]></description>
+      <hashes>
+        <hash alg="SHA-256">0000000000000000000000000000000000000000000000000000000000000001</hash>
+      </hashes>
+      <licenses>
+        <license acknowledgement="declared"><id>MIT</id></license>
+      </licenses>
+      <purl>pkg:npm/lib-a@1.2.3</purl>
+      <omniborId>gitoid:blob:sha1:261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64</omniborId>
+      <swhid>swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2</swhid>
+      <tags><tag>runtime</tag></tags>
+      <components>
+        <component type="library" bom-ref="lib-a-inner">
+          <name>lib-a-inner</name>
+          <version>0.1.0</version>
+          <purl>pkg:npm/lib-a-inner@0.1.0</purl>
+          <evidence>
+            <identity>
+              <field>purl</field>
+              <confidence>1.0</confidence>
+            </identity>
+          </evidence>
+        </component>
+      </components>
+      <evidence>
+        <identity>
+          <field>purl</field>
+          <confidence>0.9</confidence>
+        </identity>
+        <identity>
+          <field>name</field>
+          <confidence>0.6</confidence>
+        </identity>
+      </evidence>
+    </component>
+    <component type="library" bom-ref="lib-b">
+      <supplier><name>lib-b maintainers</name></supplier>
+      <name>lib-b</name>
+      <version>4.5.6</version>
+      <licenses>
+        <expression acknowledgement="concluded" bom-ref="lib-b-licensing">Apache-2.0 OR MIT</expression>
+      </licenses>
+      <purl>pkg:npm/lib-b@4.5.6</purl>
+    </component>
+    <component type="cryptographic-asset" bom-ref="cipher-1">
+      <name>AES-256-GCM</name>
+      <version>1</version>
+      <cryptoProperties>
+        <assetType>algorithm</assetType>
+        <algorithmProperties>
+          <primitive>ae</primitive>
+          <parameterSetIdentifier>256</parameterSetIdentifier>
+          <executionEnvironment>software-plain-ram</executionEnvironment>
+        </algorithmProperties>
+        <oid>1.2.840.113549.1.9.16.3.6</oid>
+      </cryptoProperties>
+    </component>
+  </components>
+  <dependencies>
+    <dependency ref="root-app">
+      <dependency ref="lib-a"/>
+      <dependency ref="lib-b"/>
+    </dependency>
+    <dependency ref="lib-a">
+      <dependency ref="lib-b"/>
+    </dependency>
+    <dependency ref="lib-b"/>
+  </dependencies>
+  <declarations>
+    <assessors>
+      <assessor bom-ref="assessor-1"><thirdParty>true</thirdParty></assessor>
+    </assessors>
+  </declarations>
+  <definitions>
+    <standards>
+      <standard bom-ref="std-1">
+        <name>an internal standard</name>
+        <version>1.0</version>
+      </standard>
+    </standards>
+  </definitions>
+</bom>
