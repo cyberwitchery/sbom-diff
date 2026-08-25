@@ -248,6 +248,15 @@ const FILE_TYPES: &[&str] = &[
 /// `AnnotationType` values spdx-rs 0.5 recognizes.
 const ANNOTATION_TYPES: &[&str] = &["REVIEW", "OTHER"];
 
+/// tags whose value spdx-rs 0.5 parses as an SPDX license expression and unwraps.
+const LICENSE_EXPRESSION_TAGS: &[&str] = &[
+    "LicenseConcluded",
+    "LicenseInfoInFile",
+    "PackageLicenseConcluded",
+    "PackageLicenseDeclared",
+    "SnippetLicenseConcluded",
+];
+
 /// `Relationship` types spdx-rs 0.5 recognizes.
 const RELATIONSHIP_TYPES: &[&str] = &[
     "DESCRIBES",
@@ -307,8 +316,9 @@ fn elide(text: &str) -> String {
 }
 
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
-/// block, or `None` if it can.
-fn unreadable_line(line: &str) -> Option<String> {
+/// block, or `None` if it can. `continues_below` says the next line opens a
+/// `<text>` block, which spdx-rs reads as this line's value.
+fn unreadable_line(line: &str, continues_below: bool) -> Option<String> {
     let line = line.trim_start();
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
         return None;
@@ -332,6 +342,10 @@ fn unreadable_line(line: &str) -> Option<String> {
     let value = value.trim_start();
     // a `<text>` value can run past this line, so its content is not ours to judge.
     if value.contains("<text>") {
+        return None;
+    }
+    // an expression whose `<text>` value sits below its tag is not the empty one.
+    if continues_below && value.trim_end().is_empty() && LICENSE_EXPRESSION_TAGS.contains(&tag) {
         return None;
     }
     unreadable_value(tag, value).map(|reason| format!("tag '{tag}': {reason}"))
@@ -365,6 +379,10 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
         }
         "AnnotationType" => (!ANNOTATION_TYPES.contains(&value))
             .then(|| format!("'{value}' is not an annotation type")),
+        tag if LICENSE_EXPRESSION_TAGS.contains(&tag) => value
+            .trim()
+            .is_empty()
+            .then(|| "the license expression is empty".to_string()),
         _ => None,
     }
 }
@@ -378,15 +396,33 @@ fn unreadable_checksum(value: &str) -> Option<String> {
         .then(|| format!("'{algorithm}' is not a checksum algorithm"))
 }
 
+/// per line, whether it or the first non-blank line below it opens a `<text>`
+/// block.
+fn text_block_at_or_below(input: &str) -> Vec<bool> {
+    let mut opens: Vec<bool> = input
+        .lines()
+        .rev()
+        .scan(false, |carry, line| {
+            let head = line.trim_start();
+            *carry = head.starts_with("<text>") || (head.is_empty() && *carry);
+            Some(*carry)
+        })
+        .collect();
+    opens.reverse();
+    opens
+}
+
 /// drops the lines spdx-rs 0.5 would panic on or stop at, returning the
 /// remaining document and one diagnostic per dropped line.
 fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     let mut kept = String::with_capacity(input.len());
     let mut dropped = Vec::new();
     let mut in_dropped_block = false;
+    let opens_text = text_block_at_or_below(input);
     for (number, (line, tagged)) in scanned_lines(input).enumerate() {
         if tagged {
-            in_dropped_block = match unreadable_line(line) {
+            let continues_below = opens_text.get(number + 1).copied().unwrap_or(false);
+            in_dropped_block = match unreadable_line(line, continues_below) {
                 Some(reason) => {
                     dropped.push(format!("line {}: {reason}", number + 1));
                     true
@@ -2962,6 +2998,102 @@ PackageDownloadLocation: NOASSERTION
                 sbom.components.values().any(|c| c.name == "omega"),
                 "'{line}' should not cost the document its tail"
             );
+        }
+    }
+
+    /// the `SpdxExpression::parse(value).unwrap()` sites in spdx-rs 0.5
+    /// `parsers/mod.rs`, named here rather than read from the mirror.
+    const EXPRESSION_UNWRAP_SITES: &[&str] = &[
+        "LicenseConcluded",
+        "LicenseInfoInFile",
+        "PackageLicenseConcluded",
+        "PackageLicenseDeclared",
+        "SnippetLicenseConcluded",
+    ];
+
+    /// the section a license tag must sit in for spdx-rs to reach its unwrap.
+    fn section_opening(tag: &str) -> &'static str {
+        match tag {
+            "LicenseConcluded" | "LicenseInfoInFile" => {
+                "FileName: ./src/main.rs\nSPDXID: SPDXRef-file\n"
+            }
+            "SnippetLicenseConcluded" => {
+                "FileName: ./src/main.rs\nSPDXID: SPDXRef-file\nSnippetSPDXID: SPDXRef-snippet\nSnippetFromFileSPDXID: SPDXRef-file\n"
+            }
+            _ => "",
+        }
+    }
+
+    #[test]
+    fn test_tag_value_empty_license_expression_is_dropped_not_panicked() {
+        for tag in EXPRESSION_UNWRAP_SITES {
+            for value in ["", " ", "   \t  "] {
+                let tv = tag_value_around(&format!("{}{tag}:{value}", section_opening(tag)));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                    .unwrap_or_else(|e| panic!("'{tag}:{value}' should be readable: {e}"));
+                assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+                let warning = dropped_warning(&sbom);
+                assert!(
+                    warning.contains(&format!("tag '{tag}': the license expression is empty")),
+                    "'{tag}:{value}': {warning}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_license_expression_that_parses_is_kept() {
+        for tag in EXPRESSION_UNWRAP_SITES {
+            for value in ["MIT", "MIT OR Apache-2.0", "NOASSERTION", "NONE"] {
+                let tv = tag_value_around(&format!("{}{tag}: {value}", section_opening(tag)));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                    .unwrap_or_else(|e| panic!("'{tag}: {value}' should be readable: {e}"));
+                assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+                assert!(
+                    !sbom.warnings.iter().any(|w| w.contains("unreadable line")),
+                    "'{tag}: {value}' should not be dropped: {:?}",
+                    sbom.warnings
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_license_expression_below_its_tag_is_not_the_empty_one() {
+        for tag in EXPRESSION_UNWRAP_SITES {
+            for gap in ["", "\n", "\n\n"] {
+                let tv = tag_value_around(&format!(
+                    "{}{tag}:{gap}\n<text>MIT</text>",
+                    section_opening(tag)
+                ));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                    .unwrap_or_else(|e| panic!("'{tag}' with a value below it: {e}"));
+                assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+                assert!(
+                    !sbom.warnings.iter().any(|w| w.contains("unreadable line")),
+                    "'{tag}' with a value below it should not be dropped: {:?}",
+                    sbom.warnings
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_empty_value_on_an_enum_tag_is_still_dropped_by_name() {
+        for (tag, mentions) in [
+            ("FileType", "'' is not a file type"),
+            ("AnnotationType", "'' is not an annotation type"),
+            ("ExternalRef", "'' is not an external reference category"),
+        ] {
+            assert_line_dropped(&format!("{tag}:"), mentions);
+        }
+    }
+
+    #[test]
+    fn test_mirrored_license_expression_tags_are_readable_tags() {
+        assert_eq!(LICENSE_EXPRESSION_TAGS, EXPRESSION_UNWRAP_SITES);
+        for tag in LICENSE_EXPRESSION_TAGS {
+            assert!(READABLE_TAGS.contains(tag), "{tag}");
         }
     }
 

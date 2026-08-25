@@ -2417,6 +2417,27 @@ fn spdx_tag_value_unreadable_line_does_not_invent_a_removed_component() {
 }
 
 #[test]
+fn spdx_tag_value_empty_license_expression_does_not_abort_the_run() {
+    let out = sbom_diff()
+        .arg(fixture("unreadable-line-old.spdx"))
+        .arg(fixture("empty-license-expression.spdx"))
+        .arg("--fail-on")
+        .arg("added-components")
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_eq!(out.status.code(), Some(3), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("delta"), "delta is added: {stdout}");
+    assert!(
+        stderr.contains("the license expression is empty"),
+        "the dropped tag must be named: {stderr}"
+    );
+}
+
+#[test]
 fn a_cyclonedx_1_6_document_diffs_against_its_1_5_downgrade_as_unchanged() {
     for (old, new) in [
         ("cyclonedx-1.6-as-1.5.json", "cyclonedx-1.6.json"),
