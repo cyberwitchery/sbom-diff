@@ -4,7 +4,7 @@ use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
     Sbom,
 };
-use spdx_rs::models::RelationshipType;
+use spdx_rs::models::{RelationshipType, SpdxExpression};
 use spdx_rs::parsers::spdx_from_tag_value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -306,6 +306,111 @@ const RELATIONSHIP_TYPES: &[&str] = &[
     "OTHER",
 ];
 
+/// license expressions the SPDX expression parser rejects, by the position of
+/// the package that declared them.
+type RawLicenses = BTreeMap<usize, RawLicense>;
+
+/// what a package declared where spdx-rs could not read it, as written.
+#[derive(Default)]
+struct RawLicense {
+    concluded: Option<String>,
+    declared: Option<String>,
+}
+
+impl RawLicense {
+    fn set(&mut self, field: &str, expression: String) {
+        match field {
+            "licenseConcluded" => self.concluded = Some(expression),
+            _ => self.declared = Some(expression),
+        }
+    }
+
+    /// the expression to keep on the component, preferring the concluded
+    /// license as the reader does, and never an empty one.
+    fn kept(&self) -> Option<&str> {
+        [&self.concluded, &self.declared]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .find(|expression| !expression.trim().is_empty())
+    }
+
+    fn dropped(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [("concluded", &self.concluded), ("declared", &self.declared)]
+            .into_iter()
+            .filter_map(|(what, expression)| expression.as_deref().map(|e| (what, e)))
+    }
+}
+
+/// removes every license expression spdx-rs 0.5 cannot read from a parsed
+/// SPDX JSON document, returning what each package declared and a diagnostic
+/// per expression dropped from a file or snippet.
+fn strip_unreadable_expressions(doc: &mut serde_json::Value) -> (RawLicenses, Vec<String>) {
+    let mut raw = RawLicenses::new();
+    let mut dropped = Vec::new();
+    if let Some(packages) = doc.get_mut("packages").and_then(|v| v.as_array_mut()) {
+        for (index, package) in packages.iter_mut().enumerate() {
+            for field in ["licenseConcluded", "licenseDeclared"] {
+                if let Some(expression) = take_unreadable_expression(package, field) {
+                    raw.entry(index).or_default().set(field, expression);
+                }
+            }
+        }
+    }
+    for (section, singular, named_by) in [
+        ("files", "file", "fileName"),
+        ("snippets", "snippet", "SPDXID"),
+    ] {
+        let Some(elements) = doc.get_mut(section).and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for element in elements {
+            let name = element
+                .get(named_by)
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unnamed>")
+                .to_string();
+            let mut expressions: Vec<String> =
+                take_unreadable_expression(element, "licenseConcluded")
+                    .into_iter()
+                    .collect();
+            if let Some(list) = element
+                .get_mut("licenseInfoInFiles")
+                .and_then(|v| v.as_array_mut())
+            {
+                let readable: Vec<serde_json::Value> = list
+                    .drain(..)
+                    .filter(|entry| match entry.as_str() {
+                        Some(text) if SpdxExpression::parse(text).is_err() => {
+                            expressions.push(text.to_string());
+                            false
+                        }
+                        _ => true,
+                    })
+                    .collect();
+                *list = readable;
+            }
+            dropped.extend(
+                expressions
+                    .into_iter()
+                    .map(|expression| format!("{singular} '{name}': '{}'", elide(&expression))),
+            );
+        }
+    }
+    (raw, dropped)
+}
+
+/// removes `field` from an SPDX element when spdx-rs 0.5 cannot read it as an
+/// expression, returning it as written.
+fn take_unreadable_expression(element: &mut serde_json::Value, field: &str) -> Option<String> {
+    let expression = element.get(field)?.as_str()?.to_string();
+    if SpdxExpression::parse(&expression).is_ok() {
+        return None;
+    }
+    element.as_object_mut()?.remove(field);
+    Some(expression)
+}
+
 /// shortens a line for a diagnostic.
 fn elide(text: &str) -> String {
     let text = text.trim();
@@ -316,9 +421,9 @@ fn elide(text: &str) -> String {
 }
 
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
-/// block, or `None` if it can. `beside` and `below` describe the `<text>`
+/// block, or `None` if it can. `beside` and `below` carry the `<text>`
 /// blocks spdx-rs would read as this line's value.
-fn unreadable_line(line: &str, beside: Option<bool>, below: Option<bool>) -> Option<String> {
+fn unreadable_line(line: &str, beside: Option<&str>, below: Option<&str>) -> Option<String> {
     let line = line.trim_start();
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
         return None;
@@ -341,8 +446,10 @@ fn unreadable_line(line: &str, beside: Option<bool>, below: Option<bool>) -> Opt
 
     let value = value.trim_start();
     if LICENSE_EXPRESSION_TAGS.contains(&tag) {
-        return empty_license_expression(value, beside, below)
-            .then(|| format!("tag '{tag}': the license expression is empty"));
+        return unreadable_expression(value, beside, below).map(|expression| match expression {
+            e if e.trim().is_empty() => format!("tag '{tag}': the license expression is empty"),
+            e => format!("tag '{tag}': '{}' is not a license expression", elide(&e)),
+        });
     }
     // a `<text>` value can run past this line, so its content is not ours to judge.
     if value.contains("<text>") {
@@ -351,13 +458,18 @@ fn unreadable_line(line: &str, beside: Option<bool>, below: Option<bool>) -> Opt
     unreadable_value(tag, value).map(|reason| format!("tag '{tag}': {reason}"))
 }
 
-/// whether spdx-rs 0.5 will parse a license tag's value as the empty
-/// expression it unwraps a parse error on.
-fn empty_license_expression(value: &str, beside: Option<bool>, below: Option<bool>) -> bool {
-    if value.starts_with("<text>") {
-        return beside.unwrap_or(false);
-    }
-    value.trim_end().is_empty() && below.unwrap_or(true)
+/// the license expression spdx-rs 0.5 unwraps a parse error on, as written, or
+/// `None` where the value is one it reads. an empty value with no `<text>`
+/// block below it swallows the following line, which is never an expression.
+fn unreadable_expression(value: &str, beside: Option<&str>, below: Option<&str>) -> Option<String> {
+    let expression = match value.strip_prefix("<text>") {
+        Some(_) => beside?,
+        None if value.trim_end().is_empty() => below.unwrap_or(value),
+        None => value.trim_end(),
+    };
+    SpdxExpression::parse(expression)
+        .is_err()
+        .then(|| expression.to_string())
 }
 
 /// reports why spdx-rs 0.5 panics on a known tag's value, or `None`. Values
@@ -401,23 +513,29 @@ fn unreadable_checksum(value: &str) -> Option<String> {
         .then(|| format!("'{algorithm}' is not a checksum algorithm"))
 }
 
-/// the `<text>` blocks a tag's value runs into: per line, whether the block
-/// opening beside the tag is blank, and whether the one an empty value
-/// continues into below the tag is blank. `None` where there is no such block;
-/// a block spdx-rs never closes is not one, matching [`scanned_lines`].
-fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
+/// the `<text>` blocks a tag's value runs into: per line, the content of the
+/// block opening beside the tag, and of the one an empty value continues into
+/// below the tag. `None` where there is no such block; a block spdx-rs never
+/// closes is not one, matching [`scanned_lines`].
+fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<String>>) {
     let lines: Vec<&str> = input.lines().collect();
-    let mut beside = vec![None; lines.len()];
+    let mut beside: Vec<Option<String>> = vec![None; lines.len()];
     let mut at_head = vec![false; lines.len()];
-    let mut open_at: Option<(usize, bool)> = None;
+    let mut open_at: Option<(usize, String)> = None;
     for (number, line) in lines.iter().enumerate() {
         match open_at {
-            Some((at, blank)) => match line.split_once("</text>") {
+            Some((at, mut so_far)) => match line.split_once("</text>") {
                 Some((content, _)) => {
-                    beside[at] = Some(blank && content.trim().is_empty());
+                    so_far.push('\n');
+                    so_far.push_str(content);
+                    beside[at] = Some(so_far);
                     open_at = None;
                 }
-                None => open_at = Some((at, blank && line.trim().is_empty())),
+                None => {
+                    so_far.push('\n');
+                    so_far.push_str(line);
+                    open_at = Some((at, so_far));
+                }
             },
             None => {
                 let head = line.trim_start();
@@ -432,30 +550,33 @@ fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
                 };
                 let Some(open) = open else { continue };
                 match open.split_once("</text>") {
-                    Some((content, _)) => beside[number] = Some(content.trim().is_empty()),
-                    None => open_at = Some((number, open.trim().is_empty())),
+                    Some((content, _)) => beside[number] = Some(content.to_string()),
+                    None => open_at = Some((number, open.to_string())),
                 }
             }
         }
     }
-    let mut below = vec![None; lines.len()];
+    let mut below: Vec<Option<String>> = vec![None; lines.len()];
     let mut carry = None;
     for number in (0..lines.len()).rev() {
         if at_head[number] {
-            carry = beside[number];
+            carry = beside[number].clone();
         } else if !lines[number].trim().is_empty() {
             carry = None;
         }
-        below[number] = carry;
+        below[number] = carry.clone();
     }
     (beside, below)
 }
 
 /// drops the lines spdx-rs 0.5 would panic on or stop at, returning the
-/// remaining document and one diagnostic per dropped line.
-fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
+/// remaining document, one diagnostic per dropped line, and the license
+/// expressions dropped from package sections.
+fn filter_unreadable_lines(input: &str) -> (String, Vec<String>, RawLicenses) {
     let mut kept = String::with_capacity(input.len());
     let mut dropped = Vec::new();
+    let mut raw = RawLicenses::new();
+    let mut packages = 0usize;
     let mut in_dropped_block = false;
     let mut value_below_dropped = false;
     let (beside, below) = text_blocks(input);
@@ -463,11 +584,17 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
         if tagged && value_below_dropped {
             value_below_dropped = line.trim().is_empty();
         } else if tagged {
-            let beside = beside.get(number).copied().flatten();
-            let below = below.get(number + 1).copied().flatten();
+            let beside = beside.get(number).map(Option::as_deref).unwrap_or_default();
+            let below = below
+                .get(number + 1)
+                .map(Option::as_deref)
+                .unwrap_or_default();
             in_dropped_block = match unreadable_line(line, beside, below) {
                 Some(reason) => {
                     dropped.push(format!("line {}: {reason}", number + 1));
+                    if let Some(index) = packages.checked_sub(1) {
+                        record_raw_license(&mut raw, index, line, beside, below);
+                    }
                     value_below_dropped = below.is_some()
                         && line
                             .split_once(':')
@@ -478,11 +605,38 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
             };
         }
         if !in_dropped_block {
+            if tagged && line.trim_start().starts_with("PackageName:") {
+                packages += 1;
+            }
             kept.push_str(line);
             kept.push('\n');
         }
     }
-    (kept, dropped)
+    (kept, dropped, raw)
+}
+
+/// records the expression a dropped package license line carried, under the
+/// package at `index`.
+fn record_raw_license(
+    raw: &mut RawLicenses,
+    index: usize,
+    line: &str,
+    beside: Option<&str>,
+    below: Option<&str>,
+) {
+    let line = line.trim_start();
+    let Some((tag, value)) = line.split_once(':') else {
+        return;
+    };
+    let field = match tag {
+        "PackageLicenseConcluded" => "licenseConcluded",
+        "PackageLicenseDeclared" => "licenseDeclared",
+        _ => return,
+    };
+    let Some(expression) = unreadable_expression(value.trim_start(), beside, below) else {
+        return;
+    };
+    raw.entry(index).or_default().set(field, expression);
 }
 
 /// joins diagnostics, keeping a warning bounded on a badly broken document.
@@ -530,9 +684,12 @@ impl SpdxReader {
 
         Self::check_spdx_version(buf)?;
 
-        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(buf)?;
+        let mut value: serde_json::Value = serde_json::from_slice(buf)?;
+        let (raw, dropped) = strip_unreadable_expressions(&mut value);
 
-        Ok(Self::spdx_to_sbom(spdx_doc))
+        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_value(value)?;
+
+        Ok(Self::spdx_to_sbom(spdx_doc, &raw, &dropped))
     }
 
     /// parses an SPDX XML document from a reader.
@@ -554,12 +711,13 @@ impl SpdxReader {
 
         let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
 
-        let value = xml::xml_to_json(buf)?;
+        let mut value = xml::xml_to_json(buf)?;
         Self::check_version(value.get("spdxVersion").and_then(|v| v.as_str()))?;
+        let (raw, dropped) = strip_unreadable_expressions(&mut value);
 
         let spdx_doc: spdx_rs::models::SPDX = serde_json::from_value(value)?;
 
-        Ok(Self::spdx_to_sbom(spdx_doc))
+        Ok(Self::spdx_to_sbom(spdx_doc, &raw, &dropped))
     }
 
     /// parses an SPDX tag-value document from a reader.
@@ -591,7 +749,7 @@ impl SpdxReader {
         Self::check_spdx_version_tag_value(input)?;
 
         // spdx-rs 0.5 panics on an unknown tag and discards everything below a line it cannot read.
-        let (input, unreadable) = filter_unreadable_lines(input);
+        let (input, unreadable, raw) = filter_unreadable_lines(input);
         let input = input.as_str();
 
         // spdx-rs 0.5 has two further tag-value parsing quirks we work around:
@@ -670,7 +828,7 @@ impl SpdxReader {
             .creation_info
             .creators = actual_creators.clone();
 
-        let mut sbom = Self::spdx_to_sbom(spdx_doc);
+        let mut sbom = Self::spdx_to_sbom(spdx_doc, &raw, &[]);
 
         // emit diagnostics for workarounds that fired.
         if !unreadable.is_empty() {
@@ -710,8 +868,23 @@ impl SpdxReader {
 
     /// converts a parsed `spdx_rs::models::SPDX` document into the
     /// format-agnostic [`Sbom`] type. Shared by JSON and tag-value readers.
-    fn spdx_to_sbom(spdx_doc: spdx_rs::models::SPDX) -> Sbom {
+    ///
+    /// `raw` carries the license expressions stripped from the document
+    /// before parsing because spdx-rs cannot read them, and `dropped` the
+    /// ones that belonged to no package.
+    fn spdx_to_sbom(
+        spdx_doc: spdx_rs::models::SPDX,
+        raw: &RawLicenses,
+        dropped: &[String],
+    ) -> Sbom {
         let mut sbom = Sbom::default();
+        if !dropped.is_empty() {
+            sbom.warnings.push(format!(
+                "SPDX: dropped {} license expression(s) the SPDX expression parser cannot read: {}",
+                dropped.len(),
+                joined(dropped)
+            ));
+        }
 
         let ci = spdx_doc.document_creation_information.creation_info;
         sbom.metadata.timestamp = Some(ci.created.to_string());
@@ -723,7 +896,7 @@ impl SpdxReader {
             }
         }
 
-        for pkg in spdx_doc.package_information {
+        for (index, pkg) in spdx_doc.package_information.into_iter().enumerate() {
             let name = pkg.package_name;
             let version = pkg.package_version;
 
@@ -795,6 +968,32 @@ impl SpdxReader {
                 let l = l.to_string();
                 comp.licenses.extend(parse_license_expression(&l));
                 comp.license_expression = Some(l);
+            }
+
+            if let Some(raw) = raw.get(&index) {
+                if comp.license_expression.is_none() {
+                    if let Some(expression) = raw.kept() {
+                        comp.licenses.extend(parse_license_expression(expression));
+                        comp.license_expression = Some(expression.to_string());
+                    }
+                }
+                for (what, expression) in raw.dropped() {
+                    sbom.warnings.push(if expression.trim().is_empty() {
+                        format!(
+                            "SPDX: package '{}' declares an empty {what} license expression",
+                            comp.name
+                        )
+                    } else {
+                        format!(
+                            "SPDX: package '{}' declares a {what} license expression the SPDX \
+                             expression parser cannot read ('{}'); it is kept as written, but \
+                             --deny-license, --allow-license and --fail-on copyleft-added \
+                             cannot match it",
+                            comp.name,
+                            elide(expression),
+                        )
+                    });
+                }
             }
 
             for checksum in pkg.package_checksum {
@@ -3197,6 +3396,216 @@ PackageDownloadLocation: NOASSERTION
         ] {
             assert_line_dropped(&format!("{tag}:"), mentions);
         }
+    }
+
+    /// spellings the SPDX expression parser rejects, each paired with the
+    /// expression it delivers: inline, then as a `<text>` block.
+    fn malformed_spellings(tag: &str) -> Vec<(&'static str, String)> {
+        [
+            "MIT AND",
+            "OR Apache-2.0",
+            "MIT AND (Apache-2.0",
+            "MIT WITH",
+        ]
+        .into_iter()
+        .flat_map(|expression| {
+            [
+                format!("{tag}: {expression}"),
+                format!("{tag}: <text>{expression}</text>"),
+                format!("{tag}:\n<text>{expression}</text>"),
+            ]
+            .map(|spelling| (expression, spelling))
+        })
+        .collect()
+    }
+
+    #[test]
+    fn test_tag_value_malformed_license_expression_is_dropped_not_panicked() {
+        for tag in EXPRESSION_UNWRAP_SITES {
+            for (expression, spelling) in malformed_spellings(tag) {
+                let tv = tag_value_around(&format!("{}{spelling}", section_opening(tag)));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                    .unwrap_or_else(|e| panic!("{spelling:?} should be readable: {e}"));
+                assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
+                let warning = dropped_warning(&sbom);
+                assert!(
+                    warning.contains(&format!(
+                        "tag '{tag}': '{expression}' is not a license expression"
+                    )),
+                    "{spelling:?}: {warning}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_malformed_package_license_is_kept_as_written() {
+        for tag in ["PackageLicenseConcluded", "PackageLicenseDeclared"] {
+            for (expression, spelling) in malformed_spellings(tag) {
+                let tv =
+                    tag_value_around(&format!("PackageSupplier: Organization: Acme\n{spelling}"));
+                let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+                let alpha = sbom
+                    .components
+                    .values()
+                    .find(|c| c.name == "alpha")
+                    .unwrap();
+                assert_eq!(
+                    alpha.license_expression.as_deref(),
+                    Some(expression),
+                    "{spelling:?}"
+                );
+                assert!(alpha.licenses.contains(expression), "{spelling:?}");
+                assert_eq!(alpha.supplier.as_deref(), Some("Acme"), "{spelling:?}");
+                assert_eq!(alpha.version.as_deref(), Some("1.0.0"), "{spelling:?}");
+                assert!(
+                    sbom.warnings.iter().any(|w| w.contains("package 'alpha'")
+                        && w.contains(expression)
+                        && w.contains("--deny-license")),
+                    "{spelling:?}: {:?}",
+                    sbom.warnings
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_malformed_concluded_license_falls_back_to_a_readable_declared_one() {
+        let tv = tag_value_around(
+            "PackageLicenseConcluded: MIT AND\nPackageLicenseDeclared: Apache-2.0",
+        );
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let alpha = sbom
+            .components
+            .values()
+            .find(|c| c.name == "alpha")
+            .unwrap();
+        assert_eq!(alpha.license_expression.as_deref(), Some("Apache-2.0"));
+        assert!(alpha.licenses.contains("Apache-2.0"));
+        assert!(sbom
+            .warnings
+            .iter()
+            .any(|w| w.contains("package 'alpha'") && w.contains("'MIT AND'")));
+    }
+
+    #[test]
+    fn test_json_malformed_package_license_is_kept_as_written() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {"created": "2024-01-01T00:00:00Z", "creators": ["Tool: t"]},
+            "packages": [{
+                "SPDXID": "SPDXRef-alpha",
+                "name": "alpha",
+                "versionInfo": "1.0.0",
+                "downloadLocation": "NOASSERTION",
+                "licenseConcluded": "MIT AND",
+                "supplier": "Organization: Acme"
+            }]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        let alpha = sbom.components.values().next().unwrap();
+        assert_eq!(alpha.license_expression.as_deref(), Some("MIT AND"));
+        assert_eq!(alpha.supplier.as_deref(), Some("Acme"));
+        assert_eq!(alpha.version.as_deref(), Some("1.0.0"));
+        assert!(sbom
+            .warnings
+            .iter()
+            .any(|w| w.contains("package 'alpha'") && w.contains("'MIT AND'")));
+    }
+
+    #[test]
+    fn test_json_malformed_file_license_expression_is_dropped_and_named() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {"created": "2024-01-01T00:00:00Z", "creators": ["Tool: t"]},
+            "packages": [{
+                "SPDXID": "SPDXRef-alpha",
+                "name": "alpha",
+                "downloadLocation": "NOASSERTION"
+            }],
+            "files": [{
+                "SPDXID": "SPDXRef-file",
+                "fileName": "./src/main.rs",
+                "licenseConcluded": "MIT AND",
+                "licenseInfoInFiles": ["OR Apache-2.0", "MIT"],
+                "copyrightText": "NONE",
+                "checksums": [{"algorithm": "SHA1", "checksumValue": "d6a770ba38583ed4bb4525bd96e50461655d2758"}]
+            }]
+        }"#;
+        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        assert_eq!(component_names(&sbom), vec!["alpha"]);
+        let warning = sbom
+            .warnings
+            .iter()
+            .find(|w| w.contains("dropped 2 license expression(s)"))
+            .unwrap_or_else(|| {
+                panic!("expected a dropped-expression warning: {:?}", sbom.warnings)
+            });
+        assert!(
+            warning.contains("file './src/main.rs': 'MIT AND'"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("file './src/main.rs': 'OR Apache-2.0'"),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn test_xml_malformed_package_license_is_kept_as_written() {
+        let xml = r#"<Document>
+            <spdxVersion>SPDX-2.3</spdxVersion>
+            <dataLicense>CC0-1.0</dataLicense>
+            <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+            <name>test</name>
+            <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+            <creationInfo><created>2024-01-01T00:00:00Z</created><creators>Tool: t</creators></creationInfo>
+            <packages>
+                <SPDXID>SPDXRef-alpha</SPDXID>
+                <name>alpha</name>
+                <versionInfo>1.0.0</versionInfo>
+                <downloadLocation>NOASSERTION</downloadLocation>
+                <licenseConcluded>MIT AND</licenseConcluded>
+            </packages>
+        </Document>"#;
+        let sbom = SpdxReader::read_xml(xml.as_bytes()).unwrap();
+        let alpha = sbom.components.values().next().unwrap();
+        assert_eq!(alpha.license_expression.as_deref(), Some("MIT AND"));
+        assert_eq!(alpha.version.as_deref(), Some("1.0.0"));
+        assert!(sbom
+            .warnings
+            .iter()
+            .any(|w| w.contains("package 'alpha'") && w.contains("'MIT AND'")));
+    }
+
+    #[test]
+    fn test_a_kept_malformed_expression_still_reports_a_license_change() {
+        let read = |expression: &str| {
+            let tv = tag_value_around(&format!("PackageLicenseConcluded: {expression}"));
+            SpdxReader::read_tag_value(tv.as_bytes()).unwrap()
+        };
+        let old = read("MIT AND");
+        let new = read("GPL-3.0-only AND");
+        let alpha = |sbom: &Sbom| {
+            sbom.components
+                .values()
+                .find(|c| c.name == "alpha")
+                .unwrap()
+                .licensing()
+                .expression
+                .map(str::to_string)
+        };
+        assert_eq!(alpha(&old).as_deref(), Some("MIT AND"));
+        assert_eq!(alpha(&new).as_deref(), Some("GPL-3.0-only AND"));
+        assert_ne!(alpha(&old), alpha(&new));
     }
 
     #[test]
