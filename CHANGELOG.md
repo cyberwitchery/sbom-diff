@@ -10,6 +10,10 @@
 - fix SPDX tag-value documents whose package fields carry a multi-line `<text>` block: a `Creator:` line quoted inside one was adopted as a document creator and could suppress the phantom-creator warning, and a quoted `ExternalRef:` or `PackageName:` line switched the flush-sentinel warning on or off wrongly
 - fix SPDX tag-value documents rejected outright as an unsupported SPDX version because a `<text>` block quoted an `SPDXVersion:` line ahead of the document's real one, as a `DocumentComment:` can; a document whose only `SPDXVersion:` sits inside a text block is now reported as having no version tag rather than taking the quoted one as its version. a `<text>` with no closing marker anywhere after it is not a block at all, matching the parser, so such a document still reports its version, creators and tools instead of losing every tag below it
 - fix `--fail-on version-downgrade` for NuGet versions, which were ordered by a guess: release labels are compared case-insensitively, so `3.0.0-beta` -> `3.0.0-RC` is no longer reported as a downgrade and the .NET `preview` -> `rc` -> release ladder runs forwards; the fourth field is a real version field, so `2.0.0-rc` no longer compares equal to `2.0.0.0`; and `1.0.0-01` and `1.0.0-1` are the same version rather than an unorderable pair the gate waves through
+- fix SPDX tag-value documents silently losing every component below a line the parser cannot read; such lines are now skipped and named in the parser warnings
+- fix an unreadable `ExternalRef` category, checksum algorithm, `Relationship` type, `FileType` or `AnnotationType` aborting the run; the line is skipped and named too
+- fix an empty or whitespace-only license expression aborting the run, on the tag's own line or in a `<text>` block; it is dropped and named, but a non-empty expression the SPDX expression parser rejects (`MIT AND`) still aborts
+- report an SPDX tag-value document the parser still cuts short as an error naming the first package lost, never as a partial SBOM
 
 ## [0.8.0] - 2026-08-17
 

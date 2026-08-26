@@ -1,0 +1,13 @@
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: unreadable-line-old
+DocumentNamespace: http://spdx.org/spdxdocs/unreadable-line-old
+Creator: Tool: test-generator
+Created: 2024-01-01T00:00:00Z
+
+PackageName: alpha
+SPDXID: SPDXRef-alpha
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+ExternalRef: PACKAGE-MANAGER purl pkg:cargo/alpha@1.0.0
