@@ -318,7 +318,8 @@ struct RawLicense {
 }
 
 impl RawLicense {
-    fn set(&mut self, field: &str, expression: String) {
+    fn set(&mut self, field: &str, expression: &str) {
+        let expression = one_line(expression);
         match field {
             "licenseConcluded" => self.concluded = Some(expression),
             _ => self.declared = Some(expression),
@@ -352,7 +353,7 @@ fn strip_unreadable_expressions(doc: &mut serde_json::Value) -> (RawLicenses, Ve
         for (index, package) in packages.iter_mut().enumerate() {
             for field in ["licenseConcluded", "licenseDeclared"] {
                 if let Some(expression) = take_unreadable_expression(package, field) {
-                    raw.entry(index).or_default().set(field, expression);
+                    raw.entry(index).or_default().set(field, &expression);
                 }
             }
         }
@@ -411,12 +412,17 @@ fn take_unreadable_expression(element: &mut serde_json::Value, field: &str) -> O
     Some(expression)
 }
 
-/// shortens a line for a diagnostic.
+/// collapses every run of whitespace to a single space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// shortens a value to one line for a diagnostic.
 fn elide(text: &str) -> String {
-    let text = text.trim();
+    let text = one_line(text);
     match text.char_indices().nth(60) {
         Some((at, _)) => format!("{}...", &text[..at]),
-        None => text.to_string(),
+        None => text,
     }
 }
 
@@ -636,7 +642,7 @@ fn record_raw_license(
     let Some(expression) = unreadable_expression(value.trim_start(), beside, below) else {
         return;
     };
-    raw.entry(index).or_default().set(field, expression);
+    raw.entry(index).or_default().set(field, &expression);
 }
 
 /// joins diagnostics, keeping a warning bounded on a badly broken document.
@@ -684,8 +690,20 @@ impl SpdxReader {
 
         Self::check_spdx_version(buf)?;
 
+        // parsing from the bytes keeps `line`/`column` on the error; the retry
+        // below gives them up only for a document it had to rewrite.
+        let unread = match serde_json::from_slice::<spdx_rs::models::SPDX>(buf) {
+            Ok(spdx_doc) => {
+                return Ok(Self::spdx_to_sbom(spdx_doc, &RawLicenses::new(), &[]));
+            }
+            Err(unread) => unread,
+        };
+
         let mut value: serde_json::Value = serde_json::from_slice(buf)?;
         let (raw, dropped) = strip_unreadable_expressions(&mut value);
+        if raw.is_empty() && dropped.is_empty() {
+            return Err(unread.into());
+        }
 
         let spdx_doc: spdx_rs::models::SPDX = serde_json::from_value(value)?;
 
@@ -2674,6 +2692,120 @@ PackageCopyrightText: NOASSERTION
 ";
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
         assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
+    }
+
+    /// a document with no unreadable expression is never rewritten, so a schema
+    /// error still carries the offsets `serde_json` only has for the input bytes.
+    #[test]
+    fn json_schema_errors_keep_their_line_and_column() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": 12345,
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [],
+            "relationships": []
+        }"#;
+        let msg = SpdxReader::read_json(json.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("at line") && msg.contains("column"),
+            "schema error lost its position: {msg}"
+        );
+
+        let missing = r#"{
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT"
+        }"#;
+        let msg = SpdxReader::read_json(missing.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("line") && msg.contains("column"),
+            "missing-field error lost its position: {msg}"
+        );
+    }
+
+    /// an interior newline in a `<text>` block must not break the one-line
+    /// diagnostic it is quoted into.
+    #[test]
+    fn a_multi_line_expression_is_quoted_on_one_line() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: alpha
+SPDXID: SPDXRef-alpha
+PackageDownloadLocation: NOASSERTION
+PackageLicenseDeclared: <text>MIT
+AND</text>
+PackageCopyrightText: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let warning = sbom
+            .warnings
+            .iter()
+            .find(|w| w.contains("cannot read"))
+            .unwrap_or_else(|| panic!("no unreadable-expression warning: {:?}", sbom.warnings));
+        assert!(!warning.contains('\n'), "warning spans lines: {warning:?}");
+        assert!(
+            warning.contains("'MIT AND'"),
+            "interior whitespace not collapsed: {warning:?}"
+        );
+        let component = &sbom.components[0];
+        assert_eq!(
+            component.license_expression.as_deref(),
+            Some("MIT AND"),
+            "the expression a gate compares must be one line too"
+        );
+    }
+
+    /// an empty expression is named twice on purpose: the reader says which
+    /// line, and this says which package. neither subsumes the other, and only
+    /// the second one exists on the json and xml paths.
+    #[test]
+    fn an_empty_expression_is_named_by_line_and_by_package() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: alpha
+SPDXID: SPDXRef-alpha
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded:
+PackageCopyrightText: NOASSERTION
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert!(
+            sbom.warnings
+                .iter()
+                .any(|w| w.contains("line") && w.contains("expression is empty")),
+            "lost the line-numbered warning: {:?}",
+            sbom.warnings
+        );
+        assert!(
+            sbom.warnings
+                .iter()
+                .any(|w| w.contains("'alpha'") && w.contains("empty concluded")),
+            "lost the package-named warning: {:?}",
+            sbom.warnings
+        );
     }
 
     #[test]
