@@ -109,6 +109,8 @@ enum FailOn {
     EcosystemChanged,
     /// fail if a changed component's checksum differs under an algorithm both sides carry while its version is unchanged.
     ChecksumChanged,
+    /// fail if the new SBOM declares a license expression the SPDX expression parser cannot read.
+    UnreadableLicense,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -155,6 +157,11 @@ enum Violation {
     CopyleftAdded {
         id: ComponentId,
         licenses: Vec<String>,
+    },
+    UnreadableLicense {
+        id: ComponentId,
+        expression: String,
+        gate: &'static str,
     },
     VersionDowngrade {
         id: ComponentId,
@@ -268,6 +275,17 @@ impl fmt::Display for Violation {
                     "copyleft license introduced on component {}: {} (--fail-on copyleft-added)",
                     id,
                     licenses.join(", ")
+                )
+            }
+            Violation::UnreadableLicense {
+                id,
+                expression,
+                gate,
+            } => {
+                write!(
+                    f,
+                    "license expression '{expression}' on component {id} cannot be read, so the \
+                     gate cannot be evaluated against it ({gate})"
                 )
             }
             Violation::VersionDowngrade { id, old, new } => {
@@ -409,6 +427,7 @@ fn main() -> anyhow::Result<()> {
 
     let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
     let cycle_violation = check_cyclic_dependencies(&new_sbom, &args.fail_on);
+    let unreadable_license_violation = check_unreadable_licenses(&new_sbom, &args.fail_on);
 
     // build ecosystem filter and pre-count filtered totals.
     let eco_include: HashSet<String> = args
@@ -513,7 +532,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     }
 
-    if !violations.is_empty() || cycle_violation {
+    if !violations.is_empty() || cycle_violation || unreadable_license_violation {
         std::process::exit(3);
     }
 
@@ -550,6 +569,10 @@ fn offending_requirements(
 }
 
 fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
+    if deny.is_empty() && allow.is_empty() {
+        return false;
+    }
+
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
     let deny_lower: HashSet<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
     let allow_lower: HashSet<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
@@ -567,6 +590,21 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
         }
 
         let licensing = comp.licensing();
+
+        // an expression the parser cannot read decomposes into one opaque
+        // identifier, so neither list can be evaluated against the licenses it
+        // actually names. an active gate refuses rather than pass on the
+        // fallback.
+        if let Some(expression) = licensing.unreadable_expression() {
+            eprintln!(
+                "error: component {} declares the license expression '{}', which the SPDX \
+                 expression parser cannot read, so --deny-license/--allow-license cannot be \
+                 evaluated against it",
+                comp.id, expression
+            );
+            violation = true;
+            continue;
+        }
 
         if !deny_lower.is_empty()
             && !licensing.satisfiable(|req| !requirement_listed(req, &deny_lower))
@@ -613,11 +651,45 @@ fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
     true
 }
 
+/// reports every expression in the new SBOM the SPDX expression parser cannot
+/// read, when `--fail-on unreadable-license` asked for it.
+///
+/// such an expression is kept as written, so a diff still reports it changing,
+/// but no license gate can be evaluated against it. this names the condition on
+/// its own, for a run that gates nothing else about licenses.
+fn check_unreadable_licenses(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
+    if !fail_on.contains(&FailOn::UnreadableLicense) {
+        return false;
+    }
+
+    let mut violation = false;
+    for comp in sbom.components.values() {
+        if let Some(expression) = comp.licensing().unreadable_expression() {
+            eprintln!(
+                "error: component {} declares the license expression '{}', which the SPDX \
+                 expression parser cannot read (--fail-on unreadable-license)",
+                comp.id, expression
+            );
+            violation = true;
+        }
+    }
+    violation
+}
+
 /// builds the `copyleft-added` violation for a changed component, if the new
 /// licensing imposes a copyleft obligation the old one did not.
 fn copyleft_violation(change: &ComponentChange, active: bool) -> Option<Violation> {
     if !active {
         return None;
+    }
+    // an unreadable expression carries no identifiable copyleft, so the gate
+    // would pass a component that plainly declares one.
+    if let Some(expression) = change.new.licensing().unreadable_expression() {
+        return Some(Violation::UnreadableLicense {
+            id: change.id.clone(),
+            expression: expression.to_string(),
+            gate: "--fail-on copyleft-added",
+        });
     }
     let introduced = copyleft_obligations_added(change.old.licensing(), change.new.licensing());
     if introduced.is_empty() {
@@ -668,14 +740,22 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
             });
         }
         if check_copyleft_added {
-            let none = BTreeSet::new();
-            let introduced =
-                copyleft_obligations_added(Licensing::from_ids(&none), comp.licensing());
-            if !introduced.is_empty() {
-                violations.push(Violation::CopyleftAdded {
+            if let Some(expression) = comp.licensing().unreadable_expression() {
+                violations.push(Violation::UnreadableLicense {
                     id: comp.id.clone(),
-                    licenses: introduced.into_iter().collect(),
+                    expression: expression.to_string(),
+                    gate: "--fail-on copyleft-added",
                 });
+            } else {
+                let none = BTreeSet::new();
+                let introduced =
+                    copyleft_obligations_added(Licensing::from_ids(&none), comp.licensing());
+                if !introduced.is_empty() {
+                    violations.push(Violation::CopyleftAdded {
+                        id: comp.id.clone(),
+                        licenses: introduced.into_iter().collect(),
+                    });
+                }
             }
         }
         if check_supplier_changed && comp.supplier.is_some() {
@@ -891,7 +971,8 @@ fn gate_field_dependencies(gate: FailOn) -> &'static [Field] {
         FailOn::AddedComponents
         | FailOn::RemovedComponents
         | FailOn::MetadataChanged
-        | FailOn::CyclicDependency => &[],
+        | FailOn::CyclicDependency
+        | FailOn::UnreadableLicense => &[],
     }
 }
 
@@ -1065,6 +1146,100 @@ mod tests {
         assert_eq!(w.len(), 2);
         assert!(w[0].contains("--fail-on deps"));
         assert!(w[1].contains("--fail-on version-downgrade"));
+    }
+
+    /// an expression the parser cannot read decomposes into one opaque
+    /// identifier, so an active list gate cannot be evaluated against the
+    /// licenses it names. it fails rather than passes.
+    #[test]
+    fn unreadable_expression_fails_an_active_license_gate() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        c.license_expression = Some("GPL-3.0-only AND".into());
+        c.licenses.insert("GPL-3.0-only AND".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        assert!(check_licenses(&sbom, &["MIT".into()], &[]));
+        assert!(check_licenses(&sbom, &[], &["MIT".into()]));
+        // no license gate asked anything, so there is nothing to refuse.
+        assert!(!check_licenses(&sbom, &[], &[]));
+    }
+
+    #[test]
+    fn readable_expression_still_answers_an_active_license_gate() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        c.license_expression = Some("MIT OR Apache-2.0".into());
+        c.licenses.insert("MIT".into());
+        c.licenses.insert("Apache-2.0".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
+        assert!(!check_licenses(&sbom, &[], &["MIT".into()]));
+    }
+
+    #[test]
+    fn unreadable_license_gate_fires_only_when_asked() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        c.license_expression = Some("GPL-3.0-only AND".into());
+        c.licenses.insert("GPL-3.0-only AND".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        assert!(check_unreadable_licenses(
+            &sbom,
+            &[FailOn::UnreadableLicense]
+        ));
+        assert!(!check_unreadable_licenses(
+            &sbom,
+            &[FailOn::AddedComponents]
+        ));
+        assert!(!check_unreadable_licenses(&sbom, &[]));
+    }
+
+    #[test]
+    fn unreadable_license_gate_ignores_a_readable_expression() {
+        let mut sbom = Sbom::default();
+        let mut c = Component::new("a".into(), Some("1".into()));
+        c.license_expression = Some("GPL-3.0-only".into());
+        c.licenses.insert("GPL-3.0-only".into());
+        sbom.components.insert(c.id.clone(), c);
+
+        assert!(!check_unreadable_licenses(
+            &sbom,
+            &[FailOn::UnreadableLicense]
+        ));
+    }
+
+    /// `copyleft-added` reads the identifiers an expression names, and an
+    /// unreadable one names none, so the gate would pass a package that plainly
+    /// declares gpl.
+    #[test]
+    fn copyleft_gate_fails_closed_on_an_unreadable_expression() {
+        let mut old = Component::new("a".into(), Some("1".into()));
+        old.license_expression = Some("MIT".into());
+        old.licenses.insert("MIT".into());
+        let mut new = Component::new("a".into(), Some("2".into()));
+        new.license_expression = Some("GPL-3.0-only AND".into());
+        new.licenses.insert("GPL-3.0-only AND".into());
+        let change = ComponentChange {
+            id: old.id.clone(),
+            old,
+            new,
+            changes: Vec::new(),
+            is_downgrade: false,
+        };
+
+        match copyleft_violation(&change, true) {
+            Some(Violation::UnreadableLicense {
+                expression, gate, ..
+            }) => {
+                assert_eq!(expression, "GPL-3.0-only AND");
+                assert_eq!(gate, "--fail-on copyleft-added");
+            }
+            other => panic!("expected an unreadable-license violation, got {other:?}"),
+        }
+        assert!(copyleft_violation(&change, false).is_none());
     }
 
     #[test]

@@ -11,7 +11,7 @@ sbom-diff [flags] <old-file> <new-file>
 - `--only <fields>`: comma-separated list of fields to report (version, license, supplier, purl, description, hashes, ecosystem, deps).
 - `--deny-license <expr>`: fail (exit 2) if license is found in new sbom.
 - `--allow-license <expr>`: fail (exit 2) if license is not in allowlist.
-- `--fail-on <condition>`: fail (exit 3) on specific conditions (e.g. added-components, missing-hashes, checksum-changed, deps, purl-changed, ecosystem-changed).
+- `--fail-on <condition>`: fail (exit 3) on specific conditions (e.g. added-components, missing-hashes, checksum-changed, deps, purl-changed, ecosystem-changed, unreadable-license).
 - `--summary`: print only summary counts (no component details).
 - `-q, --quiet`: suppress all output except errors.
 
@@ -35,6 +35,11 @@ sbom-diff old.json new.json --fail-on ecosystem-changed
 
 # fail if a component's digest changed but its version did not (re-published artifact)
 sbom-diff old.json new.json --fail-on checksum-changed
+
+# fail if the new sbom declares a license expression the spdx parser cannot read
+# (an active --deny-license/--allow-license or --fail-on copyleft-added run
+# already fails on one)
+sbom-diff old.json new.json --fail-on unreadable-license
 
 # read from stdin
 cat new.json | sbom-diff old.json -

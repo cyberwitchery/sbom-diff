@@ -620,6 +620,32 @@ impl<'a> Licensing<'a> {
             .all(|id| acceptable(&LicenseRequirement::new(id)))
     }
 
+    /// returns the declared expression when it is present but the SPDX
+    /// expression parser cannot read it.
+    ///
+    /// such an expression is carried as written so a diff still reports it
+    /// changing, but it decomposes into a single opaque identifier, so
+    /// `satisfiable` cannot answer a question about the licenses it names. a
+    /// gate that must answer one should refuse rather than take the fallback.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sbom_model::Licensing;
+    /// use std::collections::BTreeSet;
+    ///
+    /// let ids: BTreeSet<String> = ["GPL-3.0-only AND".into()].into();
+    /// let broken = Licensing { expression: Some("GPL-3.0-only AND"), ids: &ids };
+    /// assert_eq!(broken.unreadable_expression(), Some("GPL-3.0-only AND"));
+    ///
+    /// let fine = Licensing { expression: Some("MIT"), ids: &ids };
+    /// assert_eq!(fine.unreadable_expression(), None);
+    /// ```
+    pub fn unreadable_expression(&self) -> Option<&'a str> {
+        self.expression
+            .filter(|expression| spdx::Expression::parse(expression).is_err())
+    }
+
     /// returns every requirement the licensing mentions, whether or not a
     /// consumer must accept it.
     pub fn requirements(&self) -> BTreeSet<LicenseRequirement> {

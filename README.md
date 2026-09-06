@@ -135,6 +135,24 @@ tree instead: reordering its operands does count as a change, and
 `--fail-on copyleft-added` falls back to naming every copyleft license it
 mentions that the old side did not already force.
 
+## unreadable license expressions
+
+an SPDX document can declare a license expression the SPDX expression parser
+cannot read (`GPL-3.0-only AND`). it is kept as written, so a diff still reports
+it changing, but it decomposes into a single opaque identifier: nothing can be
+asked about the licenses it names.
+
+- an active `--deny-license` or `--allow-license` run fails (exit code 2) on
+  such a component instead of passing it. the gate cannot be evaluated, and
+  passing a package that plainly declares gpl because its expression is
+  malformed is the wrong answer.
+- `--fail-on copyleft-added` fails (exit code 3) the same way, for the same
+  reason.
+- `--fail-on unreadable-license` (exit code 3) names the condition on its own,
+  for a run that gates nothing else about licenses.
+- with no license gate active, the expression is reported as a warning only, as
+  before.
+
 ## checksum gating
 
 `--fail-on checksum-changed` (exit code 3) fires when a component's digest
