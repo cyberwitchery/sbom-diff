@@ -358,9 +358,13 @@ fn strip_unreadable_expressions(doc: &mut serde_json::Value) -> (RawLicenses, Ve
             }
         }
     }
-    for (section, singular, named_by) in [
-        ("files", "file", "fileName"),
-        ("snippets", "snippet", "SPDXID"),
+    // only files carry a list of expressions to strip: spdx-rs types a snippet's
+    // `licenseInfoInSnippets` as `Vec<String>`, so nothing in it can fail to
+    // deserialize and stripping an entry would drop license information for no
+    // gain. snippets are here for their single `licenseConcluded`.
+    for (section, singular, named_by, list_field) in [
+        ("files", "file", "fileName", Some("licenseInfoInFiles")),
+        ("snippets", "snippet", "SPDXID", None),
     ] {
         let Some(elements) = doc.get_mut(section).and_then(|v| v.as_array_mut()) else {
             continue;
@@ -375,8 +379,8 @@ fn strip_unreadable_expressions(doc: &mut serde_json::Value) -> (RawLicenses, Ve
                 take_unreadable_expression(element, "licenseConcluded")
                     .into_iter()
                     .collect();
-            if let Some(list) = element
-                .get_mut("licenseInfoInFiles")
+            if let Some(list) = list_field
+                .and_then(|field| element.get_mut(field))
                 .and_then(|v| v.as_array_mut())
             {
                 let readable: Vec<serde_json::Value> = list
@@ -429,21 +433,39 @@ fn elide(text: &str) -> String {
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
 /// block, or `None` if it can. `beside` and `below` carry the `<text>`
 /// blocks spdx-rs would read as this line's value.
+/// splits a tag-value line the way spdx-rs does: an alphanumeric tag, then
+/// optional whitespace, then a colon. `PackageName : x` is that tag, with a
+/// value, exactly as the parser reads it.
+///
+/// every reader of a tag has to agree on this, or the two disagree about which
+/// lines carry which tag: a stricter `split_once(':')` keeps the trailing space
+/// on the tag and a stricter `starts_with("PackageName:")` misses the line
+/// altogether, and both mean a license the parser did read is attributed to the
+/// wrong package or to none.
+fn tag_and_value(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    let tag_len = line
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(line.len());
+    let (tag, rest) = line.split_at(tag_len);
+    if tag.is_empty() {
+        return None;
+    }
+    Some((tag, rest.trim_start().strip_prefix(':')?))
+}
+
+/// reports whether `line` carries `tag`, tolerating the space spdx-rs tolerates.
+fn has_tag(line: &str, tag: &str) -> bool {
+    tag_and_value(line).is_some_and(|(found, _)| found == tag)
+}
+
 fn unreadable_line(line: &str, beside: Option<&str>, below: Option<&str>) -> Option<String> {
     let line = line.trim_start();
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
         return None;
     }
 
-    // spdx-rs reads the tag with nom's `alphanumeric0`, then demands a colon.
-    let tag_len = line
-        .find(|c: char| !c.is_ascii_alphanumeric())
-        .unwrap_or(line.len());
-    let (tag, rest) = line.split_at(tag_len);
-    let value = (!tag.is_empty())
-        .then(|| rest.trim_start().strip_prefix(':'))
-        .flatten();
-    let Some(value) = value else {
+    let Some((tag, value)) = tag_and_value(line) else {
         return Some(format!("'{}' is not a tag-value pair", elide(line)));
     };
     if !READABLE_TAGS.contains(&tag) {
@@ -611,7 +633,7 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>, RawLicenses) {
             };
         }
         if !in_dropped_block {
-            if tagged && line.trim_start().starts_with("PackageName:") {
+            if tagged && has_tag(line, "PackageName") {
                 packages += 1;
             }
             kept.push_str(line);
@@ -630,8 +652,7 @@ fn record_raw_license(
     beside: Option<&str>,
     below: Option<&str>,
 ) {
-    let line = line.trim_start();
-    let Some((tag, value)) = line.split_once(':') else {
+    let Some((tag, value)) = tag_and_value(line) else {
         return;
     };
     let field = match tag {
@@ -792,9 +813,9 @@ impl SpdxReader {
         // 0.5 would have silently dropped the last one without the sentinel.
         let mut last_pkg_has_ext_ref = false;
         for line in tag_lines(input) {
-            if line.starts_with("PackageName:") {
+            if has_tag(line, "PackageName") {
                 last_pkg_has_ext_ref = false;
-            } else if line.starts_with("ExternalRef:") {
+            } else if has_tag(line, "ExternalRef") {
                 last_pkg_has_ext_ref = true;
             }
         }
@@ -813,7 +834,10 @@ impl SpdxReader {
             .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
 
         let raw_packages: Vec<&str> = tag_lines(input)
-            .filter_map(|line| line.strip_prefix("PackageName:").map(str::trim))
+            .filter_map(|line| match tag_and_value(line) {
+                Some(("PackageName", name)) => Some(name.trim()),
+                _ => None,
+            })
             .collect();
         let read = spdx_doc.package_information.len();
         if read < raw_packages.len() {
@@ -1004,9 +1028,10 @@ impl SpdxReader {
                     } else {
                         format!(
                             "SPDX: package '{}' declares a {what} license expression the SPDX \
-                             expression parser cannot read ('{}'); it is kept as written, but \
-                             --deny-license, --allow-license and --fail-on copyleft-added \
-                             cannot match it",
+                             expression parser cannot read ('{}'); it is kept as written, so a \
+                             diff still reports it changing, but --deny-license, \
+                             --allow-license and --fail-on copyleft-added cannot be evaluated \
+                             against it and fail on it instead",
                             comp.name,
                             elide(expression),
                         )
@@ -3568,6 +3593,121 @@ PackageDownloadLocation: NOASSERTION
                 );
             }
         }
+    }
+
+    /// spdx-rs reads `Tag : value` as that tag, so every reader of a tag has to.
+    /// a stricter split kept the trailing space on the tag, matched no arm, and
+    /// dropped the license the parser had read.
+    #[test]
+    fn a_space_before_the_colon_still_keeps_the_expression() {
+        let tv = tag_value_around("PackageLicenseConcluded : GPL-3.0-only AND");
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let alpha = sbom
+            .components
+            .values()
+            .find(|c| c.name == "alpha")
+            .unwrap();
+        assert_eq!(
+            alpha.license_expression.as_deref(),
+            Some("GPL-3.0-only AND")
+        );
+        assert!(
+            sbom.warnings.iter().any(|w| w.contains("package 'alpha'")
+                && w.contains("GPL-3.0-only AND")
+                && w.contains("cannot read")),
+            "{:?}",
+            sbom.warnings
+        );
+    }
+
+    /// the package counter reads `PackageName` the same tolerant way, or every
+    /// later package's raw license is recorded under the wrong index.
+    #[test]
+    fn a_space_before_the_colon_on_packagename_keeps_the_alignment() {
+        let tv = "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+Creator: Tool: test-generator
+Created: 2024-01-01T00:00:00Z
+
+PackageName: alpha
+SPDXID: SPDXRef-alpha
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+
+PackageName : omega
+SPDXID: SPDXRef-omega
+PackageVersion: 2.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: GPL-3.0-only AND
+";
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let named = |name: &str| {
+            sbom.components
+                .values()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} is missing"))
+                .clone()
+        };
+        assert_eq!(named("alpha").license_expression.as_deref(), Some("MIT"));
+        assert_eq!(
+            named("omega").license_expression.as_deref(),
+            Some("GPL-3.0-only AND")
+        );
+        assert!(
+            sbom.warnings
+                .iter()
+                .any(|w| w.contains("package 'omega'") && w.contains("GPL-3.0-only AND")),
+            "{:?}",
+            sbom.warnings
+        );
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("package 'alpha'")),
+            "{:?}",
+            sbom.warnings
+        );
+    }
+
+    /// a document that is both unreadable and rewritten gives its position up:
+    /// the surviving error comes from the rewritten value, where an offset would
+    /// point at text the user does not have.
+    #[test]
+    fn a_rewritten_document_reports_its_schema_error_without_a_position() {
+        let json = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": 12345,
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: test"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {
+                    "name": "alpha",
+                    "SPDXID": "SPDXRef-alpha",
+                    "downloadLocation": "NOASSERTION",
+                    "licenseConcluded": "MIT AND"
+                }
+            ],
+            "relationships": []
+        }"#;
+        let msg = SpdxReader::read_json(json.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("invalid type: integer `12345`"),
+            "the schema error is the one reported: {msg}"
+        );
+        assert!(
+            !msg.contains("at line"),
+            "a rewritten document cannot carry input offsets: {msg}"
+        );
     }
 
     #[test]
