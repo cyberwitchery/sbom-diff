@@ -1,0 +1,19 @@
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: malformed-license-expression
+DocumentNamespace: http://spdx.org/spdxdocs/malformed-license-expression
+Creator: Tool: manual
+Created: 2024-01-01T00:00:00Z
+
+PackageName: alpha
+SPDXID: SPDXRef-alpha
+PackageVersion: 1.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT
+
+PackageName : omega
+SPDXID: SPDXRef-omega
+PackageVersion: 2.0.0
+PackageDownloadLocation: NOASSERTION
+PackageLicenseConcluded: MIT

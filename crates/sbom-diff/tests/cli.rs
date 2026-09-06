@@ -2642,3 +2642,58 @@ fn a_cyclonedx_1_7_document_is_still_refused() {
         "{stderr}"
     );
 }
+
+/// a document whose license expression the SPDX expression parser cannot read
+/// is readable, and its expression is carried — but no license gate can be
+/// evaluated against it, so an active one fails instead of passing.
+#[test]
+fn unreadable_license_expression_fails_every_active_license_gate() {
+    let old = fixture("malformed-license-expression-old.spdx");
+    let new = fixture("malformed-license-expression.spdx");
+
+    for (args, code) in [
+        (vec!["--deny-license", "MIT"], 2),
+        (vec!["--allow-license", "MIT"], 2),
+        (vec!["--fail-on", "unreadable-license"], 3),
+        (vec!["--fail-on", "copyleft-added"], 3),
+    ] {
+        let out = sbom_diff()
+            .arg(&old)
+            .arg(&new)
+            .arg("--format")
+            .arg("spdx-tv")
+            .arg("-q")
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("GPL-3.0-only AND"),
+            "{args:?}: the offending expression is named: {stderr}"
+        );
+    }
+}
+
+/// with no license gate active the expression is a warning, not a failure, and
+/// it names the package that declares it.
+#[test]
+fn unreadable_license_expression_alone_is_only_a_warning() {
+    let old = fixture("malformed-license-expression-old.spdx");
+    let new = fixture("malformed-license-expression.spdx");
+    let out = sbom_diff()
+        .arg(&old)
+        .arg(&new)
+        .arg("--format")
+        .arg("spdx-tv")
+        .arg("--show-warnings")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("package 'omega'") && stderr.contains("GPL-3.0-only AND"),
+        "the warning names the package that declares it: {stderr}"
+    );
+}
