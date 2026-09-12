@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.9.0] - 2026-09-12
 
 - read CycloneDX 1.6 documents, in json and xml: the current spec since April 2024, and what syft, cdxgen, trivy and cargo-cyclonedx emit by default, was refused outright with "only 1.3–1.5 is supported". a 1.6 document is read under 1.5 rules, which loses nothing sbom-diff models — component name, version, supplier, purl, description, licenses and hashes, the metadata timestamp, tools and authors, and the dependency graph are unchanged between the two spec revisions — and every read of one emits a warning naming the version and the fields it drops. component `evidence` is one of them: 1.6 spells `evidence.identity` as a list of identities where 1.5 allows only one, and recommends the list even for a single identity, but a json document using that spelling failed to load at all — the whole document, over one component — with an `invalid type: map, expected a string` message naming neither the field nor the version. 1.7 and later still fail, and the message no longer names a range that stops at 1.5
 - fix a CycloneDX XML document rejected as an unsupported spec version because the same namespace url appeared in a comment, in element text or in an unrelated attribute ahead of the root element's own declaration; the version is now read from the namespace the root element itself is in
