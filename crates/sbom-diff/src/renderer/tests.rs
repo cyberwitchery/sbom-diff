@@ -1818,3 +1818,185 @@ fn test_sarif_renderer_upgrade_stays_warning() {
         .unwrap();
     assert_eq!(changed["level"], "warning");
 }
+
+fn render_markdown(diff: &Diff, opts: &RenderOptions) -> String {
+    let mut buf = Vec::new();
+    MarkdownRenderer.render(diff, opts, &mut buf).unwrap();
+    String::from_utf8(buf).unwrap()
+}
+
+fn render_markdown_summary(diff: &Diff, opts: &RenderOptions) -> String {
+    let mut buf = Vec::new();
+    MarkdownRenderer
+        .render_summary(diff, opts, &mut buf)
+        .unwrap();
+    String::from_utf8(buf).unwrap()
+}
+
+fn mock_diff_added_purls(purls: &[&str]) -> Diff {
+    let added = purls
+        .iter()
+        .map(|purl| {
+            let mut c = Component::new("pkg".into(), None);
+            c.purl = Some(purl.to_string());
+            c
+        })
+        .collect();
+    Diff {
+        added,
+        ..Diff::default()
+    }
+}
+
+fn mock_diff_added_ecosystem(ecosystem: &str) -> Diff {
+    let mut c = Component::new("pkg".into(), None);
+    c.ecosystem = Some(ecosystem.into());
+    Diff {
+        added: vec![c],
+        ..Diff::default()
+    }
+}
+
+fn mock_diff_field_change(change: FieldChange) -> Diff {
+    let c = Component::new("pkg".into(), None);
+    Diff {
+        changed: vec![ComponentChange {
+            id: c.id.clone(),
+            old: c.clone(),
+            new: c,
+            changes: vec![change],
+            is_downgrade: false,
+        }],
+        ..Diff::default()
+    }
+}
+
+#[test]
+fn test_markdown_code_span_widens_fence_past_backtick_run() {
+    let out = render_markdown(
+        &mock_diff_added_purls(&["a`b", "a``b"]),
+        &RenderOptions::default(),
+    );
+
+    assert!(out.contains("\n- ``a`b``\n"));
+    assert!(out.contains("\n- ```a``b```\n"));
+}
+
+#[test]
+fn test_markdown_code_span_pads_value_touching_backtick() {
+    let out = render_markdown(
+        &mock_diff_added_purls(&["`a", "b`"]),
+        &RenderOptions::default(),
+    );
+
+    assert!(out.contains("\n- `` `a ``\n"));
+    assert!(out.contains("\n- `` b` ``\n"));
+}
+
+#[test]
+fn test_markdown_code_span_pads_space_wrapped_value() {
+    let out = render_markdown(
+        &mock_diff_added_purls(&[" a ", "  "]),
+        &RenderOptions::default(),
+    );
+
+    assert!(out.contains("\n- `  a  `\n"));
+    assert!(out.contains("\n- `  `\n"));
+}
+
+#[test]
+fn test_markdown_empty_value_renders_no_code_span() {
+    let out = render_markdown(
+        &mock_diff_field_change(FieldChange::Version(
+            Some(String::new()),
+            Some("1.0".into()),
+        )),
+        &RenderOptions::default(),
+    );
+
+    assert!(out.contains("- **Version**:  &rarr; `1.0`\n"));
+}
+
+#[test]
+fn test_markdown_line_endings_render_as_spaces() {
+    let out = render_markdown(
+        &mock_diff_field_change(FieldChange::Description(
+            Some("a\nb\r\nc\rd".into()),
+            Some("e".into()),
+        )),
+        &RenderOptions {
+            show_warnings: true,
+            old_warnings: vec!["w\n- **new:** fake".into()],
+            ..Default::default()
+        },
+    );
+
+    assert!(out.contains("- **Description**: `a b c d` &rarr; `e`\n"));
+    assert!(out.contains("- **old:** w - \\*\\*new:\\*\\* fake\n"));
+}
+
+#[test]
+fn test_markdown_hash_and_edge_names_use_code_spans() {
+    use sbom_model::{ComponentId, DependencyKind};
+
+    let parent = ComponentId::new(None, &[("name", "parent")]);
+    let child = ComponentId::new(None, &[("name", "child")]);
+    let mut diff = mock_diff_field_change(FieldChange::Hashes(
+        BTreeMap::from([("sha`256".to_string(), "a`b".to_string())]),
+        BTreeMap::new(),
+    ));
+    diff.component_names = BTreeMap::from([
+        (parent.clone(), "p`1".to_string()),
+        (child.clone(), "c``2".to_string()),
+    ]);
+    diff.edge_diffs = vec![crate::EdgeDiff {
+        parent,
+        added: BTreeMap::from([(child, DependencyKind::Dev)]),
+        removed: BTreeMap::new(),
+        kind_changed: BTreeMap::new(),
+    }];
+    let out = render_markdown(&diff, &RenderOptions::default());
+
+    assert!(out.contains("  - ``sha`256``: removed ``a`b``\n"));
+    assert!(out.contains("#### ``p`1``\n"));
+    assert!(out.contains("- ```c``2``` (dev)\n"));
+}
+
+#[test]
+fn test_markdown_escapes_pipe_in_ecosystem_table() {
+    let diff = mock_diff_added_ecosystem("a|b\\");
+    let opts = RenderOptions {
+        group_by_ecosystem: true,
+        ..Default::default()
+    };
+
+    let row = "| a\\|b\\\\ | 1 | 0 | 0 |\n";
+    assert!(render_markdown(&diff, &opts).contains(row));
+    assert!(render_markdown_summary(&diff, &opts).contains(row));
+}
+
+#[test]
+fn test_markdown_escapes_ecosystem_heading() {
+    let out = render_markdown(
+        &mock_diff_added_ecosystem("*x* #"),
+        &RenderOptions {
+            group_by_ecosystem: true,
+            ..Default::default()
+        },
+    );
+
+    assert!(out.contains("\n#### \\*x\\* \\#\n"));
+}
+
+#[test]
+fn test_markdown_warnings_cannot_inject_html() {
+    let opts = RenderOptions {
+        show_warnings: true,
+        new_warnings: vec!["</details><img src=x> &amp; `c` [l](u) ~s~ _e_".into()],
+        ..Default::default()
+    };
+    let line = "- **new:** \\</details>\\<img src=x> \\&amp; \\`c\\` \\[l\\](u) \\~s\\~ \\_e\\_\n";
+
+    assert!(render_markdown(&mock_diff(), &opts).contains(line));
+    assert!(render_markdown_summary(&mock_diff(), &opts).contains(line));
+}

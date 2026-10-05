@@ -1,5 +1,9 @@
 # changelog
 
+## unreleased
+
+- fix `--output markdown` letting SBOM text break out of its formatting in a PR comment: a backtick in a component id, version, hash or other value ended its code span early, a `|` in an ecosystem name split the ecosystem table, a line break ended the list item or heading it sat in, and a parser warning quoting `</details>` or other markup closed the collapsible section and injected html. values now render literally — code spans widen their backtick fence past any run inside the value, line breaks inside a value render as a space, and warnings and ecosystem names are escaped — while ordinary values render exactly as before
+
 ## [0.9.0] - 2026-09-12
 
 - read CycloneDX 1.6 documents, in json and xml: the current spec since April 2024, and what syft, cdxgen, trivy and cargo-cyclonedx emit by default, was refused outright with "only 1.3–1.5 is supported". a 1.6 document is read under 1.5 rules, which loses nothing sbom-diff models — component name, version, supplier, purl, description, licenses and hashes, the metadata timestamp, tools and authors, and the dependency graph are unchanged between the two spec revisions — and every read of one emits a warning naming the version and the fields it drops. component `evidence` is one of them: 1.6 spells `evidence.identity` as a list of identities where 1.5 allows only one, and recommends the list even for a single identity, but a json document using that spelling failed to load at all — the whole document, over one component — with an `invalid type: map, expected a string` message naming neither the field nor the version. 1.7 and later still fail, and the message no longer names a range that stops at 1.5
