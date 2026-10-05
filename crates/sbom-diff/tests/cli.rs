@@ -678,6 +678,37 @@ fn summary_markdown_output() {
 }
 
 #[test]
+fn markdown_output_escapes_hostile_sbom_values() {
+    let out = sbom_diff()
+        .arg(fixture("markdown-hostile-old.json"))
+        .arg(fixture("markdown-hostile-new.json"))
+        .arg("--output")
+        .arg("markdown")
+        .arg("--show-warnings")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "- **old:** CycloneDX: dependency bom-ref '\\</details>\\<img src=x>' does not match any component",
+        "- **new:** CycloneDX: dependency bom-ref '\\</details>\\<img src=x>  # injected heading' does not match any component",
+        "- ``` pkg:npm/pipe@1?q=``a|b`` ```",
+        "- **Version**: `1.0` &rarr; ``1.0` | `2.0``",
+        "- **Description**: `plain` &rarr; `line one - injected item`",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing {line:?} in:\n{stdout}");
+    }
+    let opened = stdout
+        .lines()
+        .filter(|l| l.starts_with("<details>"))
+        .count();
+    let closed = stdout.lines().filter(|l| *l == "</details>").count();
+    assert_eq!(opened, 3);
+    assert_eq!(closed, 3);
+}
+
+#[test]
 fn summary_with_quiet_produces_no_output() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))
