@@ -2702,3 +2702,24 @@ fn a_cyclonedx_1_7_document_is_still_refused() {
         "{stderr}"
     );
 }
+
+#[test]
+fn output_is_identical_across_runs() {
+    for output in ["text", "markdown", "json", "sarif", "csv"] {
+        let run = || {
+            let out = sbom_diff()
+                .arg(fixture("interleaved-old.json"))
+                .arg(fixture("interleaved-new.json"))
+                .arg("--output")
+                .arg(output)
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(0), "{output}");
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let first = run();
+        for _ in 0..4 {
+            assert_eq!(run(), first, "{output}");
+        }
+    }
+}
