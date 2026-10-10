@@ -635,14 +635,11 @@ impl Differ {
             });
         }
 
-        // 7. remove unchanged matched components (already drained changed ones
-        //    above, so swap_remove returns None for those — that's fine)
-        for id in &matched_old {
-            old.components.swap_remove(id);
-        }
-        for id in &matched_new {
-            new.components.swap_remove(id);
-        }
+        // 7. remove unchanged matched components and sort the rest by id
+        old.components.retain(|id, _| !matched_old.contains(id));
+        new.components.retain(|id, _| !matched_new.contains(id));
+        old.components.sort_keys();
+        new.components.sort_keys();
 
         // 8. drain remaining: everything left is unmatched
         let added: Vec<Component> = new.components.into_values().collect();
@@ -3137,5 +3134,35 @@ mod tests {
         assert!(!diff.changed.iter().any(|c| c.is_downgrade));
         assert!(diff.added.is_empty());
         assert!(diff.removed.is_empty());
+    }
+
+    #[test]
+    fn added_and_removed_come_out_in_id_order() {
+        let mut old = Vec::new();
+        let mut new = Vec::new();
+        for i in 0..64 {
+            match i % 4 {
+                0 => {
+                    old.push(npm_component(&format!("p{i:02}-keep"), "1.0.0"));
+                    new.push(npm_component(&format!("p{i:02}-keep"), "1.0.0"));
+                }
+                2 => {
+                    old.push(npm_component(&format!("p{i:02}-bump"), "1.0.0"));
+                    new.push(npm_component(&format!("p{i:02}-bump"), "1.1.0"));
+                }
+                _ => {
+                    old.push(npm_component(&format!("p{i:02}-gone"), "1.0.0"));
+                    new.push(npm_component(&format!("p{i:02}-new"), "1.0.0"));
+                }
+            }
+        }
+
+        let diff = Differ::diff(&sbom_of(old), &sbom_of(new), None);
+        assert_eq!(diff.changed.len(), 16);
+        for list in [&diff.added, &diff.removed] {
+            let ids: Vec<&ComponentId> = list.iter().map(|c| &c.id).collect();
+            assert_eq!(ids.len(), 32);
+            assert!(ids.is_sorted(), "{ids:?}");
+        }
     }
 }
