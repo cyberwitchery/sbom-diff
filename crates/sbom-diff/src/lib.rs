@@ -635,7 +635,7 @@ impl Differ {
             });
         }
 
-        // 7. remove unchanged matched components, then restore the id order swap_remove broke
+        // 7. remove unchanged matched components and sort the rest by id
         old.components.retain(|id, _| !matched_old.contains(id));
         new.components.retain(|id, _| !matched_new.contains(id));
         old.components.sort_keys();
