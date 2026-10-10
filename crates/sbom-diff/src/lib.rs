@@ -1,10 +1,12 @@
 #![doc = include_str!("../readme.md")]
 
+use packageurl::PackageUrl;
 use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
 use sbom_model::{licensings_equivalent, Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::str::FromStr;
 
 pub mod renderer;
 
@@ -370,10 +372,30 @@ pub enum Field {
 /// the version alignment gives up and pairs them by id.
 const MAX_ALIGNED_CANDIDATES: usize = 256;
 
+/// a component's (ecosystem, purl namespace) during reconciliation; `None` in
+/// either slot is unknown and matches any value.
+type IdentityKey = (Option<String>, Option<String>);
+
+/// a purl without a namespace yields `Some("")`, unlike a missing or unparseable purl.
+fn identity_key(component: &Component) -> IdentityKey {
+    let namespace = component
+        .purl
+        .as_deref()
+        .and_then(|purl| PackageUrl::from_str(purl).ok())
+        .map(|purl| purl.namespace().unwrap_or_default().to_string());
+    (component.ecosystem.clone(), namespace)
+}
+
+fn identity_keys_compatible(a: &IdentityKey, b: &IdentityKey) -> bool {
+    let compatible = |a: &Option<String>, b: &Option<String>| a.is_none() || b.is_none() || a == b;
+    compatible(&a.0, &b.0) && compatible(&a.1, &b.1)
+}
+
 /// SBOM comparison engine.
 ///
 /// compares two SBOMs and produces a [`Diff`] describing the changes.
-/// components are matched first by ID (purl), then by identity (name + ecosystem).
+/// components are matched first by ID (purl), then by identity (name,
+/// ecosystem and purl namespace).
 pub struct Differ;
 
 impl Differ {
@@ -465,48 +487,48 @@ impl Differ {
             }
         }
 
-        // 2. reconciliation: match by "identity" (name + ecosystem)
-        // when purls are absent or change, we match by (ecosystem, name).
-        // if either ecosystem is None, we treat it as a wildcard and match by name alone.
+        // 2. reconciliation: match by "identity" (name, ecosystem, purl namespace)
+        // when purls are absent or change, which includes every version bump.
+        // an ecosystem or namespace of None is a wildcard that matches any value.
         //
-        // the map is keyed by name, then by ecosystem, so the wildcard lookup
-        // (new has no ecosystem → match any old with the same name) is O(k)
-        // where k is the number of distinct ecosystems sharing that name,
-        // rather than a linear scan of the entire map.
-        let mut old_identity_map: BTreeMap<String, BTreeMap<Option<String>, Vec<ComponentId>>> =
+        // the map is keyed by name, then by (ecosystem, namespace), so the
+        // wildcard lookup is O(k) where k is the number of distinct keys sharing
+        // that name, rather than a linear scan of the entire map.
+        let mut old_identity_map: BTreeMap<String, BTreeMap<IdentityKey, Vec<ComponentId>>> =
             BTreeMap::new();
         for (id, comp) in &old.components {
             if !matched_old.contains(id) {
                 old_identity_map
                     .entry(comp.name.clone())
                     .or_default()
-                    .entry(comp.ecosystem.clone())
+                    .entry(identity_key(comp))
                     .or_default()
                     .push(id.clone());
             }
         }
-        let mut new_identity_map: BTreeMap<String, BTreeMap<Option<String>, Vec<ComponentId>>> =
+        let mut new_identity_map: BTreeMap<String, BTreeMap<IdentityKey, Vec<ComponentId>>> =
             BTreeMap::new();
         for (id, comp) in &new.components {
             if !matched_new.contains(id) {
                 new_identity_map
                     .entry(comp.name.clone())
                     .or_default()
-                    .entry(comp.ecosystem.clone())
+                    .entry(identity_key(comp))
                     .or_default()
                     .push(id.clone());
             }
         }
 
-        // 2a. exact (ecosystem, name) matches are resolved a whole bucket at a
-        // time, so several versions of one package pair up in version order.
+        // 2a. exact (ecosystem, namespace, name) matches are resolved a whole
+        // bucket at a time, so several versions of one package pair up in
+        // version order.
         let mut identity_pairs: Vec<(ComponentId, ComponentId)> = Vec::new();
-        for (name, new_eco_map) in &new_identity_map {
-            let Some(old_eco_map) = old_identity_map.get_mut(name) else {
+        for (name, new_by_key) in &new_identity_map {
+            let Some(old_by_key) = old_identity_map.get_mut(name) else {
                 continue;
             };
-            for (ecosystem, new_ids) in new_eco_map {
-                let Some(old_ids) = old_eco_map.get_mut(ecosystem) else {
+            for (key, new_ids) in new_by_key {
+                let Some(old_ids) = old_by_key.get_mut(key) else {
                     continue;
                 };
                 let pairs = Self::align_by_version(old_ids, new_ids, &old, &new);
@@ -521,14 +543,14 @@ impl Differ {
         }
 
         // 2b. what is left falls through to the wildcard cases, aligned by
-        // version as well; an ecosystem-less new component pools every old
-        // ecosystem of that name, so the version-nearest candidate wins over
-        // the alphabetically first.
-        for (name, new_eco_map) in &new_identity_map {
-            let Some(old_eco_map) = old_identity_map.get_mut(name) else {
+        // version as well; a new component pools every old key of that name it
+        // is compatible with, so the version-nearest candidate wins over the
+        // alphabetically first.
+        for (name, new_by_key) in &new_identity_map {
+            let Some(old_by_key) = old_identity_map.get_mut(name) else {
                 continue;
             };
-            for (ecosystem, new_ids) in new_eco_map {
+            for (key, new_ids) in new_by_key {
                 let new_ids: Vec<ComponentId> = new_ids
                     .iter()
                     .filter(|id| !matched_new.contains(*id))
@@ -537,15 +559,15 @@ impl Differ {
                 if new_ids.is_empty() {
                     continue;
                 }
-                let old_ids: Vec<ComponentId> = if ecosystem.is_some() {
-                    old_eco_map.get(&None).cloned().unwrap_or_default()
-                } else {
-                    old_eco_map.values().flatten().cloned().collect()
-                };
+                let old_ids: Vec<ComponentId> = old_by_key
+                    .iter()
+                    .filter(|(old_key, _)| identity_keys_compatible(key, old_key))
+                    .flat_map(|(_, ids)| ids.iter().cloned())
+                    .collect();
                 let pairs = Self::align_by_version(&old_ids, &new_ids, &old, &new);
                 let consumed: HashSet<ComponentId> =
                     pairs.iter().map(|(old_id, _)| old_id.clone()).collect();
-                for ids in old_eco_map.values_mut() {
+                for ids in old_by_key.values_mut() {
                     ids.retain(|id| !consumed.contains(id));
                 }
                 for (_, new_id) in &pairs {
@@ -2608,6 +2630,21 @@ mod tests {
         purl_component("npm", name, version)
     }
 
+    fn namespaced_component(
+        ecosystem: &str,
+        namespace: &str,
+        name: &str,
+        version: &str,
+    ) -> Component {
+        let namespace = namespace.replace('@', "%40");
+        let purl = format!("pkg:{ecosystem}/{namespace}/{name}@{version}");
+        let mut comp = Component::new(name.to_string(), Some(version.to_string()));
+        comp.ecosystem = Some(ecosystem.to_string());
+        comp.id = ComponentId::new(Some(&purl), &[]);
+        comp.purl = Some(purl);
+        comp
+    }
+
     fn plain_component(name: &str, version: &str) -> Component {
         Component::new(name.to_string(), Some(version.to_string()))
     }
@@ -2983,5 +3020,122 @@ mod tests {
         assert_eq!(version_pairs(&diff), expect_pairs(&[("1.0.0", "2.0.1")]));
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.added.len(), 0);
+    }
+
+    #[test]
+    fn maven_artifacts_in_different_groups_do_not_pair() {
+        let old = sbom_of(vec![namespaced_component(
+            "maven",
+            "org.jetbrains",
+            "annotations",
+            "13.0",
+        )]);
+        let new = sbom_of(vec![namespaced_component(
+            "maven",
+            "com.google.code.findbugs",
+            "annotations",
+            "3.0.1",
+        )]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.changed.is_empty(), "got {:?}", version_pairs(&diff));
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.added.len(), 1);
+    }
+
+    #[test]
+    fn npm_scoped_packages_do_not_pair_with_unscoped_namesakes() {
+        let old = sbom_of(vec![
+            npm_component("react", "18.2.0"),
+            namespaced_component("npm", "@types", "react", "18.2.79"),
+        ]);
+        let new = sbom_of(vec![
+            npm_component("react", "19.0.0"),
+            namespaced_component("npm", "@types", "react", "18.3.12"),
+        ]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[("18.2.0", "19.0.0"), ("18.2.79", "18.3.12")])
+        );
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+
+        let old = sbom_of(vec![npm_component("react", "18.2.0")]);
+        let new = sbom_of(vec![namespaced_component(
+            "npm", "@types", "react", "18.3.12",
+        )]);
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.changed.is_empty(), "got {:?}", version_pairs(&diff));
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.added.len(), 1);
+    }
+
+    #[test]
+    fn npm_scoped_siblings_pair_within_their_scope() {
+        let old = sbom_of(vec![
+            namespaced_component("npm", "@babel", "parser", "7.24.0"),
+            namespaced_component("npm", "@typescript-eslint", "parser", "7.0.0"),
+            namespaced_component("npm", "@babel", "core", "7.24.0"),
+        ]);
+        let new = sbom_of(vec![
+            namespaced_component("npm", "@babel", "parser", "7.25.0"),
+            namespaced_component("npm", "@typescript-eslint", "parser", "8.0.0"),
+            namespaced_component("npm", "@angular", "core", "17.0.0"),
+        ]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[("7.0.0", "8.0.0"), ("7.24.0", "7.25.0")])
+        );
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.removed[0].id.as_str(), "pkg:npm/%40babel/core@7.24.0");
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.added[0].id.as_str(), "pkg:npm/%40angular/core@17.0.0");
+    }
+
+    #[test]
+    fn a_component_without_a_purl_pairs_with_a_namespaced_one() {
+        let namespaced = || namespaced_component("maven", "org.jetbrains", "annotations", "13.0");
+        let purl_less = || plain_component("annotations", "24.0.0");
+        let purl_less_maven = || {
+            let mut comp = plain_component("annotations", "24.0.0");
+            comp.ecosystem = Some("maven".to_string());
+            comp
+        };
+        for (old, new) in [
+            (namespaced(), purl_less()),
+            (purl_less(), namespaced()),
+            (namespaced(), purl_less_maven()),
+            (purl_less_maven(), namespaced()),
+        ] {
+            let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+            assert_eq!(diff.changed.len(), 1);
+            assert!(diff.added.is_empty());
+            assert!(diff.removed.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_version_bump_inside_a_namespace_still_pairs() {
+        let old = sbom_of(vec![
+            namespaced_component("maven", "org.jetbrains", "annotations", "13.0"),
+            namespaced_component("npm", "@types", "react", "18.2.79"),
+        ]);
+        let new = sbom_of(vec![
+            namespaced_component("maven", "org.jetbrains", "annotations", "24.0.0"),
+            namespaced_component("npm", "@types", "react", "18.3.12"),
+        ]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[("13.0", "24.0.0"), ("18.2.79", "18.3.12")])
+        );
+        assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
     }
 }

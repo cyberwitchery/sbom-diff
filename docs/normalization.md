@@ -13,4 +13,5 @@ to ensure stable diffs, the model applies:
 
 3. **reconciliation**:
    - if `purl` matches but internal `id` differs, components are treated as same entity.
-   - matches by name + ecosystem for version bumps when no purl is present.
+   - otherwise matches by name, ecosystem and purl namespace; the purl carries the version, so this is what pairs every version bump.
+   - a component without a purl has no ecosystem or namespace to compare and matches on name alone; a purl without a namespace (`pkg:npm/react`) does not match one with (`pkg:npm/%40types/react`).

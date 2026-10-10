@@ -953,6 +953,35 @@ fn fail_on_version_downgrade_multi_version_upgrade_exits_0() {
 }
 
 #[test]
+fn fail_on_version_downgrade_ignores_packages_in_other_namespaces_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("namespace-collision-old.json"))
+        .arg(fixture("namespace-collision-new.json"))
+        .arg("--fail-on")
+        .arg("version-downgrade")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "org.jetbrains:annotations and com.google.code.findbugs:annotations are different packages, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("13.0 -> 3.0.1"), "got: {stdout}");
+    assert!(
+        stdout.contains("Version: 18.2.0 -> 19.0.0"),
+        "got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Version: 18.2.79 -> 18.3.12"),
+        "got: {stdout}"
+    );
+}
+
+#[test]
 fn fail_on_version_downgrade_no_change_exits_0() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))

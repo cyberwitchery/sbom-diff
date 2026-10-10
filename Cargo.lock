@@ -637,6 +637,7 @@ dependencies = [
  "anyhow",
  "clap",
  "csv",
+ "packageurl",
  "sbom-model",
  "sbom-model-cyclonedx",
  "sbom-model-spdx",

@@ -33,9 +33,12 @@ sbom-diff old.json new.json --fail-on deps
 # block a dependency turning copyleft, e.g. mit -> gpl-3.0-only (exit code 3)
 sbom-diff old.json new.json --fail-on copyleft-added
 
-# block a component's coordinates being swapped, e.g. typosquat / dependency-confusion (exit code 3)
+# block a purl or ecosystem change on a changed component, e.g. a purl renamed within its namespace or a new repository_url (exit code 3)
 sbom-diff old.json new.json --fail-on purl-changed
 sbom-diff old.json new.json --fail-on ecosystem-changed
+
+# a group/scope swap (com.corp:utils -> com.evil:utils, @corp/utils -> utils) is a removed and an added component instead (exit code 3)
+sbom-diff old.json new.json --fail-on added-components --fail-on removed-components
 
 # block a re-published artifact: same version, different digest (exit code 3)
 sbom-diff old.json new.json --fail-on checksum-changed
@@ -85,7 +88,7 @@ cargo install sbom-diff
 
 - supports cyclonedx 1.3-1.6 (json and xml) and spdx 2.3 (json, xml, and tag-value); 1.6 documents are read under 1.5 rules and say so in a warning
 - deterministic normalization for reproducible diffs
-- matches components by purl or identity (name/ecosystem)
+- matches components by purl or identity (name/ecosystem/purl namespace)
 - zero network access - fully offline
 
 ## license gating
