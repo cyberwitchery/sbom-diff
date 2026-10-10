@@ -1168,6 +1168,51 @@ fn fail_on_purl_changed_no_change_exits_0() {
 }
 
 #[test]
+fn fail_on_purl_changed_version_bump_exits_0() {
+    let out = sbom_diff()
+        .arg(fixture("purl-version-bump-old.json"))
+        .arg(fixture("purl-version-bump-new.json"))
+        .arg("--fail-on")
+        .arg("purl-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Purl: pkg:npm/left-pad@1.0.0 -> pkg:npm/left-pad@1.1.0"),
+        "got: {stdout}"
+    );
+}
+
+#[test]
+fn fail_on_purl_changed_qualifier_or_rename_exits_3() {
+    let out = sbom_diff()
+        .arg(fixture("purl-version-bump-old.json"))
+        .arg(fixture("purl-coordinates-changed-new.json"))
+        .arg("--fail-on")
+        .arg("purl-changed")
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("repository_url=https://repo.maven.apache.org/maven2&type=jar -> pkg:maven/org.apache.commons/commons-lang3@3.12.0?repository_url=https://repo.example.com/maven2&type=jar"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("pkg:npm/left-pad@1.0.0 -> pkg:npm/left-pad-fork@1.1.0"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
 fn fail_on_ecosystem_changed_exits_3() {
     let out = sbom_diff()
         .arg(fixture("ecosystem-changed-old.json"))
