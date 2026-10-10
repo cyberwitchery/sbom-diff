@@ -107,7 +107,7 @@ fn render(diff: &Diff) -> anyhow::Result<()> {
 components are matched in two passes:
 
 1. **by id**: components with the same `ComponentId` (usually purl) are paired
-2. **by identity**: unmatched components are reconciled by name + ecosystem
+2. **by identity**: unmatched components are reconciled by name, ecosystem and purl namespace; a component without a purl matches on name alone
 
 this allows detecting version bumps even when the purl changes (e.g., `pkg:npm/foo@1.0` vs `pkg:npm/foo@2.0`).
 

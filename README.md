@@ -85,7 +85,7 @@ cargo install sbom-diff
 
 - supports cyclonedx 1.3-1.6 (json and xml) and spdx 2.3 (json, xml, and tag-value); 1.6 documents are read under 1.5 rules and say so in a warning
 - deterministic normalization for reproducible diffs
-- matches components by purl or identity (name/ecosystem)
+- matches components by purl or identity (name/ecosystem/purl namespace)
 - zero network access - fully offline
 
 ## license gating
