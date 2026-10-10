@@ -103,7 +103,7 @@ enum FailOn {
     CopyleftAdded,
     /// fail if the new SBOM's dependency graph contains cycles.
     CyclicDependency,
-    /// fail if any changed component's package URL (purl) changed.
+    /// fail if any changed component's package URL (purl) changed; a purl namespace swap is a removed and an added component instead.
     PurlChanged,
     /// fail if any changed component's ecosystem changed.
     EcosystemChanged,

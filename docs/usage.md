@@ -29,9 +29,12 @@ sbom-diff old.json new.json --only deps
 # fail if dependency graph changes
 sbom-diff old.json new.json --fail-on deps
 
-# fail if a component's package coordinates change (typosquat / dependency-confusion signal)
+# fail if a changed component's purl or ecosystem changes, e.g. a purl renamed within its namespace or a new repository_url
 sbom-diff old.json new.json --fail-on purl-changed
 sbom-diff old.json new.json --fail-on ecosystem-changed
+
+# a group/scope swap (com.corp:utils -> com.evil:utils, @corp/utils -> utils) is a removed and an added component instead
+sbom-diff old.json new.json --fail-on added-components --fail-on removed-components
 
 # fail if a component's digest changed but its version did not (re-published artifact)
 sbom-diff old.json new.json --fail-on checksum-changed
