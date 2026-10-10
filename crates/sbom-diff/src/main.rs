@@ -3,6 +3,7 @@ mod format;
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use format::{load_sbom, Format};
+use packageurl::PackageUrl;
 use sbom_diff::{
     pair_ecosystem,
     renderer::{
@@ -17,6 +18,7 @@ use sbom_model::{ComponentId, DependencyKind, LicenseRequirement, Licensing, Sbo
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::io;
+use std::str::FromStr;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -103,7 +105,7 @@ enum FailOn {
     CopyleftAdded,
     /// fail if the new SBOM's dependency graph contains cycles.
     CyclicDependency,
-    /// fail if any changed component's package URL (purl) changed; a purl namespace swap is a removed and an added component instead.
+    /// fail if any changed component's package URL (purl) changed other than in its version; a purl namespace swap is a removed and an added component instead.
     PurlChanged,
     /// fail if any changed component's ecosystem changed.
     EcosystemChanged,
@@ -767,7 +769,13 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                             new: new_sup.clone(),
                         });
                     }
-                    FieldChange::Purl(old_purl, new_purl) if check_purl_changed => {
+                    FieldChange::Purl(old_purl, new_purl)
+                        if check_purl_changed
+                            && purl_coordinates_changed(
+                                old_purl.as_deref(),
+                                new_purl.as_deref(),
+                            ) =>
+                    {
                         violations.push(Violation::PurlChanged {
                             id: change.id.clone(),
                             old: old_purl.clone(),
@@ -851,6 +859,20 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
 
     // CyclicDependency is handled separately before diffing
     violations
+}
+
+/// whether two purls differ in anything but their version; an unparseable purl compares as a string.
+fn purl_coordinates_changed(old: Option<&str>, new: Option<&str>) -> bool {
+    let coordinates = |purl: &str| {
+        PackageUrl::from_str(purl).ok().map(|mut parsed| {
+            parsed.without_version();
+            parsed
+        })
+    };
+    match (old.map(coordinates), new.map(coordinates)) {
+        (Some(Some(a)), Some(Some(b))) => a != b,
+        _ => old != new,
+    }
 }
 
 /// the CLI value name of a `clap` enum variant (e.g. `Field::Version` -> "version").
@@ -2561,27 +2583,129 @@ mod tests {
 
     #[test]
     fn test_collect_violations_purl_changed_no_change() {
+        // only the version changed — the purl gate must not fire
+        let mut old = Sbom::default();
+        let mut new = Sbom::default();
+        for (sbom, version) in [(&mut old, "1.0.0"), (&mut new, "2.0.0")] {
+            let mut comp = Component::new("pkg".into(), Some(version.into()));
+            comp.purl = Some(format!("pkg:npm/pkg@{version}"));
+            comp.id = ComponentId::new(comp.purl.as_deref(), &[]);
+            sbom.components.insert(comp.id.clone(), comp);
+        }
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.changed[0]
+            .changes
+            .iter()
+            .any(|c| matches!(c, FieldChange::Purl(..))));
+        assert!(collect_violations(&diff, &[FailOn::PurlChanged]).is_empty());
+    }
+
+    #[test]
+    fn test_collect_violations_purl_changed_on_qualifier_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
-        // only the version changed — the purl gate must not fire
-        let old = Component::new("pkg".into(), Some("1.0.0".into()));
-        let new = Component::new("pkg".into(), Some("2.0.0".into()));
+        let old_purl = "pkg:maven/org.example/lib@1.0.0?repository_url=https://repo.example.com";
+        let new_purl = "pkg:maven/org.example/lib@1.0.0?repository_url=https://evil.example.com";
+        let mut old = Component::new("lib".into(), Some("1.0.0".into()));
+        old.purl = Some(old_purl.into());
+        let mut new = Component::new("lib".into(), Some("1.0.0".into()));
+        new.purl = Some(new_purl.into());
 
         let diff = Diff {
             changed: vec![ComponentChange {
                 id: old.id.clone(),
                 old,
                 new,
-                changes: vec![FieldChange::Version(
-                    Some("1.0.0".into()),
-                    Some("2.0.0".into()),
+                changes: vec![FieldChange::Purl(
+                    Some(old_purl.into()),
+                    Some(new_purl.into()),
                 )],
                 is_downgrade: false,
             }],
             ..Diff::default()
         };
 
-        assert!(collect_violations(&diff, &[FailOn::PurlChanged]).is_empty());
+        let violations = collect_violations(&diff, &[FailOn::PurlChanged]);
+        assert_eq!(violations.len(), 1);
+        assert!(matches!(violations[0], Violation::PurlChanged { .. }));
+    }
+
+    #[test]
+    fn test_purl_coordinates_changed_ignores_version() {
+        assert!(!purl_coordinates_changed(
+            Some("pkg:npm/left-pad@1.0.0"),
+            Some("pkg:npm/left-pad@1.1.0")
+        ));
+        assert!(!purl_coordinates_changed(
+            Some("pkg:npm/left-pad@1.0.0"),
+            Some("pkg:npm/left-pad")
+        ));
+    }
+
+    #[test]
+    fn test_purl_coordinates_changed_ignores_equivalent_spellings() {
+        assert!(!purl_coordinates_changed(
+            Some("pkg:maven/org.example/lib@1.0.0?type=jar&repository_url=https://repo.example.com"),
+            Some("pkg:maven/org.example/lib@1.1.0?Repository_URL=https%3A%2F%2Frepo.example.com&type=jar")
+        ));
+        assert!(!purl_coordinates_changed(
+            Some("pkg:NPM/left-pad@1.0.0?classifier="),
+            Some("pkg:npm/left-pad@1.1.0")
+        ));
+    }
+
+    #[test]
+    fn test_purl_coordinates_changed_on_renamed_purl() {
+        assert!(purl_coordinates_changed(
+            Some("pkg:npm/left-pad@1.0.0"),
+            Some("pkg:npm/left-pad-fork@1.0.0")
+        ));
+        assert!(purl_coordinates_changed(
+            Some("pkg:npm/left-pad@1.0.0"),
+            Some("pkg:npm/left-pad-fork@1.1.0")
+        ));
+    }
+
+    #[test]
+    fn test_purl_coordinates_changed_on_qualifier_or_subpath_change() {
+        let old = Some("pkg:maven/org.example/lib@1.0.0?repository_url=https://repo.example.com");
+        assert!(purl_coordinates_changed(
+            old,
+            Some("pkg:maven/org.example/lib@1.1.0?repository_url=https://evil.example.com")
+        ));
+        assert!(purl_coordinates_changed(
+            old,
+            Some("pkg:maven/org.example/lib@1.1.0")
+        ));
+        assert!(purl_coordinates_changed(
+            Some("pkg:golang/github.com/example/mod@v1.0.0#cmd/a"),
+            Some("pkg:golang/github.com/example/mod@v1.1.0#cmd/b")
+        ));
+    }
+
+    #[test]
+    fn test_purl_coordinates_changed_on_purl_present_on_one_side() {
+        assert!(purl_coordinates_changed(
+            Some("pkg:npm/left-pad@1.0.0"),
+            None
+        ));
+        assert!(purl_coordinates_changed(
+            None,
+            Some("pkg:npm/left-pad@1.1.0")
+        ));
+    }
+
+    #[test]
+    fn test_purl_coordinates_changed_compares_unparseable_purls_as_strings() {
+        assert!(purl_coordinates_changed(
+            Some("pkg:swift/Alamofire@5.0.0"),
+            Some("pkg:swift/Alamofire@5.1.0")
+        ));
+        assert!(purl_coordinates_changed(
+            Some("pkg:npm/left-pad@1.0.0"),
+            Some("not a purl")
+        ));
     }
 
     #[test]
