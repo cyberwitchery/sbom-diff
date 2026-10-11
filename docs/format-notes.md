@@ -40,9 +40,10 @@ both adapters produce:
 - dependency relationships:
   - source: top-level `dependencies` entries (`ref` + `dependsOn`)
   - mapping path:
-    1. each component `bom-ref` is stored in `Component.source_ids`
+    1. each component `bom-ref` is stored in `Component.source_ids`; when two entries resolve to the same `ComponentId`, the later entry's fields win and the `bom-ref`s of both are kept
     2. adapter builds `bom-ref -> ComponentId` lookup
-    3. each `ref -> dependsOn[]` relationship becomes `parent -> {children...}` in `Sbom.dependencies`
+    3. each `ref -> dependsOn[]` relationship becomes `parent -> {children...}` in `Sbom.dependencies`; `ref`s that resolve to the same parent merge their children, and a `dependsOn` between two entries of one component is dropped
+    4. an edge reached through child entries with different scopes is `runtime` if any of them is
 
 ## spdx -> model
 
@@ -86,9 +87,10 @@ both adapters produce:
     - `CONTAINS`
     - `DESCRIBES`
   - mapping path:
-    1. each package `SPDXID` is stored in `Component.source_ids`
+    1. each package `SPDXID` is stored in `Component.source_ids`; when two packages resolve to the same `ComponentId`, the later package's fields win and the `SPDXID`s of both are kept
     2. adapter builds `SPDXID -> ComponentId` lookup
-    3. each qualifying relationship becomes `spdxElementId -> relatedSpdxElement` in `Sbom.dependencies`
+    3. each qualifying relationship becomes `spdxElementId -> relatedSpdxElement` in `Sbom.dependencies`; a relationship between two packages of one component is dropped
+    4. an edge read with several kinds keeps the first of `runtime`, `dev`, `build`, `test`, `optional`, `provided`
 
 ## notes
 
