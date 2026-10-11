@@ -711,17 +711,18 @@ impl Differ {
         {
             return by_id();
         }
-        // comparability is not enough: `Semver` against `Numeric` drops the pre-release,
-        // so `Equal` stops being transitive once a bucket holds both.
-        let (mut numeric, mut prerelease) = (false, false);
+        // a `Pep440` member orders a semver pre-release by its PEP 440 reading, so
+        // `1.0.0-post.1 < 1.0.0.0 < 1.0.0.post0 < 1.0.0-post.1`.
+        let (mut numeric, mut prerelease, mut pep440) = (false, false, false);
         for (version, ..) in &merged {
             match version {
                 Version::Numeric(_) => numeric = true,
                 Version::Semver(v) => prerelease |= !v.pre.is_empty(),
+                Version::Pep440(_) => pep440 = true,
                 _ => {}
             }
         }
-        if numeric && prerelease {
+        if numeric && prerelease && pep440 {
             return by_id();
         }
         merged.sort_by(|a, b| {
@@ -2843,8 +2844,8 @@ mod tests {
         }
     }
 
-    /// a four-part version and a pre-release are mutually comparable, so the
-    /// class check passes and only the ordering check can catch this.
+    /// a four-part version and a pre-release are mutually comparable, so this
+    /// bucket reaches the sort.
     #[test]
     fn test_identity_reconciliation_prerelease_with_numeric_does_not_panic() {
         for groups in [12, 26] {
@@ -2861,6 +2862,51 @@ mod tests {
             let new = sbom_of(
                 (1..=groups)
                     .map(|i| npm_component("libfoo", &format!("{i}.2.3-rc.1")))
+                    .collect(),
+            );
+
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(diff.changed.len(), groups);
+            assert_eq!(diff.added.len(), 0);
+            assert_eq!(diff.removed.len(), groups);
+        }
+    }
+
+    #[test]
+    fn test_identity_reconciliation_prerelease_with_numeric_pairs_by_version() {
+        let old = sbom_of(vec![
+            npm_component("libfoo", "9.0.0.0"),
+            npm_component("libfoo", "10.0.0.0"),
+        ]);
+        let new = sbom_of(vec![
+            npm_component("libfoo", "9.0.1-rc.1"),
+            npm_component("libfoo", "10.0.1-rc.1"),
+        ]);
+
+        let diff = Differ::diff(&old, &new, None);
+        assert_eq!(
+            version_pairs(&diff),
+            expect_pairs(&[("9.0.0.0", "9.0.1-rc.1"), ("10.0.0.0", "10.0.1-rc.1")])
+        );
+        assert!(!diff.changed.iter().any(|c| c.is_downgrade));
+    }
+
+    #[test]
+    fn test_identity_reconciliation_prerelease_numeric_and_pep440_do_not_panic() {
+        for groups in [12, 26] {
+            let old = sbom_of(
+                (1..=groups)
+                    .flat_map(|i| {
+                        [
+                            npm_component("libfoo", &format!("{i}.0.0.0")),
+                            npm_component("libfoo", &format!("{i}.0.0.post0")),
+                        ]
+                    })
+                    .collect(),
+            );
+            let new = sbom_of(
+                (1..=groups)
+                    .map(|i| npm_component("libfoo", &format!("{i}.0.0-post.1")))
                     .collect(),
             );
 
