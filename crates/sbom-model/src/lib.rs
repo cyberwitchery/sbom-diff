@@ -299,6 +299,41 @@ impl Sbom {
         }
     }
 
+    /// inserts a component, replacing any component with the same id.
+    ///
+    /// the replaced component's [`source_ids`](Component::source_ids) are
+    /// merged into the new one's, sorted and deduplicated. returns the
+    /// replaced component.
+    pub fn insert_component(&mut self, mut component: Component) -> Option<Component> {
+        if let Some(existing) = self.components.get(&component.id) {
+            component
+                .source_ids
+                .extend(existing.source_ids.iter().cloned());
+            component.source_ids.sort();
+            component.source_ids.dedup();
+        }
+        self.components.insert(component.id.clone(), component)
+    }
+
+    /// adds a `parent -> child` dependency edge.
+    ///
+    /// an edge added twice with different kinds keeps the kind declared first
+    /// in [`DependencyKind`], so `Runtime` wins over every other kind. call
+    /// [`rebuild_reverse_deps`](Self::rebuild_reverse_deps) afterwards.
+    pub fn insert_dependency(
+        &mut self,
+        parent: ComponentId,
+        child: ComponentId,
+        kind: DependencyKind,
+    ) {
+        self.dependencies
+            .entry(parent)
+            .or_default()
+            .entry(child)
+            .and_modify(|existing| *existing = (*existing).min(kind))
+            .or_insert(kind);
+    }
+
     /// returns root components (those not depended on by any other component).
     ///
     /// these are typically the top-level packages or applications in the SBOM.
@@ -1986,6 +2021,54 @@ mod tests {
     fn test_detect_cycles_empty_graph() {
         let sbom = Sbom::default();
         assert!(sbom.detect_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_insert_component_keeps_replaced_source_ids() {
+        let entry = |name: &str, source_ids: &[&str]| {
+            let mut c = Component::new("dup".into(), Some("1".into()));
+            c.description = Some(name.into());
+            c.source_ids = source_ids.iter().map(|s| s.to_string()).collect();
+            c
+        };
+        let mut sbom = Sbom::default();
+        assert!(sbom
+            .insert_component(entry("first", &["ref-c", "ref-a"]))
+            .is_none());
+        let replaced = sbom
+            .insert_component(entry("second", &["ref-b", "ref-a"]))
+            .unwrap();
+        assert_eq!(replaced.description.as_deref(), Some("first"));
+        assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].description.as_deref(), Some("second"));
+        assert_eq!(
+            sbom.components[0].source_ids,
+            vec!["ref-a", "ref-b", "ref-c"]
+        );
+    }
+
+    #[test]
+    fn test_insert_dependency_kind_does_not_depend_on_order() {
+        let parent = Component::new("parent".into(), None).id;
+        let child = Component::new("child".into(), None).id;
+        for kinds in [
+            [DependencyKind::Optional, DependencyKind::Runtime],
+            [DependencyKind::Runtime, DependencyKind::Optional],
+        ] {
+            let mut sbom = Sbom::default();
+            for kind in kinds {
+                sbom.insert_dependency(parent.clone(), child.clone(), kind);
+            }
+            assert_eq!(
+                sbom.dependencies[&parent],
+                BTreeMap::from([(child.clone(), DependencyKind::Runtime)])
+            );
+        }
+
+        let mut sbom = Sbom::default();
+        sbom.insert_dependency(parent.clone(), child.clone(), DependencyKind::Test);
+        sbom.insert_dependency(parent.clone(), child.clone(), DependencyKind::Dev);
+        assert_eq!(sbom.dependencies[&parent][&child], DependencyKind::Dev);
     }
 
     #[test]

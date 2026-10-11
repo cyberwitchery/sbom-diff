@@ -807,11 +807,11 @@ impl SpdxReader {
             if let Some(existing) = sbom.components.get(&id) {
                 sbom.warnings.push(format!(
                     "SPDX: duplicate component id '{}' (name '{}'); \
-                     earlier entry '{}' will be overwritten",
+                     earlier entry '{}' will be overwritten, but its relationships are kept",
                     id, comp.name, existing.name,
                 ));
             }
-            sbom.components.insert(id, comp);
+            sbom.insert_component(comp);
         }
 
         // map SPDX IDs -> ComponentId
@@ -853,10 +853,11 @@ impl SpdxReader {
 
             match (parent_id, child_id) {
                 (Some(pid), Some(cid)) => {
-                    sbom.dependencies
-                        .entry(pid.clone())
-                        .or_default()
-                        .insert(cid.clone(), kind);
+                    // an edge between two entries of one duplicated component
+                    if pid == cid && parent_spdx != child_spdx {
+                        continue;
+                    }
+                    sbom.insert_dependency(pid.clone(), cid.clone(), kind);
                 }
                 (None, _) => {
                     sbom.warnings.push(format!(
@@ -3267,6 +3268,136 @@ PackageDownloadLocation: NOASSERTION
             sbom.warnings[0]
         );
         assert!(sbom.warnings[0].contains("pkg-a"));
+    }
+
+    fn duplicates_doc(relationships: &[(&str, &str, &str)]) -> serde_json::Value {
+        let package = |spdx_id: &str, name: &str| {
+            serde_json::json!({
+                "SPDXID": spdx_id,
+                "name": name,
+                "versionInfo": "1.0.0",
+                "downloadLocation": "NONE",
+                "externalRefs": [{
+                    "referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "purl",
+                    "referenceLocator": format!("pkg:npm/{name}@1.0.0"),
+                }],
+            })
+        };
+        let relationships: Vec<_> = relationships
+            .iter()
+            .map(|(from, kind, to)| {
+                serde_json::json!({
+                    "spdxElementId": from,
+                    "relationshipType": kind,
+                    "relatedSpdxElement": to,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                package("SPDXRef-app", "app"),
+                package("SPDXRef-shared-1", "shared"),
+                package("SPDXRef-shared-2", "shared"),
+                package("SPDXRef-left", "left"),
+                package("SPDXRef-right", "right"),
+            ],
+            "relationships": relationships,
+        })
+    }
+
+    fn read_both_orders(mut doc: serde_json::Value) -> (Sbom, Sbom) {
+        let read =
+            |doc: &serde_json::Value| SpdxReader::read_json(doc.to_string().as_bytes()).unwrap();
+        let in_order = read(&doc);
+        doc["packages"].as_array_mut().unwrap().swap(1, 2);
+        (in_order, read(&doc))
+    }
+
+    fn npm_id(name: &str) -> ComponentId {
+        ComponentId::new(Some(&format!("pkg:npm/{name}@1.0.0")), &[])
+    }
+
+    #[test]
+    fn test_duplicate_entries_keep_every_entrys_relationships() {
+        let (a, b) = read_both_orders(duplicates_doc(&[
+            ("SPDXRef-app", "DEPENDS_ON", "SPDXRef-shared-1"),
+            ("SPDXRef-shared-1", "DEPENDS_ON", "SPDXRef-left"),
+            ("SPDXRef-shared-2", "DEPENDS_ON", "SPDXRef-right"),
+        ]));
+        assert_eq!(a.components, b.components);
+        assert_eq!(a.dependencies, b.dependencies);
+
+        let shared = &a.components[&npm_id("shared")];
+        assert_eq!(
+            shared.source_ids,
+            vec!["SPDXRef-shared-1", "SPDXRef-shared-2"]
+        );
+        assert_eq!(a.deps(&npm_id("app")), vec![npm_id("shared")]);
+        assert_eq!(
+            a.deps(&npm_id("shared")),
+            vec![npm_id("left"), npm_id("right")]
+        );
+        for sbom in [&a, &b] {
+            assert_eq!(sbom.warnings.len(), 1, "{:?}", sbom.warnings);
+            assert!(sbom.warnings[0].contains("relationships are kept"));
+        }
+    }
+
+    #[test]
+    fn test_edge_read_with_two_kinds_is_runtime_in_either_order() {
+        let forward = [
+            ("SPDXRef-shared-1", "DEV_DEPENDENCY_OF", "SPDXRef-app"),
+            ("SPDXRef-app", "DEPENDS_ON", "SPDXRef-shared-2"),
+            ("SPDXRef-left", "DEV_DEPENDENCY_OF", "SPDXRef-app"),
+            ("SPDXRef-app", "DEPENDS_ON", "SPDXRef-left"),
+        ];
+        let mut backward = forward;
+        backward.reverse();
+        for relationships in [forward, backward] {
+            let (a, b) = read_both_orders(duplicates_doc(&relationships));
+            for sbom in [&a, &b] {
+                assert_eq!(
+                    sbom.dependencies[&npm_id("app")],
+                    BTreeMap::from([
+                        (npm_id("left"), DependencyKind::Runtime),
+                        (npm_id("shared"), DependencyKind::Runtime),
+                    ])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_relationship_between_duplicate_entries_is_not_a_self_loop() {
+        let twin = ("SPDXRef-shared-1", "DEPENDS_ON", "SPDXRef-shared-2");
+        let sbom = SpdxReader::read_json(duplicates_doc(&[twin]).to_string().as_bytes()).unwrap();
+        assert!(sbom.dependencies.is_empty());
+        assert!(sbom.detect_cycles().is_empty());
+        assert_eq!(sbom.warnings.len(), 1, "{:?}", sbom.warnings);
+
+        // a package naming its own SPDXID is still a self-loop
+        let own = ("SPDXRef-shared-2", "DEPENDS_ON", "SPDXRef-shared-2");
+        let sbom =
+            SpdxReader::read_json(duplicates_doc(&[twin, own]).to_string().as_bytes()).unwrap();
+        let shared = npm_id("shared");
+        assert_eq!(
+            sbom.dependencies,
+            BTreeMap::from([(
+                shared.clone(),
+                BTreeMap::from([(shared.clone(), DependencyKind::Runtime)])
+            )])
+        );
+        assert_eq!(sbom.detect_cycles(), vec![vec![shared.clone(), shared]]);
     }
 
     #[test]

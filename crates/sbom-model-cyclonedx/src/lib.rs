@@ -428,23 +428,23 @@ impl CycloneDxReader {
             for dep in dependencies.0 {
                 let parent_ref = dep.dependency_ref;
                 if let Some(parent_id) = ref_map.get(&parent_ref.to_string()) {
-                    let mut children = BTreeMap::new();
                     for child_ref in dep.dependencies {
                         if let Some(child_id) = ref_map.get(&child_ref.to_string()) {
+                            // an edge between two entries of one duplicated component
+                            if child_id == parent_id && child_ref != parent_ref {
+                                continue;
+                            }
                             let kind = scope_map
                                 .get(&child_ref.to_string())
                                 .copied()
                                 .unwrap_or(DependencyKind::Runtime);
-                            children.insert(child_id.clone(), kind);
+                            sbom.insert_dependency(parent_id.clone(), child_id.clone(), kind);
                         } else {
                             sbom.warnings.push(format!(
                                 "CycloneDX: dependency bom-ref '{}' (child of '{}') does not match any component",
                                 child_ref, parent_ref
                             ));
                         }
-                    }
-                    if !children.is_empty() {
-                        sbom.dependencies.insert(parent_id.clone(), children);
                     }
                 } else {
                     sbom.warnings.push(format!(
@@ -576,11 +576,11 @@ impl CycloneDxReader {
             if let Some(existing) = sbom.components.get(&id) {
                 sbom.warnings.push(format!(
                     "CycloneDX: duplicate component id '{}' (name '{}'); \
-                     earlier entry '{}' will be overwritten",
+                     earlier entry '{}' will be overwritten, but its dependencies are kept",
                     id, comp.name, existing.name,
                 ));
             }
-            sbom.components.insert(id, comp);
+            sbom.insert_component(comp);
 
             if let Some(sub) = &cdx_comp.components {
                 Self::collect_components(&sub.0, sbom, scope_map, depth + 1);
@@ -1771,8 +1771,156 @@ mod tests {
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 1);
+        assert_eq!(sbom.components[0].source_ids, vec!["root-ref"]);
         assert_eq!(sbom.warnings.len(), 1);
         assert!(sbom.warnings[0].contains("duplicate"));
+    }
+
+    fn library(bom_ref: &str, name: &str, scope: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "library",
+            "name": name,
+            "version": "1.0.0",
+            "bom-ref": bom_ref,
+            "purl": format!("pkg:npm/{name}@1.0.0"),
+            "scope": scope,
+        })
+    }
+
+    fn read_both_orders(mut doc: serde_json::Value, first: usize, second: usize) -> (Sbom, Sbom) {
+        let read = |doc: &serde_json::Value| {
+            CycloneDxReader::read_json(doc.to_string().as_bytes()).unwrap()
+        };
+        let in_order = read(&doc);
+        doc["components"]
+            .as_array_mut()
+            .unwrap()
+            .swap(first, second);
+        (in_order, read(&doc))
+    }
+
+    #[test]
+    fn test_duplicate_entries_keep_every_entrys_dependencies() {
+        let doc = serde_json::json!({
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "components": [
+                library("app", "app", "required"),
+                library("shared-1", "shared", "required"),
+                library("shared-2", "shared", "required"),
+                library("left", "left", "required"),
+                library("right", "right", "required"),
+            ],
+            "dependencies": [
+                {"ref": "app", "dependsOn": ["shared-1"]},
+                {"ref": "shared-1", "dependsOn": ["left"]},
+                {"ref": "shared-2", "dependsOn": ["right"]},
+            ]
+        });
+        let (a, b) = read_both_orders(doc, 1, 2);
+        assert_eq!(a.components, b.components);
+        assert_eq!(a.dependencies, b.dependencies);
+
+        let id = |name: &str| ComponentId::new(Some(&format!("pkg:npm/{name}@1.0.0")), &[]);
+        let shared = &a.components[&id("shared")];
+        assert_eq!(shared.source_ids, vec!["shared-1", "shared-2"]);
+        assert_eq!(a.deps(&id("app")), vec![id("shared")]);
+        assert_eq!(a.deps(&id("shared")), vec![id("left"), id("right")]);
+        for sbom in [&a, &b] {
+            assert_eq!(sbom.warnings.len(), 1, "{:?}", sbom.warnings);
+            assert!(sbom.warnings[0].contains("dependencies are kept"));
+        }
+    }
+
+    #[test]
+    fn test_dependency_on_duplicate_with_two_scopes_is_runtime() {
+        let doc = serde_json::json!({
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "components": [
+                library("app", "app", "required"),
+                library("lib-optional", "lib", "optional"),
+                library("lib-required", "lib", "required"),
+            ],
+            "dependencies": [
+                {"ref": "app", "dependsOn": ["lib-optional", "lib-required"]},
+            ]
+        });
+        let (a, b) = read_both_orders(doc.clone(), 1, 2);
+        let mut reversed = doc;
+        reversed["dependencies"][0]["dependsOn"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let (c, _) = read_both_orders(reversed, 1, 2);
+
+        let app = ComponentId::new(Some("pkg:npm/app@1.0.0"), &[]);
+        let lib = ComponentId::new(Some("pkg:npm/lib@1.0.0"), &[]);
+        for sbom in [&a, &b, &c] {
+            assert_eq!(
+                sbom.dependencies[&app],
+                BTreeMap::from([(lib.clone(), DependencyKind::Runtime)])
+            );
+        }
+    }
+
+    #[test]
+    fn test_dependency_between_duplicate_entries_is_not_a_self_loop() {
+        let mut doc = serde_json::json!({
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "components": [
+                library("lib-1", "lib", "required"),
+                library("lib-2", "lib", "required"),
+            ],
+            "dependencies": [
+                {"ref": "lib-1", "dependsOn": ["lib-2"]},
+            ]
+        });
+        let sbom = CycloneDxReader::read_json(doc.to_string().as_bytes()).unwrap();
+        assert!(sbom.dependencies.is_empty());
+        assert!(sbom.detect_cycles().is_empty());
+        assert_eq!(sbom.warnings.len(), 1, "{:?}", sbom.warnings);
+
+        // an entry naming its own ref is still a self-loop
+        doc["dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"ref": "lib-2", "dependsOn": ["lib-2"]}));
+        let sbom = CycloneDxReader::read_json(doc.to_string().as_bytes()).unwrap();
+        let lib = ComponentId::new(Some("pkg:npm/lib@1.0.0"), &[]);
+        assert_eq!(
+            sbom.dependencies,
+            BTreeMap::from([(
+                lib.clone(),
+                BTreeMap::from([(lib.clone(), DependencyKind::Runtime)])
+            )])
+        );
+        assert_eq!(sbom.detect_cycles(), vec![vec![lib.clone(), lib]]);
+    }
+
+    #[test]
+    fn test_dependency_entries_repeating_a_ref_merge() {
+        let doc = serde_json::json!({
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "components": [
+                library("app", "app", "required"),
+                library("left", "left", "required"),
+                library("right", "right", "required"),
+            ],
+            "dependencies": [
+                {"ref": "app", "dependsOn": ["left"]},
+                {"ref": "app", "dependsOn": ["right"]},
+            ]
+        });
+        let sbom = CycloneDxReader::read_json(doc.to_string().as_bytes()).unwrap();
+        let id = |name: &str| ComponentId::new(Some(&format!("pkg:npm/{name}@1.0.0")), &[]);
+        assert_eq!(sbom.deps(&id("app")), vec![id("left"), id("right")]);
     }
 
     #[test]
