@@ -318,7 +318,8 @@ impl Sbom {
     /// adds a `parent -> child` dependency edge.
     ///
     /// an edge added twice with different kinds keeps the kind declared first
-    /// in [`DependencyKind`], so `Runtime` wins over every other kind.
+    /// in [`DependencyKind`], so `Runtime` wins over every other kind. call
+    /// [`rebuild_reverse_deps`](Self::rebuild_reverse_deps) afterwards.
     pub fn insert_dependency(
         &mut self,
         parent: ComponentId,

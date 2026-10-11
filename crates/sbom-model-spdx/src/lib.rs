@@ -3379,15 +3379,25 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_relationship_between_duplicate_entries_is_not_a_self_loop() {
-        let sbom = SpdxReader::read_json(
-            duplicates_doc(&[("SPDXRef-shared-1", "DEPENDS_ON", "SPDXRef-shared-2")])
-                .to_string()
-                .as_bytes(),
-        )
-        .unwrap();
+        let twin = ("SPDXRef-shared-1", "DEPENDS_ON", "SPDXRef-shared-2");
+        let sbom = SpdxReader::read_json(duplicates_doc(&[twin]).to_string().as_bytes()).unwrap();
         assert!(sbom.dependencies.is_empty());
         assert!(sbom.detect_cycles().is_empty());
         assert_eq!(sbom.warnings.len(), 1, "{:?}", sbom.warnings);
+
+        // a package naming its own SPDXID is still a self-loop
+        let own = ("SPDXRef-shared-2", "DEPENDS_ON", "SPDXRef-shared-2");
+        let sbom =
+            SpdxReader::read_json(duplicates_doc(&[twin, own]).to_string().as_bytes()).unwrap();
+        let shared = npm_id("shared");
+        assert_eq!(
+            sbom.dependencies,
+            BTreeMap::from([(
+                shared.clone(),
+                BTreeMap::from([(shared.clone(), DependencyKind::Runtime)])
+            )])
+        );
+        assert_eq!(sbom.detect_cycles(), vec![vec![shared.clone(), shared]]);
     }
 
     #[test]

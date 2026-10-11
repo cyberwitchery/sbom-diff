@@ -1868,7 +1868,7 @@ mod tests {
 
     #[test]
     fn test_dependency_between_duplicate_entries_is_not_a_self_loop() {
-        let doc = serde_json::json!({
+        let mut doc = serde_json::json!({
             "bomFormat": "CycloneDX",
             "specVersion": "1.5",
             "version": 1,
@@ -1884,6 +1884,22 @@ mod tests {
         assert!(sbom.dependencies.is_empty());
         assert!(sbom.detect_cycles().is_empty());
         assert_eq!(sbom.warnings.len(), 1, "{:?}", sbom.warnings);
+
+        // an entry naming its own ref is still a self-loop
+        doc["dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"ref": "lib-2", "dependsOn": ["lib-2"]}));
+        let sbom = CycloneDxReader::read_json(doc.to_string().as_bytes()).unwrap();
+        let lib = ComponentId::new(Some("pkg:npm/lib@1.0.0"), &[]);
+        assert_eq!(
+            sbom.dependencies,
+            BTreeMap::from([(
+                lib.clone(),
+                BTreeMap::from([(lib.clone(), DependencyKind::Runtime)])
+            )])
+        );
+        assert_eq!(sbom.detect_cycles(), vec![vec![lib.clone(), lib]]);
     }
 
     #[test]
