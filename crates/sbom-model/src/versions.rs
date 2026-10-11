@@ -286,8 +286,9 @@ impl Version {
     /// - **Semver vs Semver**: semver *precedence* ordering (including
     ///   pre-release; build metadata is ignored per SemVer §10)
     /// - **Numeric vs Numeric**: segment-by-segment with implicit zero padding
-    /// - **Semver vs Numeric** (either direction): extracts `[major, minor, patch]`
-    ///   from the semver side and compares as numeric segments
+    /// - **Semver vs Numeric** (either direction): `[major, minor, patch]` from
+    ///   the semver side against the numeric segments; on a tie, a semver
+    ///   pre-release is the lesser (build metadata is ignored)
     /// - **Deb vs Deb**: epoch (numeric), then upstream, then revision, via the
     ///   Debian `dpkg` version-comparison algorithm
     /// - **Rpm vs Rpm**: epoch (numeric), then version, then release, via rpm's
@@ -331,12 +332,8 @@ impl Version {
         match (self, other) {
             (Version::Semver(a), Version::Semver(b)) => Some(a.cmp_precedence(b)),
             (Version::Numeric(a), Version::Numeric(b)) => Some(numeric_cmp(a, b)),
-            (Version::Semver(a), Version::Numeric(b)) => {
-                Some(numeric_cmp(&[a.major, a.minor, a.patch], b))
-            }
-            (Version::Numeric(a), Version::Semver(b)) => {
-                Some(numeric_cmp(a, &[b.major, b.minor, b.patch]))
-            }
+            (Version::Semver(a), Version::Numeric(b)) => Some(semver_numeric_cmp(a, b)),
+            (Version::Numeric(a), Version::Semver(b)) => Some(semver_numeric_cmp(b, a).reverse()),
             (
                 Version::Deb {
                     epoch: ae,
@@ -441,6 +438,17 @@ fn numeric_cmp(a: &[u64], b: &[u64]) -> Ordering {
         }
     }
     Ordering::Equal
+}
+
+/// orders a semver version against numeric segments: `[major, minor, patch]`
+/// as segments, then a pre-release below the release it precedes.
+fn semver_numeric_cmp(a: &semver::Version, b: &[u64]) -> Ordering {
+    let release = numeric_cmp(&[a.major, a.minor, a.patch], b);
+    if a.pre.is_empty() {
+        release
+    } else {
+        release.then(Ordering::Less)
+    }
 }
 
 /// parses dot-separated numeric segments (e.g. four-part or leading-zero
@@ -1993,6 +2001,42 @@ mod tests {
         // cross-variant comparison works after stripping the v-prefix during parse.
         assert!(!is_version_downgrade("v1.2.3", "1.2.3.4"));
         assert!(is_version_downgrade("1.2.3.4", "v1.2.3"));
+    }
+
+    #[test]
+    fn semver_prerelease_against_numeric() {
+        use Ordering::{Equal, Greater, Less};
+
+        for (a, b, expected) in [
+            ("1.2.3-rc.1", "1.2.3.0", Less),
+            ("1.2.3-rc.1", "1.2.3.0.0", Less),
+            ("1.2.3-rc.1", "1.2.3.1", Less),
+            ("1.2.3-rc.1+build.5", "1.2.3.0", Less),
+            ("1.2.4-rc.1", "1.2.3.9", Greater),
+            ("1.2.3", "1.2.3.0.0", Equal),
+            ("1.2.3+build.5", "1.2.3.0", Equal),
+        ] {
+            assert_eq!(compare_versions(a, b), Some(expected), "{a} vs {b}");
+            assert_eq!(
+                compare_versions(b, a),
+                Some(expected.reverse()),
+                "{b} vs {a}"
+            );
+        }
+    }
+
+    #[test]
+    fn semver_and_numeric_order_transitively() {
+        let (pre, release, numeric) = ("1.2.3-rc.1", "1.2.3", "1.2.3.0");
+        assert_eq!(compare_versions(pre, release), Some(Ordering::Less));
+        assert_eq!(compare_versions(release, numeric), Some(Ordering::Equal));
+        assert_eq!(compare_versions(pre, numeric), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn downgrade_four_part_to_prerelease() {
+        assert!(is_version_downgrade("1.2.3.0", "1.2.3-rc.1"));
+        assert!(!is_version_downgrade("1.2.3-rc.1", "1.2.3.0"));
     }
 
     #[test]
@@ -3773,8 +3817,6 @@ mod tests {
             ("5.0.0-preview.1", "5.0.0-RC.1", Greater, Less),
             ("1.0.0-Alpha", "1.0.0-alpha", Less, Equal),
             ("1.0.0-alpha", "1.0.0-Alpha.1", Greater, Less),
-            // the inferred numeric reading drops the pre-release entirely
-            ("2.0.0.0", "2.0.0-rc", Equal, Greater),
         ] {
             assert_eq!(compare_versions(a, b), Some(inferred), "{a} vs {b}");
             assert_eq!(nuget_cmp(a, b), nuget, "{a} vs {b}");
