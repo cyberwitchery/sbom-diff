@@ -424,33 +424,45 @@ impl CycloneDxReader {
             }
         }
 
+        let mut service_refs = BTreeSet::new();
+        let mut services: Vec<_> = bom.services.iter().flat_map(|s| &s.0).collect();
+        while let Some(service) = services.pop() {
+            service_refs.extend(service.bom_ref.as_deref());
+            services.extend(service.services.iter().flat_map(|s| &s.0));
+        }
+
         if let Some(dependencies) = bom.dependencies {
             for dep in dependencies.0 {
                 let parent_ref = dep.dependency_ref;
-                if let Some(parent_id) = ref_map.get(&parent_ref.to_string()) {
-                    for child_ref in dep.dependencies {
-                        if let Some(child_id) = ref_map.get(&child_ref.to_string()) {
+                let parent_id = ref_map.get(&parent_ref);
+                if parent_id.is_none() && !service_refs.contains(parent_ref.as_str()) {
+                    sbom.warnings.push(format!(
+                        "CycloneDX: dependency bom-ref '{}' does not match any component",
+                        parent_ref
+                    ));
+                    continue;
+                }
+                for child_ref in dep.dependencies {
+                    match (parent_id, ref_map.get(&child_ref)) {
+                        (Some(parent_id), Some(child_id)) => {
                             // an edge between two entries of one duplicated component
                             if child_id == parent_id && child_ref != parent_ref {
                                 continue;
                             }
                             let kind = scope_map
-                                .get(&child_ref.to_string())
+                                .get(&child_ref)
                                 .copied()
                                 .unwrap_or(DependencyKind::Runtime);
                             sbom.insert_dependency(parent_id.clone(), child_id.clone(), kind);
-                        } else {
+                        }
+                        (_, None) if !service_refs.contains(child_ref.as_str()) => {
                             sbom.warnings.push(format!(
                                 "CycloneDX: dependency bom-ref '{}' (child of '{}') does not match any component",
                                 child_ref, parent_ref
                             ));
                         }
+                        _ => {}
                     }
-                } else {
-                    sbom.warnings.push(format!(
-                        "CycloneDX: dependency bom-ref '{}' does not match any component",
-                        parent_ref
-                    ));
                 }
             }
         }
@@ -1992,5 +2004,115 @@ mod tests {
 
         // per-license entries carry no expression, so the flat set stands alone
         assert_eq!(find("listed").license_expression, None);
+    }
+
+    type ServicesReader = fn(&[(&str, &[&str])]) -> Sbom;
+
+    fn services_json(dependencies: &[(&str, &[&str])]) -> Sbom {
+        let dependencies: Vec<_> = dependencies
+            .iter()
+            .map(|(parent, children)| serde_json::json!({"ref": parent, "dependsOn": children}))
+            .collect();
+        let doc = serde_json::json!({
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "components": [
+                library("app", "app", "required"),
+                library("lib", "lib", "required"),
+            ],
+            "services": [{
+                "bom-ref": "svc",
+                "name": "api",
+                "services": [{"bom-ref": "inner-svc", "name": "inner"}],
+            }],
+            "dependencies": dependencies,
+        });
+        CycloneDxReader::read_json(doc.to_string().as_bytes()).unwrap()
+    }
+
+    fn services_xml(dependencies: &[(&str, &[&str])]) -> Sbom {
+        let dependencies: String = dependencies
+            .iter()
+            .map(|(parent, children)| {
+                let children: String = children
+                    .iter()
+                    .map(|child| format!(r#"<dependency ref="{child}"/>"#))
+                    .collect();
+                format!(r#"<dependency ref="{parent}">{children}</dependency>"#)
+            })
+            .collect();
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.5" version="1">
+  <components>
+    <component type="library" bom-ref="app">
+      <name>app</name><version>1.0.0</version><scope>required</scope><purl>pkg:npm/app@1.0.0</purl>
+    </component>
+    <component type="library" bom-ref="lib">
+      <name>lib</name><version>1.0.0</version><scope>required</scope><purl>pkg:npm/lib@1.0.0</purl>
+    </component>
+  </components>
+  <services>
+    <service bom-ref="svc">
+      <name>api</name>
+      <services>
+        <service bom-ref="inner-svc"><name>inner</name></service>
+      </services>
+    </service>
+  </services>
+  <dependencies>{dependencies}</dependencies>
+</bom>"#
+        );
+        CycloneDxReader::read_xml(xml.as_bytes()).unwrap()
+    }
+
+    const SERVICES_READERS: [(&str, ServicesReader); 2] =
+        [("json", services_json), ("xml", services_xml)];
+
+    /// asserts `extra` leaves app -> lib the only edge, and returns the warnings it adds.
+    fn added_warnings(read: ServicesReader, extra: &[(&str, &[&str])]) -> Vec<String> {
+        let id = |name: &str| ComponentId::new(Some(&format!("pkg:npm/{name}@1.0.0")), &[]);
+        let mut dependencies: Vec<(&str, &[&str])> = vec![("app", &["lib"])];
+        let plain = read(&dependencies);
+        assert_eq!(plain.deps(&id("app")), vec![id("lib")]);
+        assert_eq!(plain.dependencies.len(), 1);
+        assert!(plain.warnings.is_empty(), "{:?}", plain.warnings);
+        dependencies.extend_from_slice(extra);
+        let sbom = read(&dependencies);
+        assert_eq!(sbom.dependencies, plain.dependencies);
+        sbom.warnings
+    }
+
+    #[test]
+    fn test_dependency_on_a_service_is_skipped_without_a_warning() {
+        for (format, read) in SERVICES_READERS {
+            let warnings = added_warnings(read, &[("lib", &["svc", "inner-svc"])]);
+            assert_eq!(warnings, Vec::<String>::new(), "{format}");
+        }
+    }
+
+    #[test]
+    fn test_service_with_dependencies_is_skipped_without_a_warning() {
+        for (format, read) in SERVICES_READERS {
+            let warnings =
+                added_warnings(read, &[("svc", &["lib"]), ("inner-svc", &["app", "svc"])]);
+            assert_eq!(warnings, Vec::<String>::new(), "{format}");
+        }
+    }
+
+    #[test]
+    fn test_unknown_bom_ref_beside_services_still_warns() {
+        for (format, read) in SERVICES_READERS {
+            let warnings = added_warnings(read, &[("svc", &["gone"]), ("lost", &["lib"])]);
+            assert_eq!(
+                warnings,
+                [
+                    "CycloneDX: dependency bom-ref 'gone' (child of 'svc') does not match any component",
+                    "CycloneDX: dependency bom-ref 'lost' does not match any component",
+                ],
+                "{format}"
+            );
+        }
     }
 }

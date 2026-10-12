@@ -43,7 +43,9 @@ both adapters produce:
     1. each component `bom-ref` is stored in `Component.source_ids`; when two entries resolve to the same `ComponentId`, the later entry's fields win and the `bom-ref`s of both are kept
     2. adapter builds `bom-ref -> ComponentId` lookup
     3. each `ref -> dependsOn[]` relationship becomes `parent -> {children...}` in `Sbom.dependencies`; `ref`s that resolve to the same parent merge their children, and a `dependsOn` between two entries of one component is dropped
-    4. an edge reached through child entries with different scopes is `runtime` if any of them is
+    4. an edge's kind comes from the child's `scope`: `optional` is `optional`, anything else `runtime`; an edge reached through child entries with different scopes is `runtime` if any of them is
+  - a service is not a component, so a `ref` or `dependsOn` naming the `bom-ref` of a service in `services`, nested `services` included, is dropped without a warning
+  - a `ref` naming no component and no service drops its whole entry with one warning, and a `dependsOn` naming neither drops that edge with a warning
 
 ## spdx -> model
 
@@ -82,15 +84,18 @@ both adapters produce:
   - `NOASSERTION` and `NONE` are ignored
 - dependency relationships:
   - source: top-level `relationships`
-  - only these relationship types become dependency edges:
-    - `DEPENDS_ON`
-    - `CONTAINS`
-    - `DESCRIBES`
+  - these relationship types become dependency edges; every other type is ignored:
+    - `spdxElementId -> relatedSpdxElement`, kind `runtime`: `DEPENDS_ON`, `CONTAINS`, `DESCRIBES`, `HAS_PREREQUISITE`
+    - `relatedSpdxElement -> spdxElementId`, kind `runtime`: `DEPENDENCY_OF`, `CONTAINED_BY`, `DESCRIBED_BY`, `PREREQUISITE_FOR`, `RUNTIME_DEPENDENCY_OF`
+    - `relatedSpdxElement -> spdxElementId`, kind named by the type: `DEV_DEPENDENCY_OF` (`dev`), `BUILD_DEPENDENCY_OF` (`build`), `TEST_DEPENDENCY_OF` (`test`), `OPTIONAL_DEPENDENCY_OF` (`optional`), `PROVIDED_DEPENDENCY_OF` (`provided`)
   - mapping path:
     1. each package `SPDXID` is stored in `Component.source_ids`; when two packages resolve to the same `ComponentId`, the later package's fields win and the `SPDXID`s of both are kept
     2. adapter builds `SPDXID -> ComponentId` lookup
-    3. each qualifying relationship becomes `spdxElementId -> relatedSpdxElement` in `Sbom.dependencies`; a relationship between two packages of one component is dropped
+    3. each qualifying relationship between two packages becomes a `parent -> child` edge in `Sbom.dependencies`, in the direction listed above; a relationship between two packages of one component is dropped
     4. an edge read with several kinds keeps the first of `runtime`, `dev`, `build`, `test`, `optional`, `provided`
+  - a relationship with the document's own `SPDXID` at either end (`SPDXRef-DOCUMENT DESCRIBES ...`) is dropped without a warning
+  - an end that names something the document declares other than a package is not an edge this model can hold, so the relationship is dropped without a warning: a file, a snippet, `NONE` or `NOASSERTION` as the `relatedSpdxElement`, or an element of an external document (`DocumentRef-<id>:SPDXRef-...`) whose `DocumentRef-<id>` the document declares in `externalDocumentRefs` (`ExternalDocumentRef` in tag-value). only the one document is read, so an external element is never looked up
+  - an end that names nothing in the document drops the relationship with a warning naming the field (`spdxElementId` or `relatedSpdxElement`) and the relationship: an `SPDXID` no package, file or snippet has, a `DocumentRef-<id>` the document does not declare, or `NONE` or `NOASSERTION` as the `spdxElementId`. each such end gets its own warning
 
 ## notes
 
