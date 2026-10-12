@@ -82,6 +82,34 @@ fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, Depen
     }
 }
 
+/// the relationship type as the document spells it, e.g. `DEPENDS_ON`.
+fn relationship_name(rel_type: &RelationshipType) -> String {
+    match serde_json::to_value(rel_type) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => format!("{rel_type:?}"),
+    }
+}
+
+/// why a reference that names no package deserves a warning; `None` if the document declares it.
+fn undeclared_element(
+    element: &str,
+    related: bool,
+    non_packages: &BTreeSet<String>,
+    external_documents: &BTreeSet<String>,
+) -> Option<String> {
+    if non_packages.contains(element) || (related && matches!(element, "NONE" | "NOASSERTION")) {
+        return None;
+    }
+    match element.split_once(':') {
+        Some((document, _)) if document.starts_with("DocumentRef-") => {
+            (!external_documents.contains(document)).then(|| {
+                format!("names external document '{document}', which the document does not declare")
+            })
+        }
+        _ => Some("does not match any element in the document".to_string()),
+    }
+}
+
 /// yields each line of a tag-value document paired with whether the line
 /// begins outside a `<text>` ... `</text>` block, i.e. whether it can carry
 /// a tag.
@@ -827,6 +855,29 @@ impl SpdxReader {
             .spdx_identifier
             .clone();
 
+        let non_packages: BTreeSet<String> = spdx_doc
+            .file_information
+            .iter()
+            .map(|file| file.file_spdx_identifier.clone())
+            .chain(
+                spdx_doc
+                    .snippet_information
+                    .iter()
+                    .map(|snippet| snippet.snippet_spdx_identifier.clone()),
+            )
+            .collect();
+        // spdx-rs keeps the `DocumentRef-` prefix from JSON but strips it from tag-value.
+        let external_documents: BTreeSet<String> = spdx_doc
+            .document_creation_information
+            .external_document_references
+            .iter()
+            .map(|reference| {
+                let id = &reference.id_string;
+                let id = id.strip_prefix("DocumentRef-").unwrap_or(id);
+                format!("DocumentRef-{id}")
+            })
+            .collect();
+
         for rel in spdx_doc.relationships {
             let left_spdx = rel.spdx_element_id;
             let right_spdx = rel.related_spdx_element;
@@ -851,24 +902,29 @@ impl SpdxReader {
             let parent_id = ref_map.get(parent_spdx);
             let child_id = ref_map.get(child_spdx);
 
-            match (parent_id, child_id) {
-                (Some(pid), Some(cid)) => {
-                    // an edge between two entries of one duplicated component
-                    if pid == cid && parent_spdx != child_spdx {
-                        continue;
-                    }
-                    sbom.insert_dependency(pid.clone(), cid.clone(), kind);
+            if let (Some(pid), Some(cid)) = (parent_id, child_id) {
+                // an edge between two entries of one duplicated component
+                if pid == cid && parent_spdx != child_spdx {
+                    continue;
                 }
-                (None, _) => {
-                    sbom.warnings.push(format!(
-                        "SPDX: relationship source '{}' does not match any package",
-                        parent_spdx
-                    ));
+                sbom.insert_dependency(pid.clone(), cid.clone(), kind);
+                continue;
+            }
+
+            let ends = [
+                ("spdxElementId", &left_spdx, false),
+                ("relatedSpdxElement", &right_spdx, true),
+            ];
+            for (field, element, related) in ends {
+                if ref_map.contains_key(element) {
+                    continue;
                 }
-                (_, None) => {
+                if let Some(problem) =
+                    undeclared_element(element, related, &non_packages, &external_documents)
+                {
                     sbom.warnings.push(format!(
-                        "SPDX: relationship target '{}' (from '{}') does not match any package",
-                        child_spdx, parent_spdx
+                        "SPDX: {field} '{element}' of relationship '{left_spdx} {} {right_spdx}' {problem}",
+                        relationship_name(&rel_type),
                     ));
                 }
             }
@@ -4033,5 +4089,276 @@ PackageCopyrightText: NOASSERTION
             BTreeSet::from(["GPL-2.0-only".to_string()])
         );
         assert_eq!(find("unlicensed").license_expression, None);
+    }
+
+    const SHA1_OF_NOTHING: &str = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+
+    const APP_DEPENDS_ON_LIB: (&str, &str, &str) = ("SPDXRef-app", "DEPENDS_ON", "SPDXRef-lib");
+
+    fn elements_json(relationships: &[(&str, &str, &str)]) -> Sbom {
+        let relationships: Vec<_> = relationships
+            .iter()
+            .map(|(from, kind, to)| {
+                serde_json::json!({
+                    "spdxElementId": from,
+                    "relationshipType": kind,
+                    "relatedSpdxElement": to,
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "externalDocumentRefs": [{
+                "externalDocumentId": "DocumentRef-ext",
+                "spdxDocument": "http://spdx.org/spdxdocs/ext",
+                "checksum": {"algorithm": "SHA1", "checksumValue": SHA1_OF_NOTHING},
+            }],
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z"
+            },
+            "packages": [
+                {"name": "app", "SPDXID": "SPDXRef-app", "downloadLocation": "NONE"},
+                {"name": "lib", "SPDXID": "SPDXRef-lib", "downloadLocation": "NONE"},
+            ],
+            "files": [{
+                "fileName": "./lib/x.so",
+                "SPDXID": "SPDXRef-File-x",
+                "checksums": [{"algorithm": "SHA1", "checksumValue": SHA1_OF_NOTHING}],
+            }],
+            "snippets": [{
+                "SPDXID": "SPDXRef-Snippet-x",
+                "snippetFromFile": "SPDXRef-File-x",
+                "ranges": [{
+                    "startPointer": {"reference": "SPDXRef-File-x", "offset": 1},
+                    "endPointer": {"reference": "SPDXRef-File-x", "offset": 10},
+                }],
+            }],
+            "relationships": relationships,
+        });
+        SpdxReader::read_json(doc.to_string().as_bytes()).unwrap()
+    }
+
+    fn elements_tag_value(relationships: &[(&str, &str, &str)]) -> Sbom {
+        let mut tv = format!(
+            "\
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: test
+DocumentNamespace: http://spdx.org/spdxdocs/test
+ExternalDocumentRef: DocumentRef-ext http://spdx.org/spdxdocs/ext SHA1: {SHA1_OF_NOTHING}
+Creator: Tool: manual
+Created: 2023-01-01T00:00:00Z
+
+PackageName: app
+SPDXID: SPDXRef-app
+PackageDownloadLocation: NONE
+
+PackageName: lib
+SPDXID: SPDXRef-lib
+PackageDownloadLocation: NONE
+
+FileName: ./lib/x.so
+SPDXID: SPDXRef-File-x
+FileChecksum: SHA1: {SHA1_OF_NOTHING}
+
+SnippetSPDXID: SPDXRef-Snippet-x
+SnippetFromFileSPDXID: SPDXRef-File-x
+SnippetByteRange: 1:10
+
+"
+        );
+        for (from, kind, to) in relationships {
+            tv.push_str(&format!("Relationship: {from} {kind} {to}\n"));
+        }
+        SpdxReader::read_tag_value(tv.as_bytes()).unwrap()
+    }
+
+    fn elements_xml(relationships: &[(&str, &str, &str)]) -> Sbom {
+        let relationships: String = relationships
+            .iter()
+            .map(|(from, kind, to)| {
+                format!(
+                    "<relationships><spdxElementId>{from}</spdxElementId>\
+                     <relationshipType>{kind}</relationshipType>\
+                     <relatedSpdxElement>{to}</relatedSpdxElement></relationships>"
+                )
+            })
+            .collect();
+        let xml = format!(
+            r#"<Document>
+  <spdxVersion>SPDX-2.3</spdxVersion>
+  <dataLicense>CC0-1.0</dataLicense>
+  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
+  <name>test</name>
+  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
+  <externalDocumentRefs>
+    <externalDocumentId>DocumentRef-ext</externalDocumentId>
+    <spdxDocument>http://spdx.org/spdxdocs/ext</spdxDocument>
+    <checksum><algorithm>SHA1</algorithm><checksumValue>{SHA1_OF_NOTHING}</checksumValue></checksum>
+  </externalDocumentRefs>
+  <creationInfo>
+    <creators>Tool: manual</creators>
+    <created>2023-01-01T00:00:00Z</created>
+  </creationInfo>
+  <packages><name>app</name><SPDXID>SPDXRef-app</SPDXID><downloadLocation>NONE</downloadLocation></packages>
+  <packages><name>lib</name><SPDXID>SPDXRef-lib</SPDXID><downloadLocation>NONE</downloadLocation></packages>
+  <files>
+    <fileName>./lib/x.so</fileName>
+    <SPDXID>SPDXRef-File-x</SPDXID>
+    <checksums><algorithm>SHA1</algorithm><checksumValue>{SHA1_OF_NOTHING}</checksumValue></checksums>
+  </files>
+  <snippets>
+    <SPDXID>SPDXRef-Snippet-x</SPDXID>
+    <snippetFromFile>SPDXRef-File-x</snippetFromFile>
+    <ranges>
+      <startPointer><reference>SPDXRef-File-x</reference><offset>1</offset></startPointer>
+      <endPointer><reference>SPDXRef-File-x</reference><offset>10</offset></endPointer>
+    </ranges>
+  </snippets>
+  {relationships}
+</Document>"#
+        );
+        SpdxReader::read_xml(xml.as_bytes()).unwrap()
+    }
+
+    type ElementsReader = fn(&[(&str, &str, &str)]) -> Sbom;
+
+    const ELEMENTS_READERS: [(&str, ElementsReader); 3] = [
+        ("json", elements_json),
+        ("tag-value", elements_tag_value),
+        ("xml", elements_xml),
+    ];
+
+    /// asserts `extra` leaves app -> lib the only edge, and returns the warnings it adds.
+    fn added_warnings(read: ElementsReader, extra: &[(&str, &str, &str)]) -> Vec<String> {
+        let plain = read(&[APP_DEPENDS_ON_LIB]);
+        assert_eq!(plain.dependencies.values().flatten().count(), 1);
+        assert!(
+            !plain.warnings.iter().any(|w| w.contains("relationship")),
+            "{:?}",
+            plain.warnings
+        );
+        let sbom = read(&[&[APP_DEPENDS_ON_LIB][..], extra].concat());
+        assert_eq!(sbom.dependencies, plain.dependencies);
+        sbom.warnings
+            .into_iter()
+            .filter(|w| !plain.warnings.contains(w))
+            .collect()
+    }
+
+    fn assert_skipped_silently(extra: &[(&str, &str, &str)]) {
+        for (format, read) in ELEMENTS_READERS {
+            assert_eq!(
+                added_warnings(read, extra),
+                Vec::<String>::new(),
+                "{format}"
+            );
+        }
+    }
+
+    fn assert_warns(relationship: (&str, &str, &str), expected: &[&str]) {
+        for (format, read) in ELEMENTS_READERS {
+            assert_eq!(added_warnings(read, &[relationship]), expected, "{format}");
+        }
+    }
+
+    #[test]
+    fn test_relationship_with_a_file_is_skipped_without_a_warning() {
+        assert_skipped_silently(&[
+            ("SPDXRef-app", "CONTAINS", "SPDXRef-File-x"),
+            ("SPDXRef-File-x", "CONTAINED_BY", "SPDXRef-lib"),
+        ]);
+    }
+
+    #[test]
+    fn test_relationship_with_a_snippet_is_skipped_without_a_warning() {
+        assert_skipped_silently(&[
+            ("SPDXRef-app", "CONTAINS", "SPDXRef-Snippet-x"),
+            ("SPDXRef-Snippet-x", "DEPENDENCY_OF", "SPDXRef-lib"),
+        ]);
+    }
+
+    #[test]
+    fn test_relationship_to_none_or_noassertion_is_skipped_without_a_warning() {
+        assert_skipped_silently(&[
+            ("SPDXRef-lib", "DEPENDS_ON", "NONE"),
+            ("SPDXRef-app", "CONTAINS", "NOASSERTION"),
+            ("SPDXRef-lib", "DEPENDENCY_OF", "NOASSERTION"),
+        ]);
+    }
+
+    #[test]
+    fn test_relationship_with_a_declared_external_document_is_skipped_without_a_warning() {
+        assert_skipped_silently(&[
+            ("SPDXRef-app", "DEPENDS_ON", "DocumentRef-ext:SPDXRef-c"),
+            ("DocumentRef-ext:SPDXRef-d", "DEPENDENCY_OF", "SPDXRef-lib"),
+        ]);
+    }
+
+    #[test]
+    fn test_relationship_with_an_undeclared_external_document_warns() {
+        assert_warns(
+            ("SPDXRef-app", "DEPENDS_ON", "DocumentRef-other:SPDXRef-c"),
+            &[
+                "SPDX: relatedSpdxElement 'DocumentRef-other:SPDXRef-c' of relationship \
+               'SPDXRef-app DEPENDS_ON DocumentRef-other:SPDXRef-c' names external document \
+               'DocumentRef-other', which the document does not declare",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_dangling_relationship_warning_names_the_field_and_the_type() {
+        assert_warns(
+            ("SPDXRef-lib", "DEPENDENCY_OF", "SPDXRef-gone"),
+            &[
+                "SPDX: relatedSpdxElement 'SPDXRef-gone' of relationship \
+               'SPDXRef-lib DEPENDENCY_OF SPDXRef-gone' does not match any element in the document",
+            ],
+        );
+        assert_warns(
+            ("SPDXRef-gone", "DEPENDENCY_OF", "SPDXRef-lib"),
+            &[
+                "SPDX: spdxElementId 'SPDXRef-gone' of relationship \
+               'SPDXRef-gone DEPENDENCY_OF SPDXRef-lib' does not match any element in the document",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_dangling_reference_beside_a_file_still_warns() {
+        assert_warns(
+            ("SPDXRef-File-x", "CONTAINED_BY", "SPDXRef-gone"),
+            &["SPDX: relatedSpdxElement 'SPDXRef-gone' of relationship \
+               'SPDXRef-File-x CONTAINED_BY SPDXRef-gone' does not match any element in the document"],
+        );
+    }
+
+    #[test]
+    fn test_noassertion_as_spdx_element_id_warns() {
+        assert_warns(
+            ("NOASSERTION", "CONTAINED_BY", "SPDXRef-app"),
+            &["SPDX: spdxElementId 'NOASSERTION' of relationship \
+               'NOASSERTION CONTAINED_BY SPDXRef-app' does not match any element in the document"],
+        );
+    }
+
+    #[test]
+    fn test_relationship_with_two_dangling_ends_warns_about_both() {
+        assert_warns(
+            ("SPDXRef-gone", "DEPENDS_ON", "SPDXRef-lost"),
+            &[
+                "SPDX: spdxElementId 'SPDXRef-gone' of relationship \
+                 'SPDXRef-gone DEPENDS_ON SPDXRef-lost' does not match any element in the document",
+                "SPDX: relatedSpdxElement 'SPDXRef-lost' of relationship \
+                 'SPDXRef-gone DEPENDS_ON SPDXRef-lost' does not match any element in the document",
+            ],
+        );
     }
 }
