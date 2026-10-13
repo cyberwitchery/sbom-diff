@@ -60,16 +60,10 @@ both adapters produce:
 - tag-value inputs that still abort the process rather than produce a diagnostic. all are `spdx-rs` panics on input this reader cannot recognize line by line, and all are the same on `main`:
   - a *non-empty* license expression the SPDX expression parser rejects (`MIT AND`, `(MIT`) on one of the five tags above. only an empty value is caught; a non-empty one needs an expression-level parse this reader does not do
   - a `<text>` block used as the value of one of the enum-valued tags above (`FileType: <text>NOTATYPE</text>`). a `<text>` value can run past its own line, so its content is not judged, and an unrecognized one reaches the parser's crash
-- json handling: a few spellings and properties the SPDX 2.3 schema allows are ones the underlying parser refuses, and any one of them used to fail the whole document. they are rewritten before parsing, which loses nothing the reader maps, so no warning is emitted:
+- json handling: a few spellings and properties the SPDX 2.3 schema allows are ones the underlying parser refuses. they are rewritten before parsing, which loses nothing the reader maps, so no warning is emitted:
   - `primaryPackagePurpose` `OPERATING-SYSTEM`, which every trivy container-image SBOM carries, is read as `OPERATING_SYSTEM`
   - `referenceCategory` `PERSISTENT-ID` is read as `PERSISTENT_ID`
   - the top-level `$schema` and the deprecated `revieweds` are dropped; a top-level property the schema does not define is still an error
-  - a key repeated within one object is still an error
-- json and xml documents the 2.3 schema accepts that the parser still refuses. each is also invalid under the spec text:
-  - a snippet range pointer with neither `offset` nor `lineNumber`
-  - a license expression the SPDX expression parser rejects (`MIT AND`)
-  - a date that is not `YYYY-MM-DDThh:mm:ssZ` or another RFC 3339 timestamp, such as `2024-01-01`, which only the 2.3.0 and 2.2 schemas accept
-  - an SPDX 2.2 document without `documentNamespace` or `creationInfo.creators`, which the 2.2 schema leaves optional
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`
   - repeated sibling elements become a json array; a field the schema types as an array becomes a one-element array even when it occurs once
