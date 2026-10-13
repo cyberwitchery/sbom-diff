@@ -575,6 +575,66 @@ fn rewrite_for_spdx_rs(document: &mut serde_json::Value) -> bool {
     changed
 }
 
+/// refuses a key repeated within one object, which a `serde_json::Value` collapses.
+struct UniqueKeys;
+
+impl<'de> serde::Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(UniqueKeys)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for UniqueKeys {
+    type Value = UniqueKeys;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<UniqueKeys>()?.is_some() {}
+        Ok(self)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        let mut keys = BTreeSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if keys.contains(&key) {
+                return Err(serde::de::Error::custom(format_args!(
+                    "duplicate field `{key}`"
+                )));
+            }
+            map.next_value::<UniqueKeys>()?;
+            keys.insert(key);
+        }
+        Ok(self)
+    }
+}
+
 /// replaces a schema spelling with the one spdx-rs 0.5 reads, returning
 /// whether it did.
 fn respell(value: Option<&mut serde_json::Value>, spellings: &[(&str, &str)]) -> bool {
@@ -629,6 +689,7 @@ impl SpdxReader {
                 if !rewrite_for_spdx_rs(&mut value) {
                     return Err(err.into());
                 }
+                serde_json::from_slice::<UniqueKeys>(buf)?;
                 serde_json::from_value(value)?
             }
             Err(err) => return Err(err.into()),
@@ -4713,6 +4774,66 @@ SnippetByteRange: 1:10
             ]
         }));
         let err = SpdxReader::read_json(document.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("downloadLocation"), "{err}");
+    }
+
+    #[test]
+    fn test_repeated_key_is_still_an_error_after_a_rewrite() {
+        let document = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {"creators": ["Tool: manual"], "created": "2023-01-01T00:00:00Z"},
+            "packages": [
+                {
+                    "name": "alpine",
+                    "SPDXID": "SPDXRef-os",
+                    "downloadLocation": "NONE",
+                    "primaryPackagePurpose": "OPERATING-SYSTEM"
+                },
+                {
+                    "name": "pkg-a",
+                    "SPDXID": "SPDXRef-pkg-a",
+                    "downloadLocation": "NONE",
+                    "versionInfo": "1.0",
+                    "versionInfo": "2.0"
+                }
+            ]
+        }"#;
+        let read = |document: &str| {
+            SpdxReader::read_json(document.as_bytes())
+                .unwrap_err()
+                .to_string()
+        };
+        let typed = read(&document.replace("OPERATING-SYSTEM", "OPERATING_SYSTEM"));
+        assert!(
+            typed.contains("duplicate field `versionInfo` at line 20 column"),
+            "{typed}"
+        );
+        assert_eq!(read(document), typed);
+    }
+
+    #[test]
+    fn test_repeated_unknown_key_is_left_to_the_typed_read_when_nothing_was_rewritten() {
+        let document = r#"{
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {
+                "creators": ["Tool: manual"],
+                "created": "2023-01-01T00:00:00Z",
+                "x": 1,
+                "x": 2
+            },
+            "packages": [{"name": "pkg-a", "SPDXID": "SPDXRef-pkg-a"}]
+        }"#;
+        let err = SpdxReader::read_json(document.as_bytes())
             .unwrap_err()
             .to_string();
         assert!(err.contains("downloadLocation"), "{err}");

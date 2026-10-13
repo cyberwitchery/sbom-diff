@@ -64,10 +64,11 @@ both adapters produce:
   - `primaryPackagePurpose` `OPERATING-SYSTEM`, which every trivy container-image SBOM carries, is read as `OPERATING_SYSTEM`
   - `referenceCategory` `PERSISTENT-ID` is read as `PERSISTENT_ID`
   - the top-level `$schema` and the deprecated `revieweds` are dropped; a top-level property the schema does not define is still an error
+  - a key repeated within one object is still an error
 - json and xml documents the 2.3 schema accepts that the parser still refuses. each is also invalid under the spec text:
   - a snippet range pointer with neither `offset` nor `lineNumber`
   - a license expression the SPDX expression parser rejects (`MIT AND`)
-  - a date that is not `YYYY-MM-DDThh:mm:ssZ` or another RFC 3339 timestamp, such as `2024-01-01`
+  - a date that is not `YYYY-MM-DDThh:mm:ssZ` or another RFC 3339 timestamp, such as `2024-01-01`, which only the 2.3.0 and 2.2 schemas accept
   - an SPDX 2.2 document without `documentNamespace` or `creationInfo.creators`, which the 2.2 schema leaves optional
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`
