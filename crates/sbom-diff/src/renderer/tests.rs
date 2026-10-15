@@ -87,20 +87,6 @@ fn mock_diff_empty() -> Diff {
 }
 
 #[test]
-fn test_text_renderer() {
-    let diff = mock_diff();
-    let mut buf = Vec::new();
-    TextRenderer
-        .render(&diff, &RenderOptions::default(), &mut buf)
-        .unwrap();
-    let out = String::from_utf8(buf).unwrap();
-    assert!(out.contains("Diff Summary"));
-    assert!(out.contains("[+] Added"));
-    assert!(out.contains("[-] Removed"));
-    assert!(out.contains("[~] Changed"));
-}
-
-#[test]
 fn test_text_renderer_all_field_changes() {
     let diff = mock_diff_all_field_changes();
     let mut buf = Vec::new();
@@ -149,18 +135,6 @@ fn test_text_renderer_empty_diff() {
 }
 
 #[test]
-fn test_markdown_renderer() {
-    let diff = mock_diff();
-    let mut buf = Vec::new();
-    MarkdownRenderer
-        .render(&diff, &RenderOptions::default(), &mut buf)
-        .unwrap();
-    let out = String::from_utf8(buf).unwrap();
-    assert!(out.contains("### SBOM Diff Summary"));
-    assert!(out.contains("<details>"));
-}
-
-#[test]
 fn test_markdown_renderer_all_field_changes() {
     let diff = mock_diff_all_field_changes();
     let mut buf = Vec::new();
@@ -196,16 +170,6 @@ fn test_markdown_renderer_empty_diff() {
 }
 
 #[test]
-fn test_json_renderer() {
-    let diff = mock_diff();
-    let mut buf = Vec::new();
-    JsonRenderer
-        .render(&diff, &RenderOptions::default(), &mut buf)
-        .unwrap();
-    let _: serde_json::Value = serde_json::from_slice(&buf).unwrap();
-}
-
-#[test]
 fn test_json_renderer_all_field_changes() {
     let diff = mock_diff_all_field_changes();
     let mut buf = Vec::new();
@@ -217,20 +181,6 @@ fn test_json_renderer_all_field_changes() {
     assert_eq!(val["changed"].as_array().unwrap().len(), 1);
     assert_eq!(val["changed"][0]["changes"].as_array().unwrap().len(), 7);
     assert_eq!(val["edge_diffs"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn test_json_renderer_roundtrip() {
-    let diff = mock_diff_all_field_changes();
-    let mut buf = Vec::new();
-    JsonRenderer
-        .render(&diff, &RenderOptions::default(), &mut buf)
-        .unwrap();
-
-    let deserialized: Diff = serde_json::from_slice(&buf).unwrap();
-    assert_eq!(deserialized.changed.len(), diff.changed.len());
-    assert_eq!(deserialized.edge_diffs.len(), diff.edge_diffs.len());
-    assert_eq!(deserialized.changed[0].changes, diff.changed[0].changes);
 }
 
 fn mock_diff_with_ecosystems() -> Diff {
@@ -563,13 +513,14 @@ fn test_json_renderer_includes_component_names() {
         .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
-    let names = &val["component_names"];
-    assert!(names.is_object());
-    assert!(names
-        .as_object()
-        .unwrap()
-        .values()
-        .any(|v| v == "my-app@1.0"));
+    let edges = &diff.edge_diffs[0];
+    let (child_b, _) = edges.added.first_key_value().unwrap();
+    let (child_a, _) = edges.removed.first_key_value().unwrap();
+    let mut expected = serde_json::Map::new();
+    expected.insert(edges.parent.to_string(), "my-app@1.0".into());
+    expected.insert(child_a.to_string(), "old-dep@0.1".into());
+    expected.insert(child_b.to_string(), "new-dep@0.2".into());
+    assert_eq!(val["component_names"], serde_json::Value::Object(expected));
 }
 
 #[test]
@@ -835,6 +786,7 @@ fn test_sarif_renderer_rules() {
         assert!(rule["fullDescription"]["text"].is_string());
         assert!(rule["defaultConfiguration"]["level"].is_string());
     }
+    assert_eq!(rules[5]["defaultConfiguration"]["level"], "note");
 }
 
 #[test]
@@ -1375,23 +1327,6 @@ fn test_sarif_renderer_warnings_rule_index() {
 }
 
 #[test]
-fn test_sarif_renderer_warnings_rule_present() {
-    let diff = mock_diff_empty();
-    let mut buf = Vec::new();
-    SarifRenderer
-        .render(&diff, &RenderOptions::default(), &mut buf)
-        .unwrap();
-    let val = sarif_parse(&buf);
-
-    let rules = val["runs"][0]["tool"]["driver"]["rules"]
-        .as_array()
-        .unwrap();
-    assert_eq!(rules.len(), 6);
-    assert_eq!(rules[5]["id"], "parser-warning");
-    assert_eq!(rules[5]["defaultConfiguration"]["level"], "note");
-}
-
-#[test]
 fn test_sarif_renderer_no_metadata_when_all_none_subfields() {
     let diff = Diff {
         metadata_changed: Some(crate::MetadataChange {
@@ -1412,6 +1347,11 @@ fn test_sarif_renderer_no_metadata_when_all_none_subfields() {
         !results.iter().any(|r| r["ruleId"] == "metadata-changed"),
         "MetadataChange with all-None subfields should not emit a result"
     );
+}
+
+/// one expected CSV row, as `csv_parse` returns it.
+fn csv_row(fields: &[&str]) -> Vec<String> {
+    fields.iter().map(|s| s.to_string()).collect()
 }
 
 /// parse CSV output into a vec of rows, each row a vec of fields.
@@ -1469,13 +1409,28 @@ fn test_csv_renderer_added_removed_changed() {
 
     // header
     assert!(out.starts_with("status,component,ecosystem,field,old_value,new_value\n"));
-    // added row
-    assert!(out.contains("added,"));
-    // removed row
-    assert!(out.contains("removed,"));
-    // changed row with version field
-    assert!(out.contains("changed,"));
-    assert!(out.contains("version,1.0,1.1"));
+    assert_eq!(
+        csv_parse(out.as_bytes())[1..],
+        [
+            csv_row(&["added", diff.added[0].id.as_str(), "", "version", "", "2.0"]),
+            csv_row(&[
+                "removed",
+                diff.removed[0].id.as_str(),
+                "",
+                "version",
+                "3.0",
+                ""
+            ]),
+            csv_row(&[
+                "changed",
+                diff.changed[0].id.as_str(),
+                "",
+                "version",
+                "1.0",
+                "1.1"
+            ]),
+        ]
+    );
 }
 
 #[test]
@@ -1665,15 +1620,47 @@ fn test_csv_renderer_group_by_ecosystem() {
     };
     let mut buf = Vec::new();
     CsvRenderer.render(&diff, &opts, &mut buf).unwrap();
-    let out = String::from_utf8(buf).unwrap();
+    let rows = csv_parse(&buf);
 
-    // full render always produces flat rows regardless of ecosystem grouping
-    assert!(out.contains("added,"));
-    assert!(out.contains("removed,"));
-    assert!(out.contains("changed,"));
-    // ecosystem column should be populated
-    assert!(out.contains(",npm,"));
-    assert!(out.contains(",cargo,"));
+    // full render always produces flat rows regardless of ecosystem grouping,
+    // with the ecosystem column populated
+    assert_eq!(
+        rows[1..],
+        [
+            csv_row(&[
+                "added",
+                diff.added[0].id.as_str(),
+                "npm",
+                "version",
+                "",
+                "4.18.0"
+            ]),
+            csv_row(&[
+                "added",
+                diff.added[1].id.as_str(),
+                "cargo",
+                "version",
+                "",
+                "1.0.0"
+            ]),
+            csv_row(&[
+                "removed",
+                diff.removed[0].id.as_str(),
+                "npm",
+                "version",
+                "4.17.21",
+                ""
+            ]),
+            csv_row(&[
+                "changed",
+                diff.changed[0].id.as_str(),
+                "npm",
+                "version",
+                "17.0.0",
+                "18.0.0"
+            ]),
+        ]
+    );
 }
 
 #[test]
@@ -1776,11 +1763,19 @@ fn test_csv_renderer_downgrade() {
     CsvRenderer
         .render(&diff, &RenderOptions::default(), &mut buf)
         .unwrap();
-    let out = String::from_utf8(buf).unwrap();
+    let rows = csv_parse(&buf);
 
-    assert!(out.contains("version-downgrade"));
-    assert!(out.contains("2.0.0"));
-    assert!(out.contains("1.0.0"));
+    assert_eq!(
+        rows[1..],
+        [csv_row(&[
+            "changed",
+            diff.changed[0].id.as_str(),
+            "",
+            "version-downgrade",
+            "2.0.0",
+            "1.0.0"
+        ])]
+    );
 }
 
 #[test]

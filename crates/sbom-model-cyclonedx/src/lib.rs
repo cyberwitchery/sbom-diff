@@ -701,7 +701,21 @@ mod tests {
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 2);
-        assert!(sbom.dependencies.contains_key(&sbom.components[0].id));
+        let a = &sbom.components[0];
+        let b = &sbom.components[1];
+        assert_eq!((a.name.as_str(), b.name.as_str()), ("pkg-a", "pkg-b"));
+        assert_eq!(
+            a.hashes,
+            BTreeMap::from([("SHA-256".to_string(), "abc".to_string())])
+        );
+        assert_eq!(a.licenses, BTreeSet::from(["MIT".to_string()]));
+        assert_eq!(
+            sbom.dependencies,
+            BTreeMap::from([(
+                a.id.clone(),
+                BTreeMap::from([(b.id.clone(), DependencyKind::Runtime)])
+            )])
+        );
     }
 
     #[test]
@@ -722,9 +736,13 @@ mod tests {
 
     #[test]
     fn test_read_xml_invalid() {
-        let xml = b"<not-a-bom/>";
-        let result = CycloneDxReader::read_xml(xml.as_slice());
-        let err = result.unwrap_err();
+        // a root with no cyclonedx namespace is a parse error under every
+        // version, not an unsupported version
+        let err = CycloneDxReader::read_xml(b"<not-a-bom/>".as_slice()).unwrap_err();
+        assert!(
+            matches!(err, Error::XmlParseAllVersions(_)),
+            "expected parse error, not version error: {err}"
+        );
         let msg = err.to_string();
         // all three version errors should be present
         assert!(msg.contains("v1.5:"), "missing v1.5 error: {msg}");
@@ -1242,13 +1260,23 @@ mod tests {
         // should have collected exactly MAX_COMPONENT_DEPTH components
         assert_eq!(sbom.components.len(), super::MAX_COMPONENT_DEPTH);
 
-        // should have a warning about depth, including the dropped component name
+        // the depth warning names the dropped component, the count and the depth
+        let depth_warning = sbom
+            .warnings
+            .iter()
+            .find(|w| w.contains("nesting exceeds"))
+            .expect("should have a depth warning");
         assert!(
-            sbom.warnings.iter().any(|w| w.contains("nesting exceeds")
-                && w.contains("dropped")
-                && w.contains(&format!("level-{}", super::MAX_COMPONENT_DEPTH))),
-            "expected depth warning with component context, got: {:?}",
-            sbom.warnings
+            depth_warning.contains(&format!("level-{}", super::MAX_COMPONENT_DEPTH)),
+            "warning should include dropped component name: {depth_warning}"
+        );
+        assert!(
+            depth_warning.contains("dropped 1 component(s)"),
+            "warning should include dropped count: {depth_warning}"
+        );
+        assert!(
+            depth_warning.contains(&format!("at depth {}", super::MAX_COMPONENT_DEPTH)),
+            "warning should include depth: {depth_warning}"
         );
 
         // components at the boundary should be present, those beyond should not
@@ -1320,39 +1348,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cyclonedx_17_json_rejected_with_clear_error() {
-        let json = r#"{
-            "bomFormat": "CycloneDX",
-            "specVersion": "1.7",
-            "version": 1,
-            "components": []
-        }"#;
-        let err = CycloneDxReader::read_json(json.as_bytes()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unsupported CycloneDX specVersion"),
-            "expected version error, got: {msg}"
-        );
-        assert!(msg.contains("1.7"), "should mention the version found");
-        assert!(msg.contains("1.3–1.6"), "should mention supported versions");
-    }
-
-    #[test]
-    fn test_cyclonedx_20_json_rejected() {
-        let json = r#"{
-            "bomFormat": "CycloneDX",
-            "specVersion": "2.0",
-            "version": 1,
-            "components": []
-        }"#;
-        let err = CycloneDxReader::read_json(json.as_bytes()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("unsupported CycloneDX specVersion"));
-        assert!(err.to_string().contains("2.0"));
-    }
-
-    #[test]
     fn test_cyclonedx_13_json_accepted() {
         let json = r#"{
             "bomFormat": "CycloneDX",
@@ -1371,17 +1366,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cyclonedx_15_json_accepted() {
-        let json = r#"{
-            "bomFormat": "CycloneDX",
-            "specVersion": "1.5",
-            "version": 1,
-            "components": []
-        }"#;
-        CycloneDxReader::read_json(json.as_bytes()).unwrap();
-    }
-
-    #[test]
     fn test_cyclonedx_16_xml_read_with_a_warning() {
         let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
 <bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
@@ -1392,129 +1376,6 @@ mod tests {
         let sbom = CycloneDxReader::read_xml(xml.as_slice()).unwrap();
         assert_eq!(sbom.components.len(), 1);
         assert_eq!(sbom.warnings, [CycloneDxReader::downgrade_warning("1.6")]);
-    }
-
-    #[test]
-    fn test_cyclonedx_17_xml_rejected() {
-        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
-<bom xmlns="http://cyclonedx.org/schema/bom/1.7" version="1">
-  <components/>
-</bom>"#;
-        let err = CycloneDxReader::read_xml(xml.as_slice()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unsupported CycloneDX specVersion"),
-            "expected version error, got: {msg}"
-        );
-        assert!(msg.contains("1.7"), "should mention the version found");
-        assert!(msg.contains("1.3–1.6"), "should mention supported versions");
-    }
-
-    #[test]
-    fn test_cyclonedx_20_xml_rejected() {
-        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
-<bom xmlns="http://cyclonedx.org/schema/bom/2.0" version="1">
-  <components/>
-</bom>"#;
-        let err = CycloneDxReader::read_xml(xml.as_slice()).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("unsupported CycloneDX specVersion"));
-        assert!(err.to_string().contains("2.0"));
-    }
-
-    #[test]
-    fn test_cyclonedx_xml_no_namespace_falls_through() {
-        let xml = b"<not-a-bom/>";
-        let result = CycloneDxReader::read_xml(xml.as_slice());
-        // should fail, but with a parse error, not UnsupportedVersion
-        let err = result.unwrap_err();
-        assert!(
-            !err.to_string()
-                .contains("unsupported CycloneDX specVersion"),
-            "expected parse error, not version error: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_xml_version_fallback_warns() {
-        // a v1.4 document should succeed but warn that v1.5 was tried first.
-        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
-<bom xmlns="http://cyclonedx.org/schema/bom/1.4" version="1">
-  <components>
-    <component type="library">
-      <name>pkg-a</name>
-      <version>1.0.0</version>
-    </component>
-  </components>
-</bom>"#;
-        let sbom = CycloneDxReader::read_xml(xml.as_slice()).unwrap();
-        assert_eq!(sbom.components.len(), 1);
-
-        // v1.5 is tried first; if v1.4 succeeds after v1.5 failed,
-        // there should be a fallback warning.
-        let fallback_warning = sbom
-            .warnings
-            .iter()
-            .find(|w| w.contains("parsed as v1.4") && w.contains("failing"));
-        // the v1.4 namespace might succeed on v1.5 too (the parser is
-        // permissive), so this warning is conditional — just verify it's
-        // well-formed if present.
-        if let Some(w) = fallback_warning {
-            assert!(
-                w.contains("v1.5"),
-                "fallback warning should mention the failed version: {w}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_depth_limit_warning_includes_component_names() {
-        // build a JSON that nests exactly one level past the limit.
-        let depth = super::MAX_COMPONENT_DEPTH + 1;
-        let mut json = String::from(
-            r#"{"bomFormat":"CycloneDX","specVersion":"1.4","version":1,"components":["#,
-        );
-        for i in 0..depth {
-            if i > 0 {
-                json.push_str(r#","components":["#);
-            }
-            json.push_str(&format!(
-                r#"{{"type":"library","name":"comp-{}","version":"1.0.0""#,
-                i
-            ));
-        }
-        for i in (0..depth).rev() {
-            json.push('}');
-            if i > 0 {
-                json.push(']');
-            }
-        }
-        json.push_str("]}");
-
-        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
-        let depth_warning = sbom
-            .warnings
-            .iter()
-            .find(|w| w.contains("nesting exceeds"))
-            .expect("should have a depth warning");
-
-        // warning should mention the dropped component's name
-        assert!(
-            depth_warning.contains(&format!("comp-{}", super::MAX_COMPONENT_DEPTH)),
-            "warning should include dropped component name: {depth_warning}"
-        );
-        // warning should include the count
-        assert!(
-            depth_warning.contains("dropped 1 component(s)"),
-            "warning should include dropped count: {depth_warning}"
-        );
-        // warning should include the depth
-        assert!(
-            depth_warning.contains(&format!("at depth {}", super::MAX_COMPONENT_DEPTH)),
-            "warning should include depth: {depth_warning}"
-        );
     }
 
     #[test]

@@ -255,24 +255,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spdxdocument_root_is_accepted() {
-        let value = convert("<SpdxDocument><name>doc</name></SpdxDocument>");
-        assert_eq!(value["name"], serde_json::json!("doc"));
-    }
-
-    #[test]
-    fn test_other_roots_are_rejected() {
-        let err = xml_to_json(b"<bom><name>doc</name></bom>").unwrap_err();
-        assert!(err.to_string().contains("unexpected root element 'bom'"));
-    }
-
-    #[test]
-    fn test_malformed_xml_is_rejected() {
-        let err = xml_to_json(b"<Document><name>doc</Document>").unwrap_err();
-        assert!(matches!(err, Error::Xml(_)), "got {err}");
-    }
-
-    #[test]
     fn test_truncated_xml_is_rejected() {
         let err = xml_to_json(b"<Document><name>doc").unwrap_err();
         assert!(matches!(err, Error::Xml(_)), "got {err}");

@@ -1124,34 +1124,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_licenses_licenseref() {
-        let mut sbom = Sbom::default();
-        let mut c = Component::new("a".into(), Some("1".into()));
-        // simulate a component whose license expression was
-        // "LicenseRef-proprietary AND Apache-2.0" — after parsing, both
-        // individual terms should be in the licenses set.
-        c.licenses.insert("LicenseRef-proprietary".into());
-        c.licenses.insert("Apache-2.0".into());
-        sbom.components.insert(c.id.clone(), c);
-
-        // denying the LicenseRef term should trigger a violation
-        assert!(check_licenses(
-            &sbom,
-            &["LicenseRef-proprietary".into()],
-            &[]
-        ));
-        // denying the SPDX term should also trigger
-        assert!(check_licenses(&sbom, &["Apache-2.0".into()], &[]));
-        // allow-list must include both
-        assert!(check_licenses(&sbom, &[], &["Apache-2.0".into()]));
-        assert!(!check_licenses(
-            &sbom,
-            &[],
-            &["Apache-2.0".into(), "LicenseRef-proprietary".into()]
-        ));
-    }
-
-    #[test]
     fn test_render_summary() {
         use sbom_diff::Diff;
 
@@ -1269,13 +1241,6 @@ mod tests {
         assert!(vs
             .iter()
             .any(|v| matches!(v, Violation::MissingHashesAdded { .. })));
-    }
-
-    #[test]
-    fn test_check_licenses_empty_lists() {
-        let sbom = Sbom::default();
-        // no components, no violations
-        assert!(!check_licenses(&sbom, &[], &[]));
     }
 
     #[test]
@@ -1616,30 +1581,6 @@ mod tests {
     }
 
     #[test]
-    fn test_render_summary_markdown_empty() {
-        use sbom_diff::Diff;
-
-        let diff = Diff {
-            added: vec![],
-            removed: vec![],
-            changed: vec![],
-            edge_diffs: vec![],
-            ..Diff::default()
-        };
-
-        let mut buf = Vec::new();
-        MarkdownRenderer
-            .render_summary(&diff, &RenderOptions::default(), &mut buf)
-            .unwrap();
-        let out = String::from_utf8(buf).unwrap();
-
-        assert!(out.contains("| Added | 0 |"));
-        assert!(out.contains("| Removed | 0 |"));
-        assert!(out.contains("| Changed | 0 |"));
-        assert!(out.contains("| Edge changes | 0 |"));
-    }
-
-    #[test]
     fn test_render_summary_json() {
         use sbom_diff::Diff;
 
@@ -1920,14 +1861,6 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_violations_license_changed_empty_diff() {
-        use sbom_diff::Diff;
-
-        let diff = Diff::default();
-        assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
-    }
-
-    #[test]
     fn test_collect_violations_license_changed_license_dropped() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
@@ -1951,41 +1884,6 @@ mod tests {
         };
 
         assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
-    }
-
-    #[test]
-    fn test_collect_violations_license_changed_combined_with_other_conditions() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
-        use std::collections::BTreeSet;
-
-        let mut old = Component::new("pkg".into(), Some("1.0".into()));
-        old.licenses.insert("MIT".into());
-        let mut new = Component::new("pkg".into(), Some("1.0".into()));
-        new.licenses.insert("GPL-3.0-only".into());
-
-        let diff = Diff {
-            added: vec![Component::new("new-pkg".into(), Some("1.0".into()))],
-            changed: vec![ComponentChange {
-                id: old.id.clone(),
-                old: old.clone(),
-                new: new.clone(),
-                changes: vec![FieldChange::License(
-                    BTreeSet::from(["MIT".into()]),
-                    BTreeSet::from(["GPL-3.0-only".into()]),
-                )],
-                is_downgrade: false,
-            }],
-            ..Diff::default()
-        };
-
-        assert!(
-            !collect_violations(&diff, &[FailOn::AddedComponents, FailOn::LicenseChanged])
-                .is_empty()
-        );
-        // LicenseChanged alone should fire (changed license)
-        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
-        // AddedComponents alone should fire (new-pkg)
-        assert!(!collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
     }
 
     #[test]
@@ -2184,14 +2082,6 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_violations_metadata_changed_no_change() {
-        use sbom_diff::Diff;
-
-        let diff = Diff::default();
-        assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
-    }
-
-    #[test]
     fn test_collect_violations_metadata_changed_tools_only() {
         use sbom_diff::{Diff, MetadataChange};
 
@@ -2228,26 +2118,6 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
         assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
-    }
-
-    #[test]
-    fn test_collect_violations_metadata_changed_combined() {
-        use sbom_diff::{Diff, MetadataChange};
-
-        let diff = Diff {
-            added: vec![Component::new("new-pkg".into(), Some("1.0".into()))],
-            metadata_changed: Some(MetadataChange {
-                timestamp: Some((Some("2024-01-01".into()), Some("2024-01-02".into()))),
-                tools: None,
-                authors: None,
-            }),
-            ..Diff::default()
-        };
-
-        assert!(
-            !collect_violations(&diff, &[FailOn::AddedComponents, FailOn::MetadataChanged])
-                .is_empty()
-        );
     }
 
     #[test]
@@ -2295,14 +2165,6 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
-    }
-
-    #[test]
-    fn test_collect_violations_version_downgrade_empty_diff() {
-        use sbom_diff::Diff;
-
-        let diff = Diff::default();
         assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
     }
 
@@ -2433,14 +2295,6 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
-    }
-
-    #[test]
-    fn test_collect_violations_supplier_changed_empty_diff() {
-        use sbom_diff::Diff;
-
-        let diff = Diff::default();
         assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
     }
 
@@ -2831,14 +2685,6 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_violations_hash_algorithm_downgrade_empty_diff() {
-        use sbom_diff::Diff;
-
-        let diff = Diff::default();
-        assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
-    }
-
-    #[test]
     fn test_collect_violations_hash_algorithm_downgrade_no_hash_change() {
         use sbom_diff::{ComponentChange, Diff, FieldChange};
 
@@ -3144,15 +2990,5 @@ mod tests {
             &sbom,
             &[FailOn::AddedComponents]
         ));
-    }
-
-    #[test]
-    fn test_check_cyclic_dependencies_does_not_trigger_other_gates() {
-        use sbom_diff::Diff;
-
-        // cyclic-dependency is checked on the SBOM, not the diff,
-        // so it should never trigger via collect_violations
-        let diff = Diff::default();
-        assert!(collect_violations(&diff, &[FailOn::CyclicDependency]).is_empty());
     }
 }

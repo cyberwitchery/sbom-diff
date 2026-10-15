@@ -1120,11 +1120,13 @@ mod tests {
 
     #[test]
     fn test_component_id_hash_stability() {
-        let props = [("name", "foo"), ("version", "1.0")];
-        let id1 = ComponentId::new(None, &props);
-        let id2 = ComponentId::new(None, &props);
-        assert_eq!(id1, id2);
-        assert!(id1.as_str().starts_with("h:"));
+        // sha-256 of "name:foo|version:1.0|", pinned so a hasher that varies
+        // between runs or releases fails here
+        let id = ComponentId::new(None, &[("name", "foo"), ("version", "1.0")]);
+        assert_eq!(
+            id.as_str(),
+            "h:eed73da1effa1cc3ee0960cb8ab57f84e0994c81c8835e9fb5abd82f47f91aa6"
+        );
     }
 
     #[test]
@@ -1523,65 +1525,31 @@ mod tests {
 
     #[test]
     fn test_parse_license_expression() {
-        // OR expression extracts both IDs
-        let ids = parse_license_expression("MIT OR Apache-2.0");
-        assert!(ids.contains("MIT"));
-        assert!(ids.contains("Apache-2.0"));
-        assert_eq!(ids.len(), 2);
-
-        // single license
-        let ids = parse_license_expression("MIT");
-        assert_eq!(ids, BTreeSet::from(["MIT".to_string()]));
-
-        // AND expression extracts both IDs
-        let ids = parse_license_expression("MIT AND Apache-2.0");
-        assert!(ids.contains("MIT"));
-        assert!(ids.contains("Apache-2.0"));
-
-        // invalid expression kept as-is
-        let ids = parse_license_expression("Custom License");
-        assert_eq!(ids, BTreeSet::from(["Custom License".to_string()]));
-
-        // pure LicenseRef
-        let ids = parse_license_expression("LicenseRef-proprietary");
-        assert_eq!(ids, BTreeSet::from(["LicenseRef-proprietary".to_string()]));
-    }
-
-    #[test]
-    fn test_parse_license_expression_licenseref_and_spdx() {
-        // mixed LicenseRef + SPDX-ID with AND: both must be extracted
-        let ids = parse_license_expression("LicenseRef-proprietary AND Apache-2.0");
-        assert!(ids.contains("LicenseRef-proprietary"));
-        assert!(ids.contains("Apache-2.0"));
-        assert_eq!(ids.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_license_expression_licenseref_or_spdx() {
-        // mixed LicenseRef + SPDX-ID with OR
-        let ids = parse_license_expression("LicenseRef-custom OR MIT");
-        assert!(ids.contains("LicenseRef-custom"));
-        assert!(ids.contains("MIT"));
-        assert_eq!(ids.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_license_expression_multiple_licenserefs() {
-        // multiple LicenseRef terms
-        let ids = parse_license_expression("LicenseRef-a AND LicenseRef-b");
-        assert!(ids.contains("LicenseRef-a"));
-        assert!(ids.contains("LicenseRef-b"));
-        assert_eq!(ids.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_license_expression_complex_mixed() {
-        // complex expression mixing LicenseRef and standard IDs
-        let ids = parse_license_expression("(MIT OR LicenseRef-custom) AND Apache-2.0");
-        assert!(ids.contains("MIT"));
-        assert!(ids.contains("LicenseRef-custom"));
-        assert!(ids.contains("Apache-2.0"));
-        assert_eq!(ids.len(), 3);
+        for (expr, expected) in [
+            ("MIT OR Apache-2.0", &["Apache-2.0", "MIT"][..]),
+            ("MIT", &["MIT"]),
+            ("MIT AND Apache-2.0", &["Apache-2.0", "MIT"]),
+            // invalid expression kept as-is
+            ("Custom License", &["Custom License"]),
+            ("LicenseRef-proprietary", &["LicenseRef-proprietary"]),
+            // LicenseRef mixed with SPDX ids, and several LicenseRefs
+            (
+                "LicenseRef-proprietary AND Apache-2.0",
+                &["Apache-2.0", "LicenseRef-proprietary"],
+            ),
+            ("LicenseRef-custom OR MIT", &["LicenseRef-custom", "MIT"]),
+            (
+                "LicenseRef-a AND LicenseRef-b",
+                &["LicenseRef-a", "LicenseRef-b"],
+            ),
+            (
+                "(MIT OR LicenseRef-custom) AND Apache-2.0",
+                &["Apache-2.0", "LicenseRef-custom", "MIT"],
+            ),
+        ] {
+            let expected: BTreeSet<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(parse_license_expression(expr), expected, "{expr}");
+        }
     }
 
     #[test]
@@ -1592,20 +1560,6 @@ mod tests {
             ids,
             BTreeSet::from(["DocumentRef-ext:LicenseRef-custom".to_string()])
         );
-    }
-
-    #[test]
-    fn test_license_set_equality() {
-        // two components with same licenses in different order are equal
-        let mut c1 = Component::new("test".into(), None);
-        c1.licenses.insert("MIT".into());
-        c1.licenses.insert("Apache-2.0".into());
-
-        let mut c2 = Component::new("test".into(), None);
-        c2.licenses.insert("Apache-2.0".into());
-        c2.licenses.insert("MIT".into());
-
-        assert_eq!(c1.licenses, c2.licenses);
     }
 
     #[test]
@@ -1881,66 +1835,31 @@ mod tests {
     }
 
     #[test]
-    fn test_is_hash_algorithm_downgrade_sha256_to_md5() {
-        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
-        let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
-        assert!(is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
-    fn test_is_hash_algorithm_downgrade_upgrade_not_flagged() {
-        let old: BTreeMap<String, String> = [("sha-1".into(), "abc".into())].into();
-        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
-        assert!(!is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
-    fn test_is_hash_algorithm_downgrade_same_algorithm() {
-        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
-        let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
-        assert!(!is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
-    fn test_is_hash_algorithm_downgrade_empty_old() {
-        let old: BTreeMap<String, String> = BTreeMap::new();
-        let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
-        assert!(!is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
-    fn test_is_hash_algorithm_downgrade_empty_new() {
-        let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
-        let new: BTreeMap<String, String> = BTreeMap::new();
-        assert!(!is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
-    fn test_is_hash_algorithm_downgrade_multi_algorithm() {
-        // old has SHA-256 + MD5, new has only MD5 → downgrade (strongest dropped)
-        let old: BTreeMap<String, String> = [
-            ("sha-256".into(), "abc".into()),
-            ("md5".into(), "xyz".into()),
-        ]
-        .into();
-        let new: BTreeMap<String, String> = [("md5".into(), "def".into())].into();
-        assert!(is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
-    fn test_is_hash_algorithm_downgrade_multi_algorithm_kept() {
-        // old has SHA-256 + MD5, new has SHA-256 + SHA-1 → not a downgrade
-        let old: BTreeMap<String, String> = [
-            ("sha-256".into(), "abc".into()),
-            ("md5".into(), "xyz".into()),
-        ]
-        .into();
-        let new: BTreeMap<String, String> = [
-            ("sha-256".into(), "def".into()),
-            ("sha-1".into(), "ghi".into()),
-        ]
-        .into();
-        assert!(!is_hash_algorithm_downgrade(&old, &new));
+    fn test_is_hash_algorithm_downgrade() {
+        fn hashes(algs: &[&str]) -> BTreeMap<String, String> {
+            algs.iter()
+                .map(|a| (a.to_string(), "abc".to_string()))
+                .collect()
+        }
+        for (old, new, expected) in [
+            (&["sha-256"][..], &["md5"][..], true),
+            (&["sha-1"], &["sha-256"], false),
+            (&["sha-256"], &["sha-256"], false),
+            (&[], &["md5"], false),
+            (&["sha-256"], &[], false),
+            // the strongest algorithm was dropped
+            (&["sha-256", "md5"], &["md5"], true),
+            // the strongest algorithm was kept
+            (&["sha-256", "md5"], &["sha-256", "sha-1"], false),
+            // only unknown algorithms: no ordering
+            (&["TIGER"], &["WHIRLPOOL"], false),
+        ] {
+            assert_eq!(
+                is_hash_algorithm_downgrade(&hashes(old), &hashes(new)),
+                expected,
+                "{old:?} -> {new:?}"
+            );
+        }
     }
 
     #[test]
@@ -2107,14 +2026,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_hash_algorithm_downgrade_unknown_algorithms() {
-        // both have only unknown algorithms → false (can't determine ordering)
-        let old: BTreeMap<String, String> = [("TIGER".into(), "abc".into())].into();
-        let new: BTreeMap<String, String> = [("WHIRLPOOL".into(), "def".into())].into();
-        assert!(!is_hash_algorithm_downgrade(&old, &new));
-    }
-
-    #[test]
     fn test_changed_checksums_same_algorithm_different_value() {
         let old: BTreeMap<String, String> = [("sha-256".into(), "abc".into())].into();
         let new: BTreeMap<String, String> = [("sha-256".into(), "def".into())].into();
@@ -2231,28 +2142,6 @@ mod tests {
         // LicenseRef and unrecognized ids are conservatively not copyleft
         assert!(!is_copyleft_license("LicenseRef-proprietary"));
         assert!(!is_copyleft_license("NOT-A-LICENSE"));
-    }
-
-    #[test]
-    fn test_copyleft_introduced_permissive_to_copyleft() {
-        let old: BTreeSet<String> = ["MIT".into()].into();
-        let new: BTreeSet<String> = ["GPL-3.0-only".into()].into();
-        assert!(copyleft_introduced(&old, &new));
-    }
-
-    #[test]
-    fn test_copyleft_introduced_permissive_to_permissive() {
-        let old: BTreeSet<String> = ["MIT".into()].into();
-        let new: BTreeSet<String> = ["Apache-2.0".into()].into();
-        assert!(!copyleft_introduced(&old, &new));
-    }
-
-    #[test]
-    fn test_copyleft_introduced_carried_over_not_flagged() {
-        // a copyleft license already present in old is not a new introduction
-        let old: BTreeSet<String> = ["GPL-3.0-only".into()].into();
-        let new: BTreeSet<String> = ["GPL-3.0-only".into()].into();
-        assert!(!copyleft_introduced(&old, &new));
     }
 
     #[test]

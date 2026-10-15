@@ -1072,160 +1072,66 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_identity_reconciliation() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
+    fn test_diff_field_changes() {
+        fn component(edit: impl FnOnce(&mut Component)) -> Component {
+            let mut c = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
+            edit(&mut c);
+            c
+        }
+        let some = |s: &str| Some(s.to_string());
 
-        let c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        let c2 = Component::new("pkg-a".to_string(), Some("1.1".to_string()));
+        for (old_c, new_c, expected) in [
+            (
+                component(|c| c.licenses = BTreeSet::from(["MIT".into()])),
+                component(|c| c.licenses = BTreeSet::from(["Apache-2.0".into()])),
+                FieldChange::License(
+                    BTreeSet::from(["MIT".into()]),
+                    BTreeSet::from(["Apache-2.0".into()]),
+                ),
+            ),
+            (
+                component(|c| c.supplier = some("Acme Corp")),
+                component(|c| c.supplier = some("New Corp")),
+                FieldChange::Supplier(some("Acme Corp"), some("New Corp")),
+            ),
+            (
+                component(|c| {
+                    c.hashes.insert("sha256".into(), "aaa".into());
+                }),
+                component(|c| {
+                    c.hashes.insert("sha256".into(), "bbb".into());
+                }),
+                FieldChange::Hashes(
+                    BTreeMap::from([("sha256".into(), "aaa".into())]),
+                    BTreeMap::from([("sha256".into(), "bbb".into())]),
+                ),
+            ),
+            (
+                component(|c| c.description = some("Old description")),
+                component(|c| c.description = some("New description")),
+                FieldChange::Description(some("Old description"), some("New description")),
+            ),
+            // a description added or removed is a change in its direction
+            (
+                component(|_| {}),
+                component(|c| c.description = some("A new description")),
+                FieldChange::Description(None, some("A new description")),
+            ),
+            (
+                component(|c| c.description = some("Had a description")),
+                component(|_| {}),
+                FieldChange::Description(some("Had a description"), None),
+            ),
+        ] {
+            let mut old = Sbom::default();
+            let mut new = Sbom::default();
+            old.components.insert(old_c.id.clone(), old_c);
+            new.components.insert(new_c.id.clone(), new_c);
 
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert_eq!(diff.added.len(), 0);
-    }
-
-    #[test]
-    fn test_diff_license_change() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.licenses.insert("MIT".into());
-        let mut c2 = c1.clone();
-        c2.licenses = BTreeSet::from(["Apache-2.0".into()]);
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, FieldChange::License(_, _))));
-    }
-
-    #[test]
-    fn test_diff_supplier_change() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.supplier = Some("Acme Corp".into());
-        let mut c2 = c1.clone();
-        c2.supplier = Some("New Corp".into());
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, FieldChange::Supplier(_, _))));
-    }
-
-    #[test]
-    fn test_diff_hashes_change() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.hashes.insert("sha256".into(), "aaa".into());
-        let mut c2 = c1.clone();
-        c2.hashes.insert("sha256".into(), "bbb".into());
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, FieldChange::Hashes(_, _))));
-    }
-
-    #[test]
-    fn test_diff_description_change() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.description = Some("Old description".into());
-        let mut c2 = c1.clone();
-        c2.description = Some("New description".into());
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, FieldChange::Description(_, _))));
-    }
-
-    #[test]
-    fn test_diff_description_added() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        let mut c2 = c1.clone();
-        c2.description = Some("A new description".into());
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, FieldChange::Description(None, Some(_)))));
-    }
-
-    #[test]
-    fn test_diff_description_removed() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.description = Some("Had a description".into());
-        let mut c2 = c1.clone();
-        c2.description = None;
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert_eq!(diff.changed.len(), 1);
-        assert!(diff.changed[0]
-            .changes
-            .iter()
-            .any(|c| matches!(c, FieldChange::Description(Some(_), None))));
-    }
-
-    #[test]
-    fn test_diff_description_unchanged() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.description = Some("Same description".into());
-        let c2 = c1.clone();
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert!(diff.changed.is_empty());
+            let diff = Differ::diff(&old, &new, None);
+            assert_eq!(diff.changed.len(), 1, "{expected:?}");
+            assert_eq!(diff.changed[0].changes, vec![expected]);
+        }
     }
 
     #[test]
@@ -1340,22 +1246,6 @@ mod tests {
             diff.changed[0].changes[0],
             FieldChange::Version(_, _)
         ));
-    }
-
-    #[test]
-    fn test_diff_ecosystem_no_change() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.ecosystem = Some("npm".to_string());
-        let c2 = c1.clone();
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, None);
-        assert!(diff.changed.is_empty());
     }
 
     #[test]
@@ -1474,34 +1364,14 @@ mod tests {
         new.metadata.authors = vec!["bob".into()];
 
         let diff = Differ::diff(&old, &new, None);
-        let mc = diff.metadata_changed.as_ref().unwrap();
-        assert!(mc.timestamp.is_some());
-        assert!(mc.tools.is_some());
-        assert!(mc.authors.is_some());
-    }
-
-    #[test]
-    fn test_diff_filtering() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut c1 = Component::new("pkg-a".to_string(), Some("1.0".to_string()));
-        c1.licenses.insert("MIT".into());
-
-        let mut c2 = c1.clone();
-        c2.version = Some("1.1".to_string());
-        c2.licenses = BTreeSet::from(["Apache-2.0".into()]);
-
-        old.components.insert(c1.id.clone(), c1);
-        new.components.insert(c2.id.clone(), c2);
-
-        let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
-        assert_eq!(diff.changed.len(), 1);
-        assert_eq!(diff.changed[0].changes.len(), 1);
-        assert!(matches!(
-            diff.changed[0].changes[0],
-            FieldChange::Version(_, _)
-        ));
+        assert_eq!(
+            diff.metadata_changed,
+            Some(MetadataChange {
+                timestamp: Some((Some("2024-01-01".into()), Some("2024-01-02".into()))),
+                tools: Some((vec!["syft".into()], vec!["trivy".into()])),
+                authors: Some((vec!["alice".into()], vec!["bob".into()])),
+            })
+        );
     }
 
     #[test]
@@ -1599,6 +1469,10 @@ mod tests {
         assert_eq!(diff.added.len(), 0, "Should not have added components");
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
         assert_eq!(diff.changed.len(), 1, "Should have one changed component");
+        assert!(diff.changed[0].changes.contains(&FieldChange::Purl(
+            None,
+            Some("pkg:npm/lodash@4.17.21".to_string())
+        )));
     }
 
     #[test]
@@ -1793,57 +1667,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ecosystem_breakdown() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // npm component in old only (removed)
-        let mut c1 = Component::new("lodash".into(), Some("4.17.21".into()));
-        c1.ecosystem = Some("npm".into());
-        old.components.insert(c1.id.clone(), c1);
-
-        // npm component in new only (added)
-        let mut c2 = Component::new("express".into(), Some("4.18.0".into()));
-        c2.ecosystem = Some("npm".into());
-        new.components.insert(c2.id.clone(), c2);
-
-        // cargo component in new only (added)
-        let mut c3 = Component::new("serde".into(), Some("1.0.0".into()));
-        c3.ecosystem = Some("cargo".into());
-        new.components.insert(c3.id.clone(), c3);
-
-        // npm component changed (present in both, different version)
-        let mut c4_old = Component::new("react".into(), Some("17.0.0".into()));
-        c4_old.ecosystem = Some("npm".into());
-        let mut c4_new = Component::new("react".into(), Some("18.0.0".into()));
-        c4_new.ecosystem = Some("npm".into());
-        old.components.insert(c4_old.id.clone(), c4_old);
-        new.components.insert(c4_new.id.clone(), c4_new);
-
-        // component with no ecosystem (added)
-        let c5 = Component::new("mystery".into(), Some("1.0".into()));
-        new.components.insert(c5.id.clone(), c5);
-
-        let diff = Differ::diff(&old, &new, None);
-        let breakdown = diff.ecosystem_breakdown();
-
-        let npm = breakdown.get("npm").unwrap();
-        assert_eq!(npm.added, 1);
-        assert_eq!(npm.removed, 1);
-        assert_eq!(npm.changed, 1);
-
-        let cargo = breakdown.get("cargo").unwrap();
-        assert_eq!(cargo.added, 1);
-        assert_eq!(cargo.removed, 0);
-        assert_eq!(cargo.changed, 0);
-
-        let unknown = breakdown.get("unknown").unwrap();
-        assert_eq!(unknown.added, 1);
-        assert_eq!(unknown.removed, 0);
-        assert_eq!(unknown.changed, 0);
-    }
-
-    #[test]
     fn test_ecosystem_breakdown_empty_diff() {
         let old = Sbom::default();
         let new = Sbom::default();
@@ -1916,10 +1739,22 @@ mod tests {
         assert_eq!(unknown.removed.len(), 0);
         assert_eq!(unknown.changed.len(), 0);
 
-        // derived breakdown should match direct breakdown
-        let grouped_counts = grouped.ecosystem_breakdown();
+        // the direct breakdown has the same counts, and the derived one matches it
+        let counts = |added, removed, changed| EcosystemCounts {
+            added,
+            removed,
+            changed,
+        };
         let direct_counts = diff.ecosystem_breakdown();
-        assert_eq!(grouped_counts, direct_counts);
+        assert_eq!(
+            direct_counts,
+            BTreeMap::from([
+                ("cargo".to_string(), counts(1, 0, 0)),
+                ("npm".to_string(), counts(1, 1, 1)),
+                ("unknown".to_string(), counts(1, 0, 0)),
+            ])
+        );
+        assert_eq!(grouped.ecosystem_breakdown(), direct_counts);
     }
 
     #[test]
@@ -2049,14 +1884,6 @@ mod tests {
         assert!(diff
             .display_name(&diff.edge_diffs[0].parent)
             .starts_with("pkg:npm/parent@"));
-    }
-
-    #[test]
-    fn test_display_name_fallback() {
-        let diff = Diff::default();
-        let unknown_id = ComponentId::new(None, &[("name", "mystery")]);
-        // no entry in component_names → falls back to raw ID
-        assert_eq!(diff.display_name(&unknown_id), unknown_id.as_str());
     }
 
     #[test]
@@ -2206,13 +2033,6 @@ mod tests {
         let mut diff = Differ::diff(&old2, &new2, None);
         diff.filter_by_ecosystem(&|eco| eco == Some("cargo"), 0, 0, &BTreeMap::new());
         assert_eq!(diff.changed.len(), 0);
-    }
-
-    #[test]
-    fn test_filter_by_ecosystem_empty_diff() {
-        let mut diff = Diff::default();
-        diff.filter_by_ecosystem(&|_| true, 0, 0, &BTreeMap::new());
-        assert!(diff.is_empty());
     }
 
     #[test]

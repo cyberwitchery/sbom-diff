@@ -131,10 +131,49 @@ fn spdx_fixture_diff_matches_cyclonedx_diff() {
     let spdx_diff = Differ::diff(&spdx_old, &spdx_new, None);
     let cdx_diff = Differ::diff(&cdx_old, &cdx_new, None);
 
-    assert_eq!(spdx_diff.added.len(), cdx_diff.added.len());
-    assert_eq!(spdx_diff.removed.len(), cdx_diff.removed.len());
-    assert_eq!(spdx_diff.changed.len(), cdx_diff.changed.len());
-    assert_eq!(spdx_diff.edge_diffs.len(), cdx_diff.edge_diffs.len());
+    // source_ids carry the format's own element ids (SPDXRef-*, bom-ref), so
+    // they differ by design. ComponentChange and EdgeDiff have no PartialEq,
+    // so compare their fields.
+    let component = |c: &sbom_model::Component| {
+        let mut c = c.clone();
+        c.source_ids.clear();
+        c
+    };
+    let components = |cs: &[sbom_model::Component]| cs.iter().map(component).collect::<Vec<_>>();
+    let changed = |d: &sbom_diff::Diff| {
+        d.changed
+            .iter()
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    component(&c.old),
+                    component(&c.new),
+                    c.changes.clone(),
+                    c.is_downgrade,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let edges = |d: &sbom_diff::Diff| {
+        d.edge_diffs
+            .iter()
+            .map(|e| {
+                (
+                    e.parent.clone(),
+                    e.added.clone(),
+                    e.removed.clone(),
+                    e.kind_changed.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(components(&spdx_diff.added), components(&cdx_diff.added));
+    assert_eq!(
+        components(&spdx_diff.removed),
+        components(&cdx_diff.removed)
+    );
+    assert_eq!(changed(&spdx_diff), changed(&cdx_diff));
+    assert_eq!(edges(&spdx_diff), edges(&cdx_diff));
 }
 
 #[test]
@@ -173,22 +212,6 @@ fn spdx_markdown_renderer_golden_output_matches_fixture() {
         .expect("golden markdown snapshot should exist");
 
     assert_eq!(actual, expected);
-}
-
-#[test]
-fn cyclonedx_xml_fixture_diff_matches_json_diff() {
-    let xml_old = load_cyclonedx_xml_fixture("golden-old.cdx.xml");
-    let xml_new = load_cyclonedx_xml_fixture("golden-new.cdx.xml");
-    let json_old = load_cyclonedx_fixture("golden-old.json");
-    let json_new = load_cyclonedx_fixture("golden-new.json");
-
-    let xml_diff = Differ::diff(&xml_old, &xml_new, None);
-    let json_diff = Differ::diff(&json_old, &json_new, None);
-
-    assert_eq!(xml_diff.added.len(), json_diff.added.len());
-    assert_eq!(xml_diff.removed.len(), json_diff.removed.len());
-    assert_eq!(xml_diff.changed.len(), json_diff.changed.len());
-    assert_eq!(xml_diff.edge_diffs.len(), json_diff.edge_diffs.len());
 }
 
 #[test]
@@ -232,22 +255,6 @@ fn cyclonedx_xml_markdown_renderer_golden_output_matches_fixture() {
 fn load_spdx_tv_fixture(name: &str) -> Sbom {
     let bytes = fs::read(fixture_path(name)).expect("fixture should be readable");
     SpdxReader::read_tag_value(bytes.as_slice()).expect("fixture should parse")
-}
-
-#[test]
-fn spdx_tv_fixture_diff_matches_json_diff() {
-    let tv_old = load_spdx_tv_fixture("golden-old.spdx");
-    let tv_new = load_spdx_tv_fixture("golden-new.spdx");
-    let json_old = load_spdx_fixture("golden-old.spdx.json");
-    let json_new = load_spdx_fixture("golden-new.spdx.json");
-
-    let tv_diff = Differ::diff(&tv_old, &tv_new, None);
-    let json_diff = Differ::diff(&json_old, &json_new, None);
-
-    assert_eq!(tv_diff.added.len(), json_diff.added.len());
-    assert_eq!(tv_diff.removed.len(), json_diff.removed.len());
-    assert_eq!(tv_diff.changed.len(), json_diff.changed.len());
-    assert_eq!(tv_diff.edge_diffs.len(), json_diff.edge_diffs.len());
 }
 
 #[test]

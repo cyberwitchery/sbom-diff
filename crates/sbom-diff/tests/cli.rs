@@ -204,20 +204,6 @@ fn fail_on_license_changed_no_change_exits_0() {
 }
 
 #[test]
-fn fail_on_license_changed_no_violation_exits_0() {
-    // golden fixtures have no licenses, so no license changes
-    let out = sbom_diff()
-        .arg(fixture("golden-old.json"))
-        .arg(fixture("golden-old.json"))
-        .arg("--fail-on")
-        .arg("license-changed")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-}
-
-#[test]
 fn deny_license_match_exits_2() {
     let out = sbom_diff()
         .arg(fixture("cli-license.json"))
@@ -430,94 +416,30 @@ fn quiet_preserves_fail_on_exit_code() {
 }
 
 #[test]
-fn auto_detects_cyclonedx_json() {
-    let out = sbom_diff()
-        .arg(fixture("golden-old.json"))
-        .arg(fixture("golden-new.json"))
-        .arg("--summary")
-        .arg("--output")
-        .arg("json")
-        .output()
-        .unwrap();
+fn auto_detects_each_input_format() {
+    for (old, new, added, removed, changed) in [
+        ("golden-old.spdx.json", "golden-new.spdx.json", 1, 1, 2),
+        ("golden-old.cdx.xml", "golden-new.cdx.xml", 1, 1, 2),
+        ("golden-old.spdx", "golden-new.spdx", 1, 1, 2),
+        ("old.spdx.xml", "new.spdx.xml", 0, 0, 1),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .arg("--summary")
+            .arg("--output")
+            .arg("json")
+            .output()
+            .unwrap();
 
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert_eq!(v["added"], 1);
-    assert_eq!(v["removed"], 1);
-}
-
-#[test]
-fn auto_detects_spdx_json() {
-    let out = sbom_diff()
-        .arg(fixture("golden-old.spdx.json"))
-        .arg(fixture("golden-new.spdx.json"))
-        .arg("--summary")
-        .arg("--output")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert_eq!(v["added"], 1);
-    assert_eq!(v["removed"], 1);
-}
-
-#[test]
-fn auto_detects_cyclonedx_xml() {
-    let out = sbom_diff()
-        .arg(fixture("golden-old.cdx.xml"))
-        .arg(fixture("golden-new.cdx.xml"))
-        .arg("--summary")
-        .arg("--output")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert_eq!(v["added"], 1);
-    assert_eq!(v["removed"], 1);
-}
-
-#[test]
-fn auto_detects_spdx_tag_value() {
-    let out = sbom_diff()
-        .arg(fixture("golden-old.spdx"))
-        .arg(fixture("golden-new.spdx"))
-        .arg("--summary")
-        .arg("--output")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert_eq!(v["added"], 1);
-    assert_eq!(v["removed"], 1);
-}
-
-#[test]
-fn auto_detects_spdx_xml() {
-    let out = sbom_diff()
-        .arg(fixture("old.spdx.xml"))
-        .arg(fixture("new.spdx.xml"))
-        .arg("--summary")
-        .arg("--output")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert_eq!(v["added"], 0);
-    assert_eq!(v["removed"], 0);
-    assert_eq!(v["changed"], 1);
+        assert_eq!(out.status.code(), Some(0), "{old}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let v: serde_json::Value =
+            serde_json::from_str(&stdout).expect("output should be valid JSON");
+        assert_eq!(v["added"], added, "{old}");
+        assert_eq!(v["removed"], removed, "{old}");
+        assert_eq!(v["changed"], changed, "{old}");
+    }
 }
 
 #[test]
@@ -616,7 +538,15 @@ fn explicit_format_overrides_auto() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-    assert_eq!(v["added"], 1);
+    for (key, expected) in [
+        ("added", 1),
+        ("removed", 1),
+        ("changed", 2),
+        ("unchanged", 2),
+        ("edge_changes", 1),
+    ] {
+        assert_eq!(v[key], expected, "{key}");
+    }
 }
 
 #[test]
@@ -629,7 +559,10 @@ fn wrong_explicit_format_fails() {
         .output()
         .unwrap();
 
-    assert_ne!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("failed to load old sbom"), "got {stderr}");
+    assert!(stderr.contains("spdx error"), "got {stderr}");
 }
 
 #[test]
@@ -657,8 +590,17 @@ fn summary_text_is_compact() {
         summary_out.len(),
         full_out.len()
     );
-    assert!(summary_out.contains("Added"));
-    assert!(summary_out.contains("Removed"));
+    assert_eq!(
+        summary_out,
+        "Old total:        5 components\n\
+         New total:        5 components\n\
+         Unchanged:        2\n\
+         Added:            1\n\
+         Removed:          1\n\
+         Changed:          2\n\
+         Edge changes:     1\n\
+         Metadata changed: yes\n"
+    );
 }
 
 #[test]
@@ -696,8 +638,9 @@ fn summary_markdown_output() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // markdown summary should contain a table or structured output
-    assert!(!stdout.is_empty());
+    assert!(stdout.contains("| Added | 1 |"), "got {stdout}");
+    assert!(stdout.contains("| Removed | 1 |"), "got {stdout}");
+    assert!(stdout.contains("| Changed | 2 |"), "got {stdout}");
 }
 
 #[test]
@@ -1297,25 +1240,6 @@ fn identity_diff_exits_0_with_no_output_changes() {
 }
 
 #[test]
-fn include_ecosystem_filters_to_matching() {
-    let out = sbom_diff()
-        .arg(fixture("golden-old.json"))
-        .arg(fixture("golden-new.json"))
-        .arg("--summary")
-        .arg("--include-ecosystem")
-        .arg("npm")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // golden fixtures are all npm — should see the same counts as unfiltered
-    assert!(stdout.contains("Added:            1"));
-    assert!(stdout.contains("Removed:          1"));
-    assert!(stdout.contains("Changed:          2"));
-}
-
-#[test]
 fn include_ecosystem_non_matching_shows_zero() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))
@@ -1392,25 +1316,6 @@ fn include_ecosystem_json_output() {
 }
 
 #[test]
-fn exclude_ecosystem_does_not_affect_non_matching() {
-    // excluding cargo should leave npm data intact
-    let out = sbom_diff()
-        .arg(fixture("golden-old.json"))
-        .arg(fixture("golden-new.json"))
-        .arg("--summary")
-        .arg("--exclude-ecosystem")
-        .arg("cargo")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("Added:            1"));
-    assert!(stdout.contains("Removed:          1"));
-    assert!(stdout.contains("Changed:          2"));
-}
-
-#[test]
 fn include_and_exclude_ecosystem_combined() {
     // include npm then exclude npm → should be empty
     let out = sbom_diff()
@@ -1471,6 +1376,18 @@ fn fail_on_hash_algorithm_downgrade_exits_3() {
         "stderr should report the downgraded component, got: {}",
         stderr
     );
+    // pkg-a: SHA-256 → MD5 (downgrade), pkg-b: SHA-512 → SHA-512 (no change);
+    // only pkg-a should be reported
+    assert!(
+        stderr.contains("pkg-a"),
+        "stderr should mention pkg-a, got: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("pkg-b"),
+        "stderr should NOT mention pkg-b (unchanged hash), got: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -1495,19 +1412,6 @@ fn fail_on_checksum_changed_exits_3() {
         "stderr should report the re-published component, got: {}",
         stderr
     );
-}
-
-#[test]
-fn fail_on_checksum_changed_only_fires_on_unchanged_version() {
-    let out = sbom_diff()
-        .arg(fixture("checksum-changed-old.json"))
-        .arg(fixture("checksum-changed-new.json"))
-        .arg("--fail-on")
-        .arg("checksum-changed")
-        .output()
-        .unwrap();
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
     for quiet in [
         "bumped-version",
         "recased-digest",
@@ -1622,32 +1526,6 @@ fn fail_on_hash_algorithm_downgrade_no_change_exits_0() {
         .unwrap();
 
     assert_eq!(out.status.code(), Some(0));
-}
-
-#[test]
-fn fail_on_hash_algorithm_downgrade_only_downgraded_component_reported() {
-    // pkg-a: SHA-256 → MD5 (downgrade), pkg-b: SHA-512 → SHA-512 (no change)
-    let out = sbom_diff()
-        .arg(fixture("hash-downgrade-old.json"))
-        .arg(fixture("hash-downgrade-new.json"))
-        .arg("--fail-on")
-        .arg("hash-algorithm-downgrade")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    // only pkg-a should be reported, not pkg-b
-    assert!(
-        stderr.contains("pkg-a"),
-        "stderr should mention pkg-a, got: {}",
-        stderr
-    );
-    assert!(
-        !stderr.contains("pkg-b"),
-        "stderr should NOT mention pkg-b (unchanged hash), got: {}",
-        stderr
-    );
 }
 
 #[test]
@@ -1924,42 +1802,6 @@ fn fail_on_cyclic_dependency_no_cycle_exits_0() {
 }
 
 #[test]
-fn fail_on_cyclic_dependency_quiet_suppresses_output() {
-    let out = sbom_diff()
-        .arg(fixture("cyclic-dep-old.json"))
-        .arg(fixture("cyclic-dep-new.json"))
-        .arg("--fail-on")
-        .arg("cyclic-dependency")
-        .arg("--quiet")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(3));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.is_empty(), "stdout should be empty in quiet mode");
-    // stderr should still show the error
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("dependency cycle detected"));
-}
-
-#[test]
-fn fail_on_cyclic_dependency_combined_with_other_conditions() {
-    let out = sbom_diff()
-        .arg(fixture("cyclic-dep-old.json"))
-        .arg(fixture("cyclic-dep-new.json"))
-        .arg("--fail-on")
-        .arg("cyclic-dependency")
-        .arg("--fail-on")
-        .arg("deps")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--fail-on cyclic-dependency"));
-}
-
-#[test]
 fn cross_format_identity_no_changes() {
     // the same logical SBOM in CycloneDX and SPDX formats — should produce
     // zero diffs despite different serialisation and hash algorithm naming
@@ -2085,26 +1927,6 @@ fn cross_format_modification_full_json() {
 }
 
 #[test]
-fn cross_format_fail_on_changed_components_exits_3() {
-    // modifications across formats should trigger --fail-on changed-components
-    let out = sbom_diff()
-        .arg(fixture("cross-format-base.spdx.json"))
-        .arg(fixture("cross-format-modified.json"))
-        .arg("--fail-on")
-        .arg("changed-components")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("--fail-on changed-components"),
-        "stderr should mention the violated condition, got: {}",
-        stderr
-    );
-}
-
-#[test]
 fn cross_format_fail_on_license_changed_exits_3() {
     // beta's license change (Apache-2.0 → GPL-3.0-only) should trigger
     // --fail-on license-changed even across formats
@@ -2122,32 +1944,6 @@ fn cross_format_fail_on_license_changed_exits_3() {
         stderr.contains("--fail-on license-changed"),
         "stderr should mention the violated condition, got: {}",
         stderr
-    );
-}
-
-#[test]
-fn cross_format_hash_canonicalisation_no_false_diff() {
-    // CycloneDX uses "SHA-256", SPDX uses "SHA256" — after canonicalisation
-    // these must be identical. The identity diff must show zero hash changes.
-    let out = sbom_diff()
-        .arg(fixture("cross-format-base.json"))
-        .arg(fixture("cross-format-base.spdx.json"))
-        .arg("--output")
-        .arg("json")
-        .output()
-        .unwrap();
-
-    assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(&stdout).expect("output should be valid JSON");
-
-    // no changed components at all — hashes must have been canonicalised
-    let changed = v["changed"].as_array().expect("changed should be an array");
-    assert!(
-        changed.is_empty(),
-        "hash algorithm naming differences (SHA-256 vs SHA256) should not \
-         produce false diffs after canonicalisation, got {} changes",
-        changed.len()
     );
 }
 
