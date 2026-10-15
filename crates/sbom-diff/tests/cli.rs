@@ -538,6 +538,29 @@ fn explicit_spdx_xml_format_matches_auto() {
 }
 
 #[test]
+fn trivy_image_spdx_json_loads() {
+    let out = sbom_diff()
+        .arg(fixture("trivy-image.spdx.json"))
+        .arg(fixture("trivy-image.spdx.json"))
+        .arg("--summary")
+        .arg("--output")
+        .arg("json")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["added"], 0);
+    assert_eq!(v["removed"], 0);
+    assert_eq!(v["changed"], 0);
+}
+
+#[test]
 fn spdx_xml_diffs_identically_to_spdx_json() {
     let run = |old: &str, new: &str| {
         let out = sbom_diff()

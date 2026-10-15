@@ -528,6 +528,69 @@ fn joined(reasons: &[String]) -> String {
     out
 }
 
+/// `primaryPackagePurpose` values the SPDX schema spells differently from
+/// spdx-rs 0.5, as (schema spelling, spdx-rs spelling).
+const PACKAGE_PURPOSE_SPELLINGS: &[(&str, &str)] = &[("OPERATING-SYSTEM", "OPERATING_SYSTEM")];
+
+/// `referenceCategory` values the SPDX schema spells differently from
+/// spdx-rs 0.5, as (schema spelling, spdx-rs spelling).
+const REFERENCE_CATEGORY_SPELLINGS: &[(&str, &str)] = &[("PERSISTENT-ID", "PERSISTENT_ID")];
+
+/// document properties of the SPDX 2.3 schema that spdx-rs 0.5 refuses and
+/// the reader never maps.
+const UNMAPPED_DOCUMENT_PROPERTIES: &[&str] = &["$schema", "revieweds"];
+
+/// rewrites what the SPDX schema allows but spdx-rs 0.5 rejects in a JSON
+/// document, returning whether anything changed.
+fn rewrite_for_spdx_rs(document: &mut serde_json::Value) -> bool {
+    let Some(document) = document.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    for property in UNMAPPED_DOCUMENT_PROPERTIES {
+        changed |= document.remove(*property).is_some();
+    }
+    let packages = document
+        .get_mut("packages")
+        .and_then(serde_json::Value::as_array_mut)
+        .into_iter()
+        .flatten();
+    for package in packages {
+        changed |= respell(
+            package.get_mut("primaryPackagePurpose"),
+            PACKAGE_PURPOSE_SPELLINGS,
+        );
+        let references = package
+            .get_mut("externalRefs")
+            .and_then(serde_json::Value::as_array_mut)
+            .into_iter()
+            .flatten();
+        for reference in references {
+            changed |= respell(
+                reference.get_mut("referenceCategory"),
+                REFERENCE_CATEGORY_SPELLINGS,
+            );
+        }
+    }
+    changed
+}
+
+/// replaces a schema spelling with the one spdx-rs 0.5 reads, returning
+/// whether it did.
+fn respell(value: Option<&mut serde_json::Value>, spellings: &[(&str, &str)]) -> bool {
+    let Some(serde_json::Value::String(value)) = value else {
+        return false;
+    };
+    let Some((_, readable)) = spellings
+        .iter()
+        .find(|(schema, _)| *schema == value.as_str())
+    else {
+        return false;
+    };
+    *value = readable.to_string();
+    true
+}
+
 /// parser for SPDX documents.
 ///
 /// converts SPDX 2.x JSON, XML, and tag-value input into the format-agnostic
@@ -558,7 +621,18 @@ impl SpdxReader {
 
         Self::check_spdx_version(buf)?;
 
-        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_slice(buf)?;
+        // a rewrite costs the error its line and column, so retry only when one applies.
+        let spdx_doc: spdx_rs::models::SPDX = match serde_json::from_slice(buf) {
+            Ok(doc) => doc,
+            Err(err) if err.is_data() => {
+                let mut value: serde_json::Value = serde_json::from_slice(buf)?;
+                if !rewrite_for_spdx_rs(&mut value) {
+                    return Err(err.into());
+                }
+                serde_json::from_value(value)?
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         Ok(Self::spdx_to_sbom(spdx_doc))
     }
@@ -582,8 +656,9 @@ impl SpdxReader {
 
         let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
 
-        let value = xml::xml_to_json(buf)?;
+        let mut value = xml::xml_to_json(buf)?;
         Self::check_version(value.get("spdxVersion").and_then(|v| v.as_str()))?;
+        rewrite_for_spdx_rs(&mut value);
 
         let spdx_doc: spdx_rs::models::SPDX = serde_json::from_value(value)?;
 
@@ -4360,5 +4435,124 @@ SnippetByteRange: 1:10
                  'SPDXRef-gone DEPENDS_ON SPDXRef-lost' does not match any element in the document",
             ],
         );
+    }
+
+    /// a one-package document with `extra` merged into its top level.
+    fn one_package_document(extra: serde_json::Value) -> serde_json::Value {
+        let mut document = serde_json::json!({
+            "spdxVersion": "SPDX-2.3",
+            "dataLicense": "CC0-1.0",
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "test",
+            "documentNamespace": "http://spdx.org/spdxdocs/test",
+            "creationInfo": {"creators": ["Tool: manual"], "created": "2023-01-01T00:00:00Z"},
+            "packages": [{"name": "pkg-a", "SPDXID": "SPDXRef-pkg-a", "downloadLocation": "NONE"}]
+        });
+        let extra = extra.as_object().unwrap().clone();
+        document.as_object_mut().unwrap().extend(extra);
+        document
+    }
+
+    #[test]
+    fn test_json_schema_reference_is_read_past() {
+        let document = one_package_document(serde_json::json!({
+            "$schema": "https://raw.githubusercontent.com/spdx/spdx-spec/v2.3.1/schemas/spdx-schema.json"
+        }));
+        let sbom = SpdxReader::read_json(document.to_string().as_bytes()).unwrap();
+        assert_eq!(sbom.components[0].name, "pkg-a");
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
+    }
+
+    #[test]
+    fn test_deprecated_reviews_are_read_past() {
+        let document = one_package_document(serde_json::json!({
+            "revieweds": [{
+                "reviewDate": "2023-01-02T00:00:00Z",
+                "reviewer": "Person: alice",
+                "comment": "looks right"
+            }]
+        }));
+        let sbom = SpdxReader::read_json(document.to_string().as_bytes()).unwrap();
+        assert_eq!(sbom.components[0].name, "pkg-a");
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
+    }
+
+    #[test]
+    fn test_persistent_id_reference_category_is_read() {
+        let document = one_package_document(serde_json::json!({
+            "packages": [{
+                "name": "pkg-a",
+                "SPDXID": "SPDXRef-pkg-a",
+                "downloadLocation": "NONE",
+                "externalRefs": [
+                    {
+                        "referenceCategory": "PACKAGE-MANAGER",
+                        "referenceType": "purl",
+                        "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+                    },
+                    {
+                        "referenceCategory": "PERSISTENT-ID",
+                        "referenceType": "swh",
+                        "referenceLocator": "swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2"
+                    }
+                ]
+            }]
+        }));
+        let sbom = SpdxReader::read_json(document.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            sbom.components[0].purl.as_deref(),
+            Some("pkg:npm/pkg-a@1.0.0")
+        );
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
+    }
+
+    #[test]
+    fn test_trivy_image_sbom_loads_with_its_operating_system_package() {
+        let json = std::fs::read("../../tests/fixtures/trivy-image.spdx.json").unwrap();
+        let sbom = SpdxReader::read_json(&json[..]).unwrap();
+        let mut packages: Vec<_> = sbom
+            .components
+            .values()
+            .map(|c| (c.name.as_str(), c.version.as_deref()))
+            .collect();
+        packages.sort();
+        assert_eq!(
+            packages,
+            [
+                ("alpine", Some("3.24.2")),
+                ("alpine:3.24", None),
+                ("busybox", Some("1.37.0-r19")),
+                ("musl", Some("1.2.5-r10")),
+            ]
+        );
+        assert_eq!(
+            sbom.dependencies.values().map(BTreeMap::len).sum::<usize>(),
+            4
+        );
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
+    }
+
+    #[test]
+    fn test_json_error_keeps_its_position_when_nothing_was_rewritten() {
+        let document = one_package_document(serde_json::json!({
+            "packages": [{"name": "pkg-a", "SPDXID": "SPDXRef-pkg-a"}]
+        }));
+        let json = serde_json::to_string_pretty(&document).unwrap();
+        let err = SpdxReader::read_json(json.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("downloadLocation"), "{err}");
+        assert!(err.contains(" at line "), "{err}");
+    }
+
+    #[test]
+    fn test_unknown_document_property_is_still_an_error() {
+        let document = one_package_document(serde_json::json!({
+            "pakages": [{"name": "pkg-b", "SPDXID": "SPDXRef-pkg-b", "downloadLocation": "NONE"}]
+        }));
+        let err = SpdxReader::read_json(document.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pakages"), "{err}");
     }
 }

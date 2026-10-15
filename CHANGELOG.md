@@ -1,5 +1,9 @@
 # changelog
 
+## unreleased
+
+- fix SPDX JSON failing to load on `OPERATING-SYSTEM` (every trivy image sbom), `PERSISTENT-ID`, `$schema` and `revieweds`
+
 ## [0.9.1] - 2026-10-14
 
 - fix a warning on every SPDX relationship whose other end is a file, a snippet, `NONE` or `NOASSERTION`, or an element of a declared external document, none of which is a package and none of which is an error: a trivy `rootfs` scan of 301 npm packages printed 602 `does not match any package` warnings, one per file a package `CONTAINS`, and `--show-warnings` turned them into 602 SARIF results that buried the 2 real ones. these relationships are now skipped without a warning, as is a CycloneDX dependency on or of a service. a reference to nothing in the document still warns, and the SPDX warning now names the field (`spdxElementId` or `relatedSpdxElement`) and the relationship, so an inverse type such as `DEPENDENCY_OF` no longer calls its right-hand element the source. the dependency graph read is unchanged
