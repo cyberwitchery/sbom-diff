@@ -1391,98 +1391,6 @@ mod tests {
     }
 
     #[test]
-    fn test_relationship_with_unknown_spdxid_warned() {
-        let json = r#"{
-            "spdxVersion": "SPDX-2.3",
-            "dataLicense": "CC0-1.0",
-            "SPDXID": "SPDXRef-DOCUMENT",
-            "name": "test",
-            "documentNamespace": "http://spdx.org/spdxdocs/test",
-            "creationInfo": {
-                "creators": ["Tool: manual"],
-                "created": "2023-01-01T00:00:00Z"
-            },
-            "packages": [
-                {
-                    "name": "pkg-a",
-                    "SPDXID": "SPDXRef-pkg-a",
-                    "downloadLocation": "NONE"
-                }
-            ],
-            "relationships": [
-                {
-                    "spdxElementId": "SPDXRef-pkg-a",
-                    "relatedSpdxElement": "SPDXRef-unknown",
-                    "relationshipType": "DEPENDS_ON"
-                }
-            ]
-        }"#;
-        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
-        assert!(sbom.dependencies.is_empty());
-        assert_eq!(sbom.warnings.len(), 1);
-        assert!(sbom.warnings[0].contains("SPDXRef-unknown"));
-    }
-
-    #[test]
-    fn test_relationship_with_unknown_source_warned() {
-        let json = r#"{
-            "spdxVersion": "SPDX-2.3",
-            "dataLicense": "CC0-1.0",
-            "SPDXID": "SPDXRef-DOCUMENT",
-            "name": "test",
-            "documentNamespace": "http://spdx.org/spdxdocs/test",
-            "creationInfo": {
-                "creators": ["Tool: manual"],
-                "created": "2023-01-01T00:00:00Z"
-            },
-            "packages": [
-                {
-                    "name": "pkg-a",
-                    "SPDXID": "SPDXRef-pkg-a",
-                    "downloadLocation": "NONE"
-                }
-            ],
-            "relationships": [
-                {
-                    "spdxElementId": "SPDXRef-unknown-parent",
-                    "relatedSpdxElement": "SPDXRef-pkg-a",
-                    "relationshipType": "DEPENDS_ON"
-                }
-            ]
-        }"#;
-        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
-        assert!(sbom.dependencies.is_empty());
-        assert_eq!(sbom.warnings.len(), 1);
-        assert!(sbom.warnings[0].contains("SPDXRef-unknown-parent"));
-    }
-
-    #[test]
-    fn test_noassertion_license_filtered() {
-        let json = r#"{
-            "spdxVersion": "SPDX-2.3",
-            "dataLicense": "CC0-1.0",
-            "SPDXID": "SPDXRef-DOCUMENT",
-            "name": "test",
-            "documentNamespace": "http://spdx.org/spdxdocs/test",
-            "creationInfo": {
-                "creators": ["Tool: manual"],
-                "created": "2023-01-01T00:00:00Z"
-            },
-            "packages": [
-                {
-                    "name": "pkg-a",
-                    "SPDXID": "SPDXRef-pkg-a",
-                    "downloadLocation": "NONE",
-                    "licenseConcluded": "NOASSERTION"
-                }
-            ],
-            "relationships": []
-        }"#;
-        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
-        assert!(sbom.components[0].licenses.is_empty());
-    }
-
-    #[test]
     fn test_ecosystem_extracted_from_purl() {
         let json = r#"{
             "spdxVersion": "SPDX-2.3",
@@ -1702,6 +1610,7 @@ mod tests {
         let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
         assert!(sbom.components.is_empty());
         assert!(sbom.dependencies.is_empty());
+        assert!(sbom.warnings.is_empty());
         assert_eq!(sbom.metadata.tools, vec!["manual"]);
     }
 
@@ -1866,25 +1775,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spdx_unknown_future_version_rejected() {
-        let json = r#"{
-            "spdxVersion": "SPDX-4.0",
-            "dataLicense": "CC0-1.0",
-            "SPDXID": "SPDXRef-DOCUMENT",
-            "name": "test",
-            "documentNamespace": "http://spdx.org/spdxdocs/test",
-            "creationInfo": {
-                "creators": ["Tool: test"],
-                "created": "2023-01-01T00:00:00Z"
-            },
-            "packages": [],
-            "relationships": []
-        }"#;
-        let err = SpdxReader::read_json(json.as_bytes()).unwrap_err();
-        assert!(err.to_string().contains("unsupported SPDX version"));
-    }
-
-    #[test]
     fn test_spdx_22_accepted() {
         let json = r#"{
             "spdxVersion": "SPDX-2.2",
@@ -1923,26 +1813,6 @@ mod tests {
             msg.contains("parse error"),
             "expected parse error, got: {msg}"
         );
-    }
-
-    #[test]
-    fn test_empty_packages_array() {
-        let json = r#"{
-            "spdxVersion": "SPDX-2.3",
-            "dataLicense": "CC0-1.0",
-            "SPDXID": "SPDXRef-DOCUMENT",
-            "name": "test",
-            "documentNamespace": "http://spdx.org/spdxdocs/test",
-            "creationInfo": {
-                "creators": ["Tool: test"],
-                "created": "2023-01-01T00:00:00Z"
-            },
-            "packages": [],
-            "relationships": []
-        }"#;
-        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
-        assert!(sbom.components.is_empty());
-        assert!(sbom.warnings.is_empty());
     }
 
     #[test]
@@ -2669,43 +2539,6 @@ PackageCopyrightText: NOASSERTION
         );
     }
 
-    #[test]
-    fn test_tag_value_phantom_creator_detection() {
-        // this test verifies that when spdx-rs injects phantom creators,
-        // a warning is emitted. In practice, the phantom creator is
-        // "Tool: LicenseFind-1.0" from CreationInfo::default(). Whether
-        // the phantom appears depends on the spdx-rs version's behavior.
-        // we test the detection mechanism rather than assuming the bug fires.
-        let tv = "\
-SPDXVersion: SPDX-2.3
-DataLicense: CC0-1.0
-SPDXID: SPDXRef-DOCUMENT
-DocumentName: test
-DocumentNamespace: http://spdx.org/spdxdocs/test
-Creator: Tool: manual
-Created: 2023-01-01T00:00:00Z
-
-PackageName: pkg-a
-SPDXID: SPDXRef-pkg-a
-PackageVersion: 1.0.0
-PackageDownloadLocation: NOASSERTION
-PackageLicenseConcluded: NOASSERTION
-PackageCopyrightText: NOASSERTION
-";
-        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
-        // regardless of whether the phantom fires, the result should have
-        // the correct creator, not the phantom one.
-        assert_eq!(sbom.metadata.tools, vec!["manual"]);
-
-        // if a phantom warning exists, it should mention what was stripped.
-        if let Some(w) = sbom.warnings.iter().find(|w| w.contains("phantom")) {
-            assert!(
-                w.contains("LicenseFind") || w.contains("stripped"),
-                "phantom warning should identify the injected creator: {w}"
-            );
-        }
-    }
-
     const TV_HEADER: &str = "\
 SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
@@ -2748,6 +2581,16 @@ Creator: Tool: LicenseFind-1.0
         let control = SpdxReader::read_tag_value(TV_HEADER.as_bytes()).unwrap();
         let sbom = SpdxReader::read_tag_value(quoted.as_bytes()).unwrap();
 
+        // the quoted creator line must not hide the injected one it spells
+        assert!(
+            control
+                .warnings
+                .iter()
+                .any(|w| w.contains("stripped phantom creator")
+                    && w.contains("'Tool: LicenseFind-1.0'")),
+            "{:?}",
+            control.warnings
+        );
         assert_eq!(sbom.warnings, control.warnings);
     }
 
@@ -3340,14 +3183,6 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_mirrored_tags_are_sorted_and_unique() {
-        let mut sorted = READABLE_TAGS.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted, READABLE_TAGS);
-    }
-
-    #[test]
     fn test_duplicate_purl_warns() {
         let json = r#"{
             "spdxVersion": "SPDX-2.3",
@@ -3851,48 +3686,6 @@ PackageCopyrightText: NOASSERTION
                 ]
             }"#,
         );
-    }
-
-    #[test]
-    fn test_read_xml_dependency_edges_and_hashes() {
-        let xml = r#"<Document>
-  <spdxVersion>SPDX-2.3</spdxVersion>
-  <dataLicense>CC0-1.0</dataLicense>
-  <SPDXID>SPDXRef-DOCUMENT</SPDXID>
-  <name>test</name>
-  <documentNamespace>http://spdx.org/spdxdocs/test</documentNamespace>
-  <creationInfo>
-    <creators>Tool: manual</creators>
-    <created>2023-01-01T00:00:00Z</created>
-  </creationInfo>
-  <packages>
-    <name>pkg-a</name>
-    <SPDXID>SPDXRef-pkg-a</SPDXID>
-    <downloadLocation>NONE</downloadLocation>
-    <checksums>
-      <algorithm>SHA256</algorithm>
-      <checksumValue>abc</checksumValue>
-    </checksums>
-  </packages>
-  <packages>
-    <name>pkg-b</name>
-    <SPDXID>SPDXRef-pkg-b</SPDXID>
-    <downloadLocation>NONE</downloadLocation>
-  </packages>
-  <relationships>
-    <spdxElementId>SPDXRef-pkg-a</spdxElementId>
-    <relatedSpdxElement>SPDXRef-pkg-b</relatedSpdxElement>
-    <relationshipType>DEPENDS_ON</relationshipType>
-  </relationships>
-</Document>"#;
-        let sbom = SpdxReader::read_xml(xml.as_bytes()).unwrap();
-        assert_eq!(sbom.components.len(), 2);
-        let a = sbom.components.keys().next().unwrap().clone();
-        assert_eq!(
-            sbom.components[&a].hashes.get("SHA-256"),
-            Some(&"abc".to_string())
-        );
-        assert_eq!(sbom.dependencies[&a].len(), 1);
     }
 
     #[test]

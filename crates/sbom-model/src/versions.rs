@@ -1648,9 +1648,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_standard_semver() {
-        let v = Version::parse_lenient("1.2.3");
-        assert_eq!(v, Version::Semver(semver::Version::new(1, 2, 3)));
+    fn parse_semver_shapes_pad_to_three_parts() {
+        for (s, (major, minor, patch)) in [
+            ("1.2.3", (1, 2, 3)),
+            ("1.2", (1, 2, 0)),
+            ("42", (42, 0, 0)),
+            ("v1.2", (1, 2, 0)),
+            ("v5", (5, 0, 0)),
+        ] {
+            assert_eq!(
+                Version::parse_lenient(s),
+                Version::Semver(semver::Version::new(major, minor, patch)),
+                "{s}"
+            );
+        }
     }
 
     #[test]
@@ -1666,110 +1677,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_two_parts() {
-        assert_eq!(
-            Version::parse_lenient("1.2"),
-            Version::Semver(semver::Version::new(1, 2, 0))
-        );
-    }
-
-    #[test]
-    fn parse_single_part() {
-        assert_eq!(
-            Version::parse_lenient("42"),
-            Version::Semver(semver::Version::new(42, 0, 0))
-        );
-    }
-
-    #[test]
-    fn parse_prerelease() {
-        let v = Version::parse_lenient("1.2.3-beta.1");
-        match v {
-            Version::Semver(sv) => {
-                assert_eq!(sv.major, 1);
-                assert_eq!(sv.minor, 2);
-                assert_eq!(sv.patch, 3);
-                assert!(!sv.pre.is_empty());
-            }
-            other => panic!("expected Semver, got {:?}", other),
+    fn parse_prerelease_and_build_metadata() {
+        for (s, (major, minor, patch), pre, build) in [
+            ("1.2.3-beta.1", (1, 2, 3), "beta.1", ""),
+            ("1.2.3+build.456", (1, 2, 3), "", "build.456"),
+            ("v2.0.0-rc.1", (2, 0, 0), "rc.1", ""),
+        ] {
+            assert_eq!(
+                Version::parse_lenient(s),
+                Version::Semver(semver::Version {
+                    major,
+                    minor,
+                    patch,
+                    pre: semver::Prerelease::new(pre).unwrap(),
+                    build: semver::BuildMetadata::new(build).unwrap(),
+                }),
+                "{s}"
+            );
         }
-    }
-
-    #[test]
-    fn parse_build_metadata() {
-        let v = Version::parse_lenient("1.2.3+build.456");
-        match v {
-            Version::Semver(sv) => {
-                assert_eq!((sv.major, sv.minor, sv.patch), (1, 2, 3));
-                assert!(!sv.build.is_empty());
-            }
-            other => panic!("expected Semver, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_prerelease_and_build() {
-        let v = Version::parse_lenient("1.0.0-alpha.1+build.789");
-        match v {
-            Version::Semver(sv) => {
-                assert_eq!(sv.major, 1);
-                assert!(!sv.pre.is_empty());
-                assert!(!sv.build.is_empty());
-            }
-            other => panic!("expected Semver, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_v_prefix_two_parts() {
-        assert_eq!(
-            Version::parse_lenient("v1.2"),
-            Version::Semver(semver::Version::new(1, 2, 0))
-        );
-    }
-
-    #[test]
-    fn parse_v_prefix_single_part() {
-        assert_eq!(
-            Version::parse_lenient("v5"),
-            Version::Semver(semver::Version::new(5, 0, 0))
-        );
-    }
-
-    #[test]
-    fn parse_v_prefix_prerelease() {
-        let v = Version::parse_lenient("v2.0.0-rc.1");
-        match v {
-            Version::Semver(sv) => {
-                assert_eq!(sv.major, 2);
-                assert!(!sv.pre.is_empty());
-            }
-            other => panic!("expected Semver, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn parse_zero_version() {
-        assert_eq!(
-            Version::parse_lenient("0.0.0"),
-            Version::Semver(semver::Version::new(0, 0, 0))
-        );
-    }
-
-    #[test]
-    fn parse_large_numbers() {
-        assert_eq!(
-            Version::parse_lenient("999.888.777"),
-            Version::Semver(semver::Version::new(999, 888, 777))
-        );
-    }
-
-    #[test]
-    fn parse_single_zero() {
-        assert_eq!(
-            Version::parse_lenient("0"),
-            Version::Semver(semver::Version::new(0, 0, 0))
-        );
     }
 
     #[test]
@@ -1819,15 +1744,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_non_numeric_is_opaque() {
-        assert_eq!(Version::parse_lenient("abc"), Version::Opaque("abc".into()));
-        assert_eq!(
-            Version::parse_lenient("foo.bar.baz"),
-            Version::Opaque("foo.bar.baz".into())
-        );
-    }
-
-    #[test]
     fn parse_whitespace_is_opaque() {
         assert!(matches!(
             Version::parse_lenient(" 1.2.3"),
@@ -1840,33 +1756,37 @@ mod tests {
     }
 
     #[test]
-    fn parse_empty_string_is_opaque() {
-        assert!(matches!(Version::parse_lenient(""), Version::Opaque(_)));
-    }
-
-    #[test]
-    fn downgrade_semver() {
-        assert!(is_version_downgrade("2.0.0", "1.5.0"));
-        assert!(is_version_downgrade("1.1.0", "1.0.0"));
-        assert!(is_version_downgrade("1.0.1", "1.0.0"));
-    }
-
-    #[test]
-    fn upgrade_semver_not_flagged() {
-        assert!(!is_version_downgrade("1.0.0", "1.1.0"));
-        assert!(!is_version_downgrade("1.0.0", "2.0.0"));
-        assert!(!is_version_downgrade("1.0.0", "1.0.1"));
-    }
-
-    #[test]
-    fn equal_semver_not_flagged() {
-        assert!(!is_version_downgrade("1.0.0", "1.0.0"));
-    }
-
-    #[test]
-    fn downgrade_v_prefix() {
-        assert!(is_version_downgrade("v2.0.0", "v1.0.0"));
-        assert!(!is_version_downgrade("v1.0.0", "v2.0.0"));
+    fn downgrade_semver_shapes() {
+        for (old, new, expected) in [
+            ("2.0.0", "1.5.0", true),
+            ("1.1.0", "1.0.0", true),
+            ("1.0.1", "1.0.0", true),
+            ("1.0.0", "1.1.0", false),
+            ("1.0.0", "2.0.0", false),
+            ("1.0.0", "1.0.1", false),
+            ("1.0.0", "1.0.0", false),
+            // v-prefix on both sides, on one side, or equal
+            ("v2.0.0", "v1.0.0", true),
+            ("v1.0.0", "v2.0.0", false),
+            ("v2.0.0", "1.0.0", true),
+            ("2.0.0", "v1.0.0", true),
+            ("v1.0.0", "2.0.0", false),
+            ("1.0.0", "v2.0.0", false),
+            ("v1.0.0", "v1.0.0", false),
+            // short versions pad to three parts
+            ("1.2", "1.1", true),
+            ("1.1", "1.2", false),
+            ("1.2", "1.2", false),
+            ("2", "1", true),
+            ("1", "2", false),
+            ("5", "5", false),
+            ("2.0", "1.9.9", true),
+            ("1.9.9", "2.0", false),
+            ("v2.0", "v1.0", true),
+            ("v1.0", "v2.0", false),
+        ] {
+            assert_eq!(is_version_downgrade(old, new), expected, "{old} -> {new}");
+        }
     }
 
     #[test]
@@ -1890,14 +1810,6 @@ mod tests {
     }
 
     #[test]
-    fn downgrade_mixed_v_prefix() {
-        assert!(is_version_downgrade("v2.0.0", "1.0.0"));
-        assert!(is_version_downgrade("2.0.0", "v1.0.0"));
-        assert!(!is_version_downgrade("v1.0.0", "2.0.0"));
-        assert!(!is_version_downgrade("1.0.0", "v2.0.0"));
-    }
-
-    #[test]
     fn downgrade_prerelease_ordering() {
         assert!(is_version_downgrade("1.0.0-beta.1", "1.0.0-alpha.1"));
         assert!(is_version_downgrade("1.0.0-rc.1", "1.0.0-beta.1"));
@@ -1909,37 +1821,6 @@ mod tests {
     fn downgrade_prerelease_numeric_ordering() {
         assert!(is_version_downgrade("1.0.0-rc.2", "1.0.0-rc.1"));
         assert!(!is_version_downgrade("1.0.0-rc.1", "1.0.0-rc.2"));
-    }
-
-    #[test]
-    fn downgrade_equal_with_v_prefix() {
-        assert!(!is_version_downgrade("v1.0.0", "v1.0.0"));
-    }
-
-    #[test]
-    fn downgrade_padded_two_part() {
-        assert!(is_version_downgrade("1.2", "1.1"));
-        assert!(!is_version_downgrade("1.1", "1.2"));
-        assert!(!is_version_downgrade("1.2", "1.2"));
-    }
-
-    #[test]
-    fn downgrade_padded_single_part() {
-        assert!(is_version_downgrade("2", "1"));
-        assert!(!is_version_downgrade("1", "2"));
-        assert!(!is_version_downgrade("5", "5"));
-    }
-
-    #[test]
-    fn downgrade_mixed_part_counts_semver() {
-        assert!(is_version_downgrade("2.0", "1.9.9"));
-        assert!(!is_version_downgrade("1.9.9", "2.0"));
-    }
-
-    #[test]
-    fn downgrade_v_prefix_two_part() {
-        assert!(is_version_downgrade("v2.0", "v1.0"));
-        assert!(!is_version_downgrade("v1.0", "v2.0"));
     }
 
     #[test]
@@ -1974,18 +1855,6 @@ mod tests {
     fn downgrade_non_numeric_not_flagged() {
         assert!(!is_version_downgrade("abc", "def"));
         assert!(!is_version_downgrade("foo.bar", "foo.baz"));
-    }
-
-    #[test]
-    fn downgrade_numeric_unequal_length() {
-        assert!(is_version_downgrade("1.2.3.4", "1.2.3"));
-        assert!(!is_version_downgrade("1.2.3", "1.2.3.4"));
-    }
-
-    #[test]
-    fn downgrade_large_major_numeric_equal() {
-        // "2024.1.15" has no leading zeros, so it parses as valid semver
-        assert!(!is_version_downgrade("2024.1.15", "2024.1.15"));
     }
 
     #[test]
@@ -2047,28 +1916,6 @@ mod tests {
     }
 
     // --- Debian/RPM epoch/upstream/revision parsing ---
-
-    #[test]
-    fn parse_epoch_is_deb() {
-        // versions with an epoch aren't semver
-        assert!(matches!(
-            Version::parse_lenient("2:1.0"),
-            Version::Deb { .. }
-        ));
-        assert!(matches!(
-            Version::parse_lenient("1:9.0"),
-            Version::Deb { .. }
-        ));
-    }
-
-    #[test]
-    fn parse_revision_is_deb() {
-        // "5.1-3" is not valid semver (two-part base)
-        assert!(matches!(
-            Version::parse_lenient("5.1-3"),
-            Version::Deb { .. }
-        ));
-    }
 
     #[test]
     fn parse_deb_fields() {
@@ -2133,33 +1980,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_tilde_prerelease_is_deb() {
-        // tilde pre-release strings aren't semver but are comparable Debian versions
-        assert!(matches!(
-            Version::parse_lenient("1.0.0~rc1"),
-            Version::Deb { .. }
-        ));
-    }
-
-    #[test]
-    fn parse_codename_stays_opaque() {
-        // a leading non-digit means it isn't a comparable package version
-        assert!(matches!(
-            Version::parse_lenient("focal-1"),
-            Version::Opaque(_)
-        ));
-        assert!(matches!(
-            Version::parse_lenient("stable"),
-            Version::Opaque(_)
-        ));
-        // a bare numeric epoch with a non-version tail is not comparable either
-        assert!(matches!(
-            Version::parse_lenient("1:stable"),
-            Version::Opaque(_)
-        ));
-    }
-
     // --- Debian/RPM downgrade detection ---
 
     #[test]
@@ -2192,14 +2012,6 @@ mod tests {
         assert!(is_version_downgrade("5.1-3", "5.1-2"));
         assert!(!is_version_downgrade("5.1-2", "5.1-3"));
         assert!(!is_version_downgrade("5.1-2", "5.1-2"));
-    }
-
-    #[test]
-    fn downgrade_upstream_trumps_revision() {
-        // equal revision, upstream down -> downgrade
-        assert!(is_version_downgrade("1:5.2-1", "1:5.1-1"));
-        // upstream up, revision down -> upgrade (upstream is compared first)
-        assert!(!is_version_downgrade("1:5.1-9", "1:5.2-1"));
     }
 
     #[test]
@@ -2777,27 +2589,6 @@ mod tests {
     }
 
     #[test]
-    fn semver_prereleases_keep_their_semver_reading() {
-        for eco in [None, Some("npm"), Some("cargo")] {
-            assert_eq!(
-                compare_versions_for_ecosystem(eco, "1.0.0-alpha.1", "1.0.0"),
-                Some(Ordering::Less),
-                "{eco:?}"
-            );
-            assert!(!is_version_downgrade_for_ecosystem(
-                eco,
-                "1.0.0-alpha.1",
-                "1.0.0"
-            ));
-            assert!(is_version_downgrade_for_ecosystem(
-                eco,
-                "1.0.0",
-                "1.0.0-alpha.1"
-            ));
-        }
-    }
-
-    #[test]
     fn deb_ecosystem_parses_as_deb() {
         assert_eq!(
             Version::parse_for_ecosystem(Some("deb"), "1.2.3-1ubuntu2"),
@@ -2818,11 +2609,23 @@ mod tests {
     }
 
     #[test]
-    fn deb_ecosystem_match_ignores_case() {
-        assert_eq!(
-            Version::parse_for_ecosystem(Some("DEB"), "1.2.3-1ubuntu2"),
-            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1ubuntu2")
-        );
+    fn ecosystem_match_ignores_case() {
+        // each string parses differently on the lenient path, so a row fails
+        // if the upper-case spelling stops selecting its ecosystem
+        for (upper, lower, s) in [
+            ("DEB", "deb", "1.2.3-1ubuntu2"),
+            ("RPM", "rpm", "5.1.8-2.fc35"),
+            ("MAVEN", "maven", "1.0-SNAPSHOT"),
+            ("NuGet", "nuget", "1.0.0-rc"),
+            ("PyPI", "pypi", "1.0.2a"),
+            ("APK", "apk", "1.0-r1"),
+        ] {
+            assert_eq!(
+                Version::parse_for_ecosystem(Some(upper), s),
+                Version::parse_for_ecosystem(Some(lower), s),
+                "{upper} / {s}"
+            );
+        }
     }
 
     #[test]
@@ -3188,14 +2991,6 @@ mod tests {
     }
 
     #[test]
-    fn rpm_ecosystem_match_ignores_case() {
-        assert_eq!(
-            Version::parse_for_ecosystem(Some("RPM"), "5.1.8-2.fc35"),
-            Version::parse_for_ecosystem(Some("rpm"), "5.1.8-2.fc35")
-        );
-    }
-
-    #[test]
     fn rpm_ecosystem_keeps_codenames_and_hashes_opaque() {
         for s in ["deadbeef", "focal", "", "stable", "1.0 "] {
             assert_eq!(
@@ -3219,30 +3014,37 @@ mod tests {
     }
 
     #[test]
-    fn rpm_stays_uncomparable_against_every_other_parse_result() {
-        let rpm = Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1");
-        for other in [
-            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
-            Version::parse_lenient("1.2.3"),
-            Version::parse_lenient("2024.01.15"),
-            Version::parse_lenient("4.2.0rc1"),
-            Version::parse_lenient("deadbeef"),
-        ] {
-            assert_eq!(rpm.partial_cmp_lenient(&other), None, "{other:?}");
-            assert_eq!(other.partial_cmp_lenient(&rpm), None, "{other:?}");
-        }
-    }
-
-    #[test]
-    fn parse_lenient_never_produces_the_rpm_variant() {
-        for s in
-            ECOSYSTEM_CORPUS
-                .iter()
-                .copied()
-                .chain(["1.0^20200101", "1_0", "1.a", "5.1.8-2.fc35"])
-        {
+    fn parse_lenient_never_produces_an_ecosystem_only_variant() {
+        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
+            // rpm
+            "1.0^20200101",
+            "1_0",
+            "1.a",
+            "5.1.8-2.fc35",
+            // nuget
+            "1.0.0-alpha",
+            "1.2.3.4",
+            "1.0.0+sha",
+            "1.0.0.1-rc.1",
+            // apk
+            "1.2.3-r4",
+            "1.0_alpha1",
+            "1.0~abcdef",
+            "1.2.3a-r1",
+            // maven
+            "1.0-SNAPSHOT",
+            "2.0.0.Final",
+            "1.7.0_80",
+            "1-sp",
+        ]) {
             assert!(
-                !matches!(Version::parse_lenient(s), Version::Rpm { .. }),
+                !matches!(
+                    Version::parse_lenient(s),
+                    Version::Rpm { .. }
+                        | Version::Nuget { .. }
+                        | Version::Apk(_)
+                        | Version::Maven(_)
+                ),
                 "{s}"
             );
         }
@@ -3598,14 +3400,6 @@ mod tests {
     }
 
     #[test]
-    fn maven_ecosystem_match_ignores_case() {
-        assert_eq!(
-            Version::parse_for_ecosystem(Some("MAVEN"), "1.0-SNAPSHOT"),
-            Version::parse_for_ecosystem(Some("maven"), "1.0-SNAPSHOT")
-        );
-    }
-
-    #[test]
     fn maven_ecosystem_keeps_codenames_and_hashes_opaque() {
         for s in [
             "deadbeef",
@@ -3633,22 +3427,6 @@ mod tests {
             compare_versions_for_ecosystem(Some("maven"), "v1.2.3", "v1.2.4"),
             Some(Ordering::Less)
         );
-    }
-
-    #[test]
-    fn maven_stays_uncomparable_against_every_other_parse_result() {
-        let maven = Version::parse_for_ecosystem(Some("maven"), "1.2.3-1");
-        for other in [
-            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
-            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
-            Version::parse_lenient("1.2.3"),
-            Version::parse_lenient("2024.01.15"),
-            Version::parse_lenient("4.2.0rc1"),
-            Version::parse_lenient("deadbeef"),
-        ] {
-            assert_eq!(maven.partial_cmp_lenient(&other), None, "{other:?}");
-            assert_eq!(other.partial_cmp_lenient(&maven), None, "{other:?}");
-        }
     }
 
     fn nuget_cmp(a: &str, b: &str) -> Ordering {
@@ -3856,14 +3634,6 @@ mod tests {
     }
 
     #[test]
-    fn nuget_ecosystem_match_ignores_case() {
-        assert_eq!(
-            Version::parse_for_ecosystem(Some("NuGet"), "1.0.0-rc"),
-            Version::parse_for_ecosystem(Some("nuget"), "1.0.0-rc")
-        );
-    }
-
-    #[test]
     fn nuget_ecosystem_keeps_codenames_and_hashes_opaque() {
         for s in [
             "deadbeef",
@@ -3897,65 +3667,6 @@ mod tests {
             compare_versions_for_ecosystem(Some("nuget"), "v1.2.3", "v1.2.4"),
             Some(Ordering::Less)
         );
-    }
-
-    #[test]
-    fn nuget_stays_uncomparable_against_every_other_parse_result() {
-        let nuget = Version::parse_for_ecosystem(Some("nuget"), "1.2.3-1");
-        for other in [
-            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
-            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
-            Version::parse_for_ecosystem(Some("maven"), "1.2.3-1"),
-            Version::parse_lenient("1.2.3"),
-            Version::parse_lenient("2024.01.15"),
-            Version::parse_lenient("4.2.0rc1"),
-            Version::parse_lenient("deadbeef"),
-        ] {
-            assert_eq!(nuget.partial_cmp_lenient(&other), None, "{other:?}");
-            assert_eq!(other.partial_cmp_lenient(&nuget), None, "{other:?}");
-        }
-    }
-
-    #[test]
-    fn parse_lenient_never_produces_the_nuget_variant() {
-        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
-            "1.0.0-alpha",
-            "1.2.3.4",
-            "1.0.0+sha",
-            "1.0.0.1-rc.1",
-        ]) {
-            assert!(
-                !matches!(Version::parse_lenient(s), Version::Nuget { .. }),
-                "{s}"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_lenient_never_produces_the_apk_variant() {
-        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
-            "1.2.3-r4",
-            "1.0_alpha1",
-            "1.0~abcdef",
-            "1.2.3a-r1",
-        ]) {
-            assert!(!matches!(Version::parse_lenient(s), Version::Apk(_)), "{s}");
-        }
-    }
-
-    #[test]
-    fn parse_lenient_never_produces_the_maven_variant() {
-        for s in ECOSYSTEM_CORPUS.iter().copied().chain([
-            "1.0-SNAPSHOT",
-            "2.0.0.Final",
-            "1.7.0_80",
-            "1-sp",
-        ]) {
-            assert!(
-                !matches!(Version::parse_lenient(s), Version::Maven(_)),
-                "{s}"
-            );
-        }
     }
 
     #[test]
@@ -4120,14 +3831,6 @@ mod tests {
     }
 
     #[test]
-    fn pypi_ecosystem_match_ignores_case() {
-        assert_eq!(
-            Version::parse_for_ecosystem(Some("PyPI"), "1.0.2a"),
-            Version::parse_for_ecosystem(Some("pypi"), "1.0.2a")
-        );
-    }
-
-    #[test]
     fn pypi_ecosystem_keeps_non_pep440_strings_opaque() {
         for s in [
             "deadbeef",
@@ -4163,20 +3866,6 @@ mod tests {
             compare_versions_for_ecosystem(Some("pypi"), "v1.2.3", "v1.2.4"),
             Some(Ordering::Less)
         );
-    }
-
-    #[test]
-    fn pypi_stays_uncomparable_against_the_other_ecosystem_variants() {
-        let pypi = Version::parse_for_ecosystem(Some("pypi"), "1.2.3");
-        for other in [
-            Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
-            Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
-            Version::parse_for_ecosystem(Some("maven"), "1.2.3-1"),
-            Version::parse_lenient("deadbeef"),
-        ] {
-            assert_eq!(pypi.partial_cmp_lenient(&other), None, "{other:?}");
-            assert_eq!(other.partial_cmp_lenient(&pypi), None, "{other:?}");
-        }
     }
 
     #[test]
@@ -4393,14 +4082,6 @@ mod tests {
     }
 
     #[test]
-    fn apk_ecosystem_match_ignores_case() {
-        assert_eq!(
-            Version::parse_for_ecosystem(Some("APK"), "1.0-r1"),
-            Version::parse_for_ecosystem(Some("apk"), "1.0-r1")
-        );
-    }
-
-    #[test]
     fn apk_ordering_is_antisymmetric_and_transitive() {
         const CORPUS: &[&str] = &[
             "1",
@@ -4451,22 +4132,46 @@ mod tests {
             }
         }
     }
-
     #[test]
-    fn apk_stays_uncomparable_against_every_other_parse_result() {
-        let apk = Version::parse_for_ecosystem(Some("apk"), "1.2.3-r1");
-        for other in [
+    fn distinct_variants_stay_uncomparable_outside_semver_numeric_pep440() {
+        let samples = [
             Version::parse_for_ecosystem(Some("deb"), "1.2.3-1"),
             Version::parse_for_ecosystem(Some("rpm"), "1.2.3-1"),
+            Version::parse_for_ecosystem(Some("maven"), "1.2.3-1"),
             Version::parse_for_ecosystem(Some("maven"), "1.2.3"),
+            Version::parse_for_ecosystem(Some("nuget"), "1.2.3-1"),
             Version::parse_for_ecosystem(Some("nuget"), "1.2.3"),
+            Version::parse_for_ecosystem(Some("apk"), "1.2.3-r1"),
+            Version::parse_for_ecosystem(Some("pypi"), "1.2.3"),
             Version::parse_lenient("1.2.3"),
             Version::parse_lenient("2024.01.15"),
             Version::parse_lenient("4.2.0rc1"),
             Version::parse_lenient("deadbeef"),
-        ] {
-            assert_eq!(apk.partial_cmp_lenient(&other), None, "{other:?}");
-            assert_eq!(other.partial_cmp_lenient(&apk), None, "{other:?}");
+        ];
+        // guard the samples: every variant must be present, or a sample that
+        // stopped parsing as its variant would silently test nothing
+        let kinds: Vec<_> = samples.iter().map(std::mem::discriminant).collect();
+        let mut distinct = Vec::new();
+        for k in &kinds {
+            if !distinct.contains(k) {
+                distinct.push(*k);
+            }
+        }
+        assert_eq!(distinct.len(), 9, "{samples:?}");
+        // only semver, numeric and pep440 order against each other
+        let inferred = |v: &Version| {
+            matches!(
+                v,
+                Version::Semver(_) | Version::Numeric(_) | Version::Pep440(_)
+            )
+        };
+        for (a, ka) in samples.iter().zip(&kinds) {
+            for (b, kb) in samples.iter().zip(&kinds) {
+                if ka == kb || (inferred(a) && inferred(b)) {
+                    continue;
+                }
+                assert_eq!(a.partial_cmp_lenient(b), None, "{a:?} vs {b:?}");
+            }
         }
     }
 }

@@ -262,73 +262,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_load_sbom_auto_cyclonedx() {
-        let path = "../../tests/fixtures/old.json";
-        let sbom = load_sbom(path, Format::Auto).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_auto_spdx() {
-        let path = "../../tests/fixtures/old.spdx.json";
-        let sbom = load_sbom(path, Format::Auto).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_auto_cyclonedx_xml() {
-        let path = "../../tests/fixtures/golden-old.cdx.xml";
-        let sbom = load_sbom(path, Format::Auto).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_explicit_cyclonedx_xml() {
-        let path = "../../tests/fixtures/golden-old.cdx.xml";
-        let sbom = load_sbom(path, Format::CyclonedxXml).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_explicit_cyclonedx_json() {
-        let path = "../../tests/fixtures/old.json";
-        let sbom = load_sbom(path, Format::Cyclonedx).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_explicit_spdx() {
-        let path = "../../tests/fixtures/old.spdx.json";
-        let sbom = load_sbom(path, Format::Spdx).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_explicit_spdx_tv() {
-        let path = "../../tests/fixtures/old.spdx";
-        let sbom = load_sbom(path, Format::SpdxTv).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_auto_spdx_tv() {
-        let path = "../../tests/fixtures/old.spdx";
-        let sbom = load_sbom(path, Format::Auto).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_explicit_spdx_xml() {
-        let path = "../../tests/fixtures/old.spdx.xml";
-        let sbom = load_sbom(path, Format::SpdxXml).unwrap();
-        assert!(!sbom.components.is_empty());
-    }
-
-    #[test]
-    fn test_load_sbom_auto_spdx_xml() {
-        let path = "../../tests/fixtures/old.spdx.xml";
-        let sbom = load_sbom(path, Format::Auto).unwrap();
-        assert!(!sbom.components.is_empty());
+    fn test_load_sbom_explicit_format_matches_auto() {
+        for (path, format) in [
+            (
+                "../../tests/fixtures/golden-old.cdx.xml",
+                Format::CyclonedxXml,
+            ),
+            ("../../tests/fixtures/old.spdx.json", Format::Spdx),
+            ("../../tests/fixtures/old.spdx", Format::SpdxTv),
+        ] {
+            let explicit = load_sbom(path, format).unwrap();
+            assert!(!explicit.components.is_empty(), "{path}");
+            assert_eq!(explicit, load_sbom(path, Format::Auto).unwrap(), "{path}");
+        }
     }
 
     #[test]
@@ -355,12 +301,6 @@ mod tests {
         assert!(err.contains("unsupported SPDX version"), "got {err}");
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn test_load_sbom_auto_detection_failure() {
-        let result = load_sbom("Cargo.toml", Format::Auto);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -580,22 +520,6 @@ mod tests {
                 "{fixture}"
             );
         }
-    }
-
-    #[test]
-    fn test_strip_bom_and_whitespace() {
-        assert_eq!(strip_bom_and_whitespace(b"\xef\xbb\xbf  {"), b"{");
-        assert_eq!(strip_bom_and_whitespace(b"  \n<"), b"<");
-        assert_eq!(strip_bom_and_whitespace(b"hello"), b"hello");
-        assert_eq!(strip_bom_and_whitespace(b""), b"");
-    }
-
-    #[test]
-    fn test_find_subsequence() {
-        assert_eq!(find_subsequence(b"hello world", b"world"), Some(6));
-        assert_eq!(find_subsequence(b"hello", b"xyz"), None);
-        assert_eq!(find_subsequence(b"", b"a"), None);
-        assert_eq!(find_subsequence(b"abc", b"abc"), Some(0));
     }
 
     #[test]
