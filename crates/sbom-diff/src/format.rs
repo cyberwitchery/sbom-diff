@@ -278,6 +278,20 @@ mod tests {
     }
 
     #[test]
+    fn test_load_sbom_explicit_cyclonedx_json() {
+        let path = "../../tests/fixtures/old.json";
+        let sbom = load_sbom(path, Format::Cyclonedx).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
+    fn test_load_sbom_explicit_spdx_xml() {
+        let path = "../../tests/fixtures/old.spdx.xml";
+        let sbom = load_sbom(path, Format::SpdxXml).unwrap();
+        assert!(!sbom.components.is_empty());
+    }
+
+    #[test]
     fn test_load_sbom_spdx_xml_matches_spdx_json() {
         let from_xml = load_sbom("../../tests/fixtures/old.spdx.xml", Format::Auto).unwrap();
         let from_json = load_sbom("../../tests/fixtures/old.spdx.json", Format::Auto).unwrap();
