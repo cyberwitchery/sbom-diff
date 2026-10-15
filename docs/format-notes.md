@@ -64,6 +64,7 @@ both adapters produce:
   - `primaryPackagePurpose` `OPERATING-SYSTEM`, which every trivy container-image SBOM carries, is read as `OPERATING_SYSTEM`
   - `referenceCategory` `PERSISTENT-ID` is read as `PERSISTENT_ID`
   - the top-level `$schema` and the deprecated `revieweds` are dropped; a top-level property the schema does not define is still an error
+  - a key repeated within one object is still an error
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`
   - repeated sibling elements become a json array; a field the schema types as an array becomes a one-element array even when it occurs once
