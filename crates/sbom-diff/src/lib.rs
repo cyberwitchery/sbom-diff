@@ -391,11 +391,33 @@ fn identity_keys_compatible(a: &IdentityKey, b: &IdentityKey) -> bool {
     compatible(&a.0, &b.0) && compatible(&a.1, &b.1)
 }
 
+/// a parseable purl's (type, namespace, name), canonicalised as in the component's id.
+type PurlIdentity = (String, Option<String>, String);
+
+fn purl_identity(component: &Component) -> Option<PurlIdentity> {
+    let purl = PackageUrl::from_str(component.purl.as_deref()?).ok()?;
+    Some((
+        purl.ty().to_string(),
+        purl.namespace().map(str::to_string),
+        purl.name().to_string(),
+    ))
+}
+
+/// whether two purls are equal once parsed; an unparseable purl compares as a string.
+fn purls_equal(old: Option<&str>, new: Option<&str>) -> bool {
+    let parse = |purl: &str| PackageUrl::from_str(purl).ok();
+    old == new
+        || match (old.map(parse), new.map(parse)) {
+            (Some(Some(a)), Some(Some(b))) => a == b,
+            _ => false,
+        }
+}
+
 /// SBOM comparison engine.
 ///
 /// compares two SBOMs and produces a [`Diff`] describing the changes.
-/// components are matched first by ID (purl), then by identity (name,
-/// ecosystem and purl namespace).
+/// components are matched first by ID (purl), then by the purl's type,
+/// namespace and name, then by identity (name, ecosystem and purl namespace).
 pub struct Differ;
 
 impl Differ {
@@ -487,8 +509,33 @@ impl Differ {
             }
         }
 
-        // 2. reconciliation: match by "identity" (name, ecosystem, purl namespace)
-        // when purls are absent or change, which includes every version bump.
+        // 2. reconciliation by the purl's (type, namespace, name), whatever the name field says.
+        let purl_buckets = |sbom: &Sbom, matched: &HashSet<ComponentId>| {
+            let mut buckets: BTreeMap<PurlIdentity, Vec<ComponentId>> = BTreeMap::new();
+            for (id, comp) in &sbom.components {
+                if matched.contains(id) {
+                    continue;
+                }
+                if let Some(key) = purl_identity(comp) {
+                    buckets.entry(key).or_default().push(id.clone());
+                }
+            }
+            buckets
+        };
+        let old_by_purl = purl_buckets(&old, &matched_old);
+        let mut identity_pairs: Vec<(ComponentId, ComponentId)> = Vec::new();
+        for (key, new_ids) in &purl_buckets(&new, &matched_new) {
+            if let Some(old_ids) = old_by_purl.get(key) {
+                identity_pairs.extend(Self::align_by_version(old_ids, new_ids, &old, &new));
+            }
+        }
+        for (old_id, new_id) in &identity_pairs {
+            matched_old.insert(old_id.clone());
+            matched_new.insert(new_id.clone());
+        }
+
+        // what is left matches by "identity" (name, ecosystem, purl namespace):
+        // a purl renamed under one name, or a component without a purl.
         // an ecosystem or namespace of None is a wildcard that matches any value.
         //
         // the map is keyed by name, then by (ecosystem, namespace), so the
@@ -522,7 +569,6 @@ impl Differ {
         // 2a. exact (ecosystem, namespace, name) matches are resolved a whole
         // bucket at a time, so several versions of one package pair up in
         // version order.
-        let mut identity_pairs: Vec<(ComponentId, ComponentId)> = Vec::new();
         for (name, new_by_key) in &new_identity_map {
             let Some(old_by_key) = old_identity_map.get_mut(name) else {
                 continue;
@@ -956,7 +1002,7 @@ impl Differ {
             ));
         }
 
-        if should_include(Field::Purl) && old.purl != new.purl {
+        if should_include(Field::Purl) && !purls_equal(old.purl.as_deref(), new.purl.as_deref()) {
             changes.push(FieldChange::Purl(old.purl.clone(), new.purl.clone()));
         }
 
@@ -3234,6 +3280,90 @@ mod tests {
             let ids: Vec<&ComponentId> = list.iter().map(|c| &c.id).collect();
             assert_eq!(ids.len(), 32);
             assert!(ids.is_sorted(), "{ids:?}");
+        }
+    }
+
+    fn component_with_purl(name: &str, version: &str, purl: &str) -> Component {
+        let mut comp = Component::new(name.to_string(), Some(version.to_string()));
+        comp.ecosystem = sbom_model::ecosystem_from_purl(purl);
+        comp.id = ComponentId::new(Some(purl), &[]);
+        comp.purl = Some(purl.to_string());
+        comp
+    }
+
+    #[test]
+    fn pypi_spellings_of_one_name_pair_as_a_downgrade() {
+        for (old, new) in [
+            (
+                component_with_purl("PyYAML", "6.0.1", "pkg:pypi/PyYAML@6.0.1"),
+                component_with_purl("pyyaml", "5.4", "pkg:pypi/pyyaml@5.4"),
+            ),
+            (
+                component_with_purl(
+                    "typing_extensions",
+                    "4.8.0",
+                    "pkg:pypi/typing_extensions@4.8.0",
+                ),
+                component_with_purl(
+                    "typing-extensions",
+                    "4.7.1",
+                    "pkg:pypi/typing-extensions@4.7.1",
+                ),
+            ),
+        ] {
+            let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+            assert!(diff.added.is_empty() && diff.removed.is_empty());
+            assert_eq!(diff.changed.len(), 1);
+            assert!(diff.changed[0].is_downgrade);
+        }
+    }
+
+    #[test]
+    fn an_npm_scope_in_the_group_pairs_with_one_in_the_name() {
+        let old = component_with_purl("core", "17.0.0", "pkg:npm/%40angular/core@17.0.0");
+        let new = component_with_purl("@angular/core", "16.0.0", "pkg:npm/%40angular/core@16.0.0");
+
+        let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+        assert!(diff.added.is_empty() && diff.removed.is_empty());
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn a_cyclonedx_group_pairs_with_an_spdx_scoped_name() {
+        let cyclonedx = r#"{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[
+            {"type":"library","bom-ref":"a","group":"@angular","name":"core","version":"17.0.0",
+             "purl":"pkg:npm/%40angular/core@17.0.0"}]}"#;
+        let spdx = r#"{"spdxVersion":"SPDX-2.3","dataLicense":"CC0-1.0","SPDXID":"SPDXRef-DOCUMENT",
+            "name":"x","documentNamespace":"https://example.com/x",
+            "creationInfo":{"created":"2024-01-01T00:00:00Z","creators":["Tool: syft-1.0"]},
+            "packages":[{"name":"@angular/core","SPDXID":"SPDXRef-a","versionInfo":"16.0.0",
+             "downloadLocation":"NOASSERTION","externalRefs":[{"referenceCategory":"PACKAGE-MANAGER",
+             "referenceType":"purl","referenceLocator":"pkg:npm/%40angular/core@16.0.0"}]}]}"#;
+        let old = sbom_model_cyclonedx::CycloneDxReader::read_json(cyclonedx.as_bytes()).unwrap();
+        let new = sbom_model_spdx::SpdxReader::read_json(spdx.as_bytes()).unwrap();
+
+        let diff = Differ::diff(&old, &new, None);
+        assert!(diff.added.is_empty() && diff.removed.is_empty());
+        assert_eq!(diff.changed.len(), 1);
+        assert!(diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn a_canonically_equal_purl_is_not_a_change() {
+        for (old, new) in [
+            (
+                component_with_purl("PyYAML", "6.0", "pkg:pypi/PyYAML@6.0"),
+                component_with_purl("pyyaml", "6.0", "pkg:pypi/pyyaml@6.0"),
+            ),
+            (
+                component_with_purl("core", "1.0.0", "pkg:npm/%40angular/core@1.0.0"),
+                component_with_purl("core", "1.0.0", "pkg:npm/@angular/core@1.0.0"),
+            ),
+        ] {
+            let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+            assert!(diff.changed.is_empty(), "{:?}", diff.changed[0].changes);
+            assert_eq!(diff.unchanged, 1);
         }
     }
 }

@@ -3,6 +3,7 @@
 ## unreleased
 
 - fix SPDX JSON failing to load on `OPERATING-SYSTEM` (every trivy image sbom), `PERSISTENT-ID`, `$schema` and `revieweds`
+- fix a version change whose two sides spell the package name differently coming out as one removed and one added component, so `--fail-on version-downgrade` missed the downgrade and `--fail-on removed-components` fired on a package that is still there: `PyYAML` against `pyyaml`, `typing_extensions` against `typing-extensions`, and an npm scope written as a CycloneDX `group` (`@types` + `react`, as trivy writes it) against the scoped name SPDX carries (`@types/react`). components whose purls parse now pair on the purl's type, namespace and name in the canonical form their ids already use; a purl renamed under one component name is still a purl change, and a component without a purl still matches on name alone. a purl that differs only in spelling, `pkg:pypi/PyYAML@6.0` against `pkg:pypi/pyyaml@6.0` or `%40angular` against `@angular`, is no longer listed as a purl change
 
 ## [0.9.1] - 2026-10-14
 
