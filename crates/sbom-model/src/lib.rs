@@ -6,9 +6,10 @@ use indexmap::IndexMap;
 use packageurl::PackageUrl;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
 /// format-agnostic SBOM (Software Bill of Materials) representation.
 ///
@@ -508,6 +509,50 @@ pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
     PackageUrl::from_str(purl).ok().map(|p| p.ty().to_string())
 }
 
+/// respells every SPDX license and exception identifier in an expression the
+/// way the SPDX license list does.
+///
+/// SPDX identifiers match case-insensitively, so `mit` and `MIT` name the same
+/// license. operators, `LicenseRef-` and `DocumentRef-` references, and terms
+/// the list doesn't know are left as written.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::canonical_license_case;
+///
+/// assert_eq!(canonical_license_case("mit OR apache-2.0"), "MIT OR Apache-2.0");
+/// assert_eq!(canonical_license_case("LicenseRef-mit"), "LicenseRef-mit");
+/// ```
+pub fn canonical_license_case(expression: &str) -> String {
+    let is_id_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | ':');
+    let mut canonical = String::with_capacity(expression.len());
+    for piece in expression.split_inclusive(|c: char| !is_id_char(c)) {
+        let id = piece.trim_end_matches(|c: char| !is_id_char(c));
+        canonical.push_str(spdx_spelling(id).unwrap_or(id));
+        canonical.push_str(&piece[id.len()..]);
+    }
+    canonical
+}
+
+/// finds the SPDX list's spelling of a license or exception identifier, ignoring case.
+fn spdx_spelling(id: &str) -> Option<&'static str> {
+    static SPELLINGS: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
+    let spellings = SPELLINGS.get_or_init(|| {
+        let licenses = spdx::identifiers::LICENSES.iter().map(|l| l.name);
+        let exceptions = spdx::identifiers::EXCEPTIONS.iter().map(|e| e.name);
+        licenses
+            .chain(exceptions)
+            .map(|name| (name.to_ascii_lowercase(), name))
+            .collect()
+    });
+    spellings.get(&id.to_ascii_lowercase()).copied()
+}
+
+fn parse_expression(expression: &str) -> Result<spdx::Expression, spdx::ParseError> {
+    spdx::Expression::parse(&canonical_license_case(expression))
+}
+
 /// extracts individual license IDs from an SPDX expression.
 ///
 /// parses the expression and returns all license IDs found, including
@@ -528,7 +573,7 @@ pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
 /// assert!(ids.contains("Apache-2.0"));
 /// ```
 pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
-    match spdx::Expression::parse(license) {
+    match parse_expression(license) {
         Ok(expr) => {
             let ids: BTreeSet<String> = expr
                 .requirements()
@@ -646,7 +691,7 @@ impl<'a> Licensing<'a> {
         F: FnMut(&LicenseRequirement) -> bool,
     {
         if let Some(expression) = self.expression {
-            if let Ok(expr) = spdx::Expression::parse(expression) {
+            if let Ok(expr) = parse_expression(expression) {
                 return expr.evaluate(|req| acceptable(&to_requirement(req)));
             }
         }
@@ -659,7 +704,7 @@ impl<'a> Licensing<'a> {
     /// consumer must accept it.
     pub fn requirements(&self) -> BTreeSet<LicenseRequirement> {
         if let Some(expression) = self.expression {
-            if let Ok(expr) = spdx::Expression::parse(expression) {
+            if let Ok(expr) = parse_expression(expression) {
                 let reqs: BTreeSet<LicenseRequirement> = expr
                     .requirements()
                     .map(|r| to_requirement(&r.req))
@@ -676,7 +721,7 @@ impl<'a> Licensing<'a> {
     /// `None` when the expression expands past `MAX_CHOICES`.
     fn choices(&self) -> Option<Choices> {
         if let Some(expression) = self.expression {
-            if let Ok(expr) = spdx::Expression::parse(expression) {
+            if let Ok(expr) = parse_expression(expression) {
                 return expression_choices(&expr);
             }
         }
@@ -882,7 +927,7 @@ pub fn copyleft_obligations_added(old: Licensing<'_>, new: Licensing<'_>) -> BTr
 /// ));
 /// ```
 pub fn license_expressions_equivalent(a: &str, b: &str) -> bool {
-    match (spdx::Expression::parse(a), spdx::Expression::parse(b)) {
+    match (parse_expression(a), parse_expression(b)) {
         (Ok(x), Ok(y)) => match (expression_choices(&x), expression_choices(&y)) {
             (Some(cx), Some(cy)) => cx == cy,
             _ => x == y,
@@ -1059,8 +1104,9 @@ pub fn changed_checksums(
 
 /// classifies an SPDX license identifier as copyleft.
 ///
-/// looks the ID up in the compile-time SPDX license list and returns whether
-/// it carries the copyleft flag (the GPL/AGPL/LGPL family, MPL, etc.).
+/// looks the ID up, ignoring case, in the compile-time SPDX license list and
+/// returns whether it carries the copyleft flag (the GPL/AGPL/LGPL family, MPL,
+/// etc.).
 ///
 /// returns `false` for anything SPDX doesn't recognize — `LicenseRef-`
 /// identifiers, full license expressions, and free-text names — a conservative
@@ -1077,9 +1123,9 @@ pub fn changed_checksums(
 /// assert!(!is_copyleft_license("LicenseRef-proprietary"));
 /// ```
 pub fn is_copyleft_license(id: &str) -> bool {
-    spdx::license_id(id)
-        .map(|l| l.is_copyleft())
-        .unwrap_or(false)
+    spdx_spelling(id.trim_end_matches('+'))
+        .and_then(spdx::license_id)
+        .is_some_and(|l| l.is_copyleft())
 }
 
 /// detects whether a copyleft license was newly introduced between two license sets.
@@ -1159,6 +1205,7 @@ mod tests {
 
         assert!(licensing("MIT OR Apache-2.0", &ids).satisfiable(only_mit));
         assert!(!licensing("MIT AND Apache-2.0", &ids).satisfiable(only_mit));
+        assert!(licensing("mit OR Apache-2.0", &ids).satisfiable(only_mit));
 
         let nested: BTreeSet<String> =
             ["Apache-2.0".into(), "BSD-3-Clause".into(), "MIT".into()].into();
@@ -1194,6 +1241,10 @@ mod tests {
         assert_eq!(req.license, "GPL-2.0-only");
         assert_eq!(req.exception.as_deref(), Some("Classpath-exception-2.0"));
         assert_eq!(req.to_string(), "GPL-2.0-only WITH Classpath-exception-2.0");
+        assert_eq!(
+            licensing("gpl-2.0-only WITH classpath-exception-2.0", &ids).requirements(),
+            reqs
+        );
     }
 
     #[test]
@@ -1342,6 +1393,7 @@ mod tests {
                 "(GPL-3.0-only AND MPL-2.0) OR (AGPL-3.0-only AND EPL-2.0)",
                 &["AGPL-3.0-only", "GPL-3.0-only", "MPL-2.0"],
             ),
+            ("MIT", "(mit OR gpl-3.0-only) AND mpl-2.0", &["MPL-2.0"]),
         ] {
             assert_eq!(
                 copyleft_added(old, new),
@@ -1451,6 +1503,10 @@ mod tests {
             "MIT",
             "MIT OR (MIT AND Apache-2.0)"
         ));
+        assert!(license_expressions_equivalent(
+            "mit or apache-2.0",
+            "apache-2.0 or mit"
+        ));
         assert!(!license_expressions_equivalent(
             "MIT OR Apache-2.0",
             "MIT OR BSD-3-Clause"
@@ -1529,6 +1585,7 @@ mod tests {
             ("MIT OR Apache-2.0", &["Apache-2.0", "MIT"][..]),
             ("MIT", &["MIT"]),
             ("MIT AND Apache-2.0", &["Apache-2.0", "MIT"]),
+            ("mit OR apache-2.0", &["Apache-2.0", "MIT"]),
             // invalid expression kept as-is
             ("Custom License", &["Custom License"]),
             ("LicenseRef-proprietary", &["LicenseRef-proprietary"]),
@@ -2135,6 +2192,8 @@ mod tests {
         assert!(is_copyleft_license("GPL-3.0-only"));
         assert!(is_copyleft_license("AGPL-3.0-only"));
         assert!(is_copyleft_license("LGPL-3.0-only"));
+        assert!(is_copyleft_license("gpl-3.0-only"));
+        assert!(is_copyleft_license("mpl-2.0+"));
         // permissive licenses are not
         assert!(!is_copyleft_license("MIT"));
         assert!(!is_copyleft_license("Apache-2.0"));
