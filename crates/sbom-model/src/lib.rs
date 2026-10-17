@@ -738,7 +738,7 @@ impl<'a> Licensing<'a> {
             .into_iter()
             .filter(|r| is_copyleft_license(&r.license))
             .filter(|r| !self.satisfiable(|other| other.license != r.license))
-            .map(|r| r.license)
+            .map(|r| canonical_license_case(&r.license))
             .collect()
     }
 
@@ -752,7 +752,7 @@ impl<'a> Licensing<'a> {
                 choice
                     .into_iter()
                     .filter(|r| is_copyleft_license(&r.license))
-                    .map(|r| r.license)
+                    .map(|r| canonical_license_case(&r.license))
                     .collect()
             })
             .collect();
@@ -894,14 +894,15 @@ pub fn copyleft_obligations_added(old: Licensing<'_>, new: Licensing<'_>) -> BTr
         }
         _ => {
             let already = old.mandatory_copyleft();
-            if new.satisfiable(|r| !is_copyleft_license(&r.license) || already.contains(&r.license))
-            {
+            let carried =
+                |r: &LicenseRequirement| already.contains(&canonical_license_case(&r.license));
+            if new.satisfiable(|r| !is_copyleft_license(&r.license) || carried(r)) {
                 return BTreeSet::new();
             }
             new.requirements()
                 .into_iter()
-                .filter(|r| is_copyleft_license(&r.license) && !already.contains(&r.license))
-                .map(|r| r.license)
+                .filter(|r| is_copyleft_license(&r.license) && !carried(r))
+                .map(|r| canonical_license_case(&r.license))
                 .collect()
         }
     }
@@ -1131,9 +1132,9 @@ pub fn is_copyleft_license(id: &str) -> bool {
 /// detects whether a copyleft license was newly introduced between two license sets.
 ///
 /// returns `true` iff `new` contains a copyleft license (per
-/// [`is_copyleft_license`]) that is not present in `old`. A copyleft license
-/// carried over from `old` is not an introduction, and permissive-only changes
-/// never fire.
+/// [`is_copyleft_license`]) that is not present in `old`, ignoring case. A
+/// copyleft license carried over from `old` is not an introduction, and
+/// permissive-only changes never fire.
 ///
 /// # Example
 ///
@@ -1149,8 +1150,9 @@ pub fn is_copyleft_license(id: &str) -> bool {
 /// assert!(!copyleft_introduced(&old, &permissive));
 /// ```
 pub fn copyleft_introduced(old: &BTreeSet<String>, new: &BTreeSet<String>) -> bool {
+    let old: BTreeSet<String> = old.iter().map(|id| canonical_license_case(id)).collect();
     new.iter()
-        .any(|id| is_copyleft_license(id) && !old.contains(id))
+        .any(|id| is_copyleft_license(id) && !old.contains(&canonical_license_case(id)))
 }
 
 #[cfg(test)]
@@ -1439,6 +1441,14 @@ mod tests {
                 .is_empty()
         );
         assert!(!copyleft_introduced(&new, &new));
+
+        let respelled: BTreeSet<String> = ["gpl-3.0-only".into(), "MIT".into()].into();
+        assert!(copyleft_obligations_added(
+            Licensing::from_ids(&new),
+            Licensing::from_ids(&respelled)
+        )
+        .is_empty());
+        assert!(!copyleft_introduced(&new, &respelled));
     }
 
     #[test]
