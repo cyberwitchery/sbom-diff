@@ -479,15 +479,25 @@ fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
     (beside, below)
 }
 
-/// drops the lines spdx-rs 0.5 would panic on or stop at, returning the
-/// remaining document and one diagnostic per dropped line.
+/// drops the lines spdx-rs 0.5 would panic on or stop at and strips trailing
+/// whitespace outside `<text>` blocks, returning the remaining document and
+/// one diagnostic per dropped line.
 fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     let mut kept = String::with_capacity(input.len());
     let mut dropped = Vec::new();
     let mut in_dropped_block = false;
     let mut value_below_dropped = false;
     let (beside, below) = text_blocks(input);
-    for (number, (line, tagged)) in scanned_lines(input).enumerate() {
+    let mut lines = scanned_lines(input).enumerate().peekable();
+    while let Some((number, (line, tagged))) = lines.next() {
+        let ends_outside_text = lines
+            .peek()
+            .is_none_or(|&(_, (_, next_tagged))| next_tagged);
+        let line = if ends_outside_text {
+            line.trim_end()
+        } else {
+            line
+        };
         if tagged && value_below_dropped {
             value_below_dropped = line.trim().is_empty();
         } else if tagged {
@@ -2858,8 +2868,39 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_tag_value_file_type_with_trailing_space_does_not_panic() {
-        assert_line_dropped("FileType: SOURCE ", "'SOURCE ' is not a file type");
+    fn test_tag_value_trailing_whitespace_is_part_of_a_value_only_inside_a_text_block() {
+        let clean = tag_value_around(
+            "ExternalRef: PACKAGE-MANAGER purl pkg:cargo/alpha@1.0.0\n\
+             PackageChecksum: SHA1: d6a770ba38583ed4bb4525bd96e50461655d2758\n\
+             PackageDescription: <text>kept  \nas is\t\n</text>\n\
+             Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-omega\n\
+             FileName: ./src/main.rs\n\
+             SPDXID: SPDXRef-file\n\
+             FileType: SOURCE",
+        );
+        let expected = SpdxReader::read_tag_value(clean.as_bytes()).unwrap();
+        let alpha = expected.components.values().find(|c| c.name == "alpha");
+        assert_eq!(
+            alpha.and_then(|c| c.description.as_deref()),
+            Some("kept  \nas is\t\n")
+        );
+        for line in [
+            "PackageName: alpha",
+            "SPDXID: SPDXRef-omega",
+            "PackageVersion: 1.0.0",
+            "ExternalRef: PACKAGE-MANAGER purl pkg:cargo/alpha@1.0.0",
+            "PackageChecksum: SHA1: d6a770ba38583ed4bb4525bd96e50461655d2758",
+            "Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-omega",
+            "FileType: SOURCE",
+        ] {
+            let padded = clean.replacen(&format!("{line}\n"), &format!("{line} \t\n"), 1);
+            assert_ne!(padded, clean, "{line}");
+            let sbom = SpdxReader::read_tag_value(padded.as_bytes())
+                .unwrap_or_else(|e| panic!("'{line}' padded should be readable: {e}"));
+            assert_eq!(sbom.components, expected.components, "{line}");
+            assert_eq!(sbom.dependencies, expected.dependencies, "{line}");
+            assert_eq!(sbom.warnings, expected.warnings, "{line}");
+        }
     }
 
     #[test]
