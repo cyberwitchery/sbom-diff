@@ -556,8 +556,8 @@ fn parse_expression(expression: &str) -> Result<spdx::Expression, spdx::ParseErr
 /// extracts individual license IDs from an SPDX expression.
 ///
 /// parses the expression and returns all license IDs found, including
-/// `LicenseRef-` identifiers. if parsing fails, returns the original
-/// string as a single-element set.
+/// `LicenseRef-` identifiers. if parsing fails, returns the string,
+/// respelled by [`canonical_license_case`], as a single-element set.
 ///
 /// # Example
 ///
@@ -590,8 +590,8 @@ pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
             }
         }
         Err(_) => {
-            // not a valid SPDX expression, keep original
-            BTreeSet::from([license.to_string()])
+            // not a valid SPDX expression, keep it whole
+            BTreeSet::from([canonical_license_case(license)])
         }
     }
 }
@@ -1394,6 +1394,7 @@ mod tests {
                 &["AGPL-3.0-only", "GPL-3.0-only", "MPL-2.0"],
             ),
             ("MIT", "(mit OR gpl-3.0-only) AND mpl-2.0", &["MPL-2.0"]),
+            ("GPL-2.0+", "gpl-2.0+", &[]),
         ] {
             assert_eq!(
                 copyleft_added(old, new),
