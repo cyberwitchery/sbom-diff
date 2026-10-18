@@ -2313,6 +2313,29 @@ fn fail_on_copyleft_added_ignores_an_unchanged_copyleft_choice() {
 }
 
 #[test]
+fn fail_on_copyleft_added_ignores_a_license_name_case_change() {
+    for (old, new) in [
+        ("copyleft-name.json", "copyleft-name-lowercase.json"),
+        ("copyleft-name-lowercase.json", "copyleft-name.json"),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .arg("--fail-on")
+            .arg("copyleft-added")
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{old} -> {new}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn dropping_a_license_exception_is_a_license_change() {
     let out = sbom_diff()
         .arg(fixture("license-exception-old.spdx.json"))

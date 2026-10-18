@@ -1,8 +1,8 @@
 #![doc = include_str!("../readme.md")]
 
 use sbom_model::{
-    canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
-    Sbom,
+    canonical_algorithm_name, canonical_license_case, parse_license_expression, Component,
+    ComponentId, DependencyKind, Sbom,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -563,7 +563,7 @@ impl CycloneDxReader {
                                     n.to_string()
                                 }
                                 cyclonedx_bom::models::license::LicenseIdentifier::SpdxId(id) => {
-                                    id.to_string()
+                                    canonical_license_case(&id.to_string())
                                 }
                             };
                             comp.licenses.insert(s);
@@ -1838,7 +1838,7 @@ mod tests {
                     "name": "listed",
                     "version": "1.0.0",
                     "licenses": [
-                        { "license": { "id": "MIT" } },
+                        { "license": { "id": "mit" } },
                         { "license": { "id": "Apache-2.0" } }
                     ]
                 }
@@ -1865,6 +1865,10 @@ mod tests {
 
         // per-license entries carry no expression, so the flat set stands alone
         assert_eq!(find("listed").license_expression, None);
+        assert_eq!(
+            find("listed").licenses,
+            BTreeSet::from(["Apache-2.0".to_string(), "MIT".to_string()])
+        );
     }
 
     type ServicesReader = fn(&[(&str, &[&str])]) -> Sbom;
