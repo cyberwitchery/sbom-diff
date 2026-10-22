@@ -20,9 +20,10 @@ pub use markdown::MarkdownRenderer;
 pub use sarif::SarifRenderer;
 pub use text::TextRenderer;
 
-use crate::{ComponentChange, Diff, EcosystemCounts, EdgeDiff, FieldChange};
-use sbom_model::{is_hash_algorithm_downgrade, Component, DependencyKind};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::{component_label, ComponentChange, Diff, EcosystemCounts, EdgeDiff, FieldChange};
+use sbom_model::{is_hash_algorithm_downgrade, Component, ComponentId, DependencyKind};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 
 /// options controlling how diffs are rendered.
@@ -81,6 +82,53 @@ pub fn format_set(set: &BTreeSet<String>) -> String {
             out.push_str(s);
         }
         out
+    }
+}
+
+/// the names one report gives its components, shared by the component and edge sections.
+///
+/// purl-less components that would share a `name@version` each get a short id suffix.
+pub(super) struct Labels<'a> {
+    by_id: HashMap<&'a ComponentId, Cow<'a, str>>,
+}
+
+impl<'a> Labels<'a> {
+    pub(super) fn new(diff: &'a Diff) -> Self {
+        let purl_less = diff
+            .added
+            .iter()
+            .chain(&diff.removed)
+            .chain(diff.changed.iter().map(|c| &c.new))
+            .filter(|c| c.purl.is_none());
+        let mut by_id: HashMap<&ComponentId, Cow<str>> = diff
+            .component_names
+            .iter()
+            .map(|(id, name)| (id, Cow::Borrowed(name.as_str())))
+            .chain(purl_less.map(|c| (&c.id, component_label(c))))
+            .collect();
+
+        let mut uses: HashMap<String, usize> = HashMap::new();
+        for label in by_id.values() {
+            *uses.entry(label.to_string()).or_default() += 1;
+        }
+        for (id, label) in by_id.iter_mut() {
+            if uses[label.as_ref()] > 1 {
+                let short = id.as_str().get(..14).unwrap_or(id.as_str());
+                *label = Cow::Owned(format!("{label} ({short})"));
+            }
+        }
+
+        Labels { by_id }
+    }
+
+    pub(super) fn component<'s>(&'s self, c: &'s Component) -> &'s str {
+        c.purl.as_deref().unwrap_or_else(|| self.id(&c.id))
+    }
+
+    pub(super) fn id<'s>(&'s self, id: &'s ComponentId) -> &'s str {
+        self.by_id
+            .get(id)
+            .map_or(id.as_str(), |label| label.as_ref())
     }
 }
 
@@ -196,10 +244,11 @@ pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
 pub(super) fn write_changed<F: FieldChangeFormatter, W: Write>(
     fmt: &F,
     writer: &mut W,
+    labels: &Labels,
     changes: &[ComponentChange],
 ) -> std::io::Result<()> {
     for c in changes {
-        fmt.component_header(writer, c.new.purl.as_deref().unwrap_or(c.id.as_str()))?;
+        fmt.component_header(writer, labels.component(&c.new))?;
         write_field_changes(fmt, writer, &c.changes, c.is_downgrade)?;
     }
     Ok(())
@@ -281,11 +330,21 @@ pub(super) trait FullFormatter: FieldChangeFormatter {
     /// closes an added/removed/changed section, emitting the trailing blank line.
     fn section_close<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
     /// renders the component list body of an added or removed section.
-    fn component_list<W: Write>(&self, w: &mut W, components: &[Component]) -> std::io::Result<()>;
+    fn component_list<W: Write>(
+        &self,
+        w: &mut W,
+        labels: &Labels,
+        components: &[Component],
+    ) -> std::io::Result<()>;
     /// opens the edge-changes section.
     fn edge_open<W: Write>(&self, w: &mut W, count: usize) -> std::io::Result<()>;
     /// renders one parent's edge changes.
-    fn edge_entry<W: Write>(&self, w: &mut W, diff: &Diff, edge: &EdgeDiff) -> std::io::Result<()>;
+    fn edge_entry<W: Write>(
+        &self,
+        w: &mut W,
+        labels: &Labels,
+        edge: &EdgeDiff,
+    ) -> std::io::Result<()>;
     /// closes the edge-changes section.
     fn edge_close<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
     /// opens the metadata-changes section.
@@ -306,6 +365,7 @@ pub(super) fn write_full<F: FullFormatter, W: Write>(
 
     fmt.full_count_header(writer, diff)?;
 
+    let labels = Labels::new(diff);
     if opts.group_by_ecosystem {
         let grouped = diff.group_by_ecosystem();
         let breakdown = grouped.ecosystem_breakdown();
@@ -315,19 +375,27 @@ pub(super) fn write_full<F: FullFormatter, W: Write>(
             write_full_sections(
                 fmt,
                 writer,
+                &labels,
                 &eco_diff.added,
                 &eco_diff.removed,
                 &eco_diff.changed,
             )?;
         }
     } else {
-        write_full_sections(fmt, writer, &diff.added, &diff.removed, &diff.changed)?;
+        write_full_sections(
+            fmt,
+            writer,
+            &labels,
+            &diff.added,
+            &diff.removed,
+            &diff.changed,
+        )?;
     }
 
     if !diff.edge_diffs.is_empty() {
         fmt.edge_open(writer, diff.edge_diffs.len())?;
         for edge in &diff.edge_diffs {
-            fmt.edge_entry(writer, diff, edge)?;
+            fmt.edge_entry(writer, &labels, edge)?;
         }
         fmt.edge_close(writer)?;
     }
@@ -363,23 +431,24 @@ pub(super) fn write_full<F: FullFormatter, W: Write>(
 fn write_full_sections<F: FullFormatter, W: Write>(
     fmt: &F,
     writer: &mut W,
+    labels: &Labels,
     added: &[Component],
     removed: &[Component],
     changed: &[ComponentChange],
 ) -> std::io::Result<()> {
     if !added.is_empty() {
         fmt.section_open(writer, SectionKind::Added, added.len())?;
-        fmt.component_list(writer, added)?;
+        fmt.component_list(writer, labels, added)?;
         fmt.section_close(writer)?;
     }
     if !removed.is_empty() {
         fmt.section_open(writer, SectionKind::Removed, removed.len())?;
-        fmt.component_list(writer, removed)?;
+        fmt.component_list(writer, labels, removed)?;
         fmt.section_close(writer)?;
     }
     if !changed.is_empty() {
         fmt.section_open(writer, SectionKind::Changed, changed.len())?;
-        write_changed(fmt, writer, changed)?;
+        write_changed(fmt, writer, labels, changed)?;
         fmt.section_close(writer)?;
     }
     Ok(())

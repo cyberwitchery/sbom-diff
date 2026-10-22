@@ -1,9 +1,9 @@
 use super::{
-    format_option, format_set, format_vec_or_none, kind_suffix, RenderOptions, Renderer,
+    format_option, format_set, format_vec_or_none, kind_suffix, Labels, RenderOptions, Renderer,
     SummaryRenderer,
 };
 use crate::{Diff, FieldChange};
-use sbom_model::{is_hash_algorithm_downgrade, Component};
+use sbom_model::is_hash_algorithm_downgrade;
 use serde::Serialize;
 use std::io::Write;
 
@@ -160,14 +160,10 @@ impl SarifRenderer {
             .collect()
     }
 
-    fn component_display(comp: &Component) -> &str {
-        comp.purl.as_deref().unwrap_or(comp.id.as_str())
-    }
-
-    fn component_location(comp: &Component) -> Vec<SarifLocation> {
+    fn component_location(label: &str) -> Vec<SarifLocation> {
         vec![SarifLocation {
             logical_locations: vec![SarifLogicalLocation {
-                fully_qualified_name: Self::component_display(comp).to_string(),
+                fully_qualified_name: label.to_string(),
                 kind: "package",
             }],
         }]
@@ -242,6 +238,7 @@ impl SarifRenderer {
 
     fn build_results(diff: &Diff, opts: &RenderOptions) -> Vec<SarifResultEntry> {
         let mut results = Vec::new();
+        let labels = Labels::new(diff);
 
         if opts.has_warnings() {
             for w in &opts.old_warnings {
@@ -279,31 +276,33 @@ impl SarifRenderer {
         }
 
         for comp in &diff.added {
+            let display = labels.component(comp);
             results.push(SarifResultEntry {
                 rule_id: SARIF_RULES[RULE_COMPONENT_ADDED].id,
                 rule_index: RULE_COMPONENT_ADDED,
                 level: SARIF_RULES[RULE_COMPONENT_ADDED].level,
                 message: SarifTextMessage {
-                    text: format!("Component added: {}", Self::component_display(comp)),
+                    text: format!("Component added: {}", display),
                 },
-                locations: Self::component_location(comp),
+                locations: Self::component_location(display),
             });
         }
 
         for comp in &diff.removed {
+            let display = labels.component(comp);
             results.push(SarifResultEntry {
                 rule_id: SARIF_RULES[RULE_COMPONENT_REMOVED].id,
                 rule_index: RULE_COMPONENT_REMOVED,
                 level: SARIF_RULES[RULE_COMPONENT_REMOVED].level,
                 message: SarifTextMessage {
-                    text: format!("Component removed: {}", Self::component_display(comp)),
+                    text: format!("Component removed: {}", display),
                 },
-                locations: Self::component_location(comp),
+                locations: Self::component_location(display),
             });
         }
 
         for change in &diff.changed {
-            let display = Self::component_display(&change.new);
+            let display = labels.component(&change.new);
             let is_downgrade = change.is_downgrade;
             let field_changes: Vec<String> = change
                 .changes
@@ -332,19 +331,19 @@ impl SarifRenderer {
                         field_changes.join("; "),
                     ),
                 },
-                locations: Self::component_location(&change.new),
+                locations: Self::component_location(display),
             });
         }
 
         for edge in &diff.edge_diffs {
-            let parent = diff.display_name(&edge.parent);
+            let parent = labels.id(&edge.parent);
             let mut parts = Vec::new();
 
             for (child, kind) in &edge.added {
                 parts.push(format!(
                     "added {} -> {}{}",
                     parent,
-                    diff.display_name(child),
+                    labels.id(child),
                     kind_suffix(kind)
                 ));
             }
@@ -352,7 +351,7 @@ impl SarifRenderer {
                 parts.push(format!(
                     "removed {} -> {}{}",
                     parent,
-                    diff.display_name(child),
+                    labels.id(child),
                     kind_suffix(kind)
                 ));
             }
@@ -360,7 +359,7 @@ impl SarifRenderer {
                 parts.push(format!(
                     "{} -> {} kind: {} -> {}",
                     parent,
-                    diff.display_name(child),
+                    labels.id(child),
                     old_kind,
                     new_kind
                 ));

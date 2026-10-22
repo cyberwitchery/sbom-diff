@@ -4,6 +4,7 @@ use packageurl::PackageUrl;
 use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
 use sbom_model::{licensings_equivalent, Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::str::FromStr;
@@ -275,6 +276,15 @@ pub struct EcosystemDiff {
     pub added: Vec<Component>,
     pub removed: Vec<Component>,
     pub changed: Vec<ComponentChange>,
+}
+
+/// the name reports show for a component: its purl, else `name@version`, else `name`.
+pub(crate) fn component_label(comp: &Component) -> Cow<'_, str> {
+    match (&comp.purl, &comp.version) {
+        (Some(purl), _) => Cow::Borrowed(purl),
+        (None, Some(version)) => Cow::Owned(format!("{}@{}", comp.name, version)),
+        (None, None) => Cow::Borrowed(&comp.name),
+    }
 }
 
 /// a component that exists in both SBOMs with detected changes.
@@ -947,11 +957,7 @@ impl Differ {
             // try new SBOM first (edge diffs use new-SBOM IDs), then old
             let comp = new.components.get(id).or_else(|| old.components.get(id));
             if let Some(comp) = comp {
-                let display = match &comp.version {
-                    Some(v) => format!("{}@{}", comp.name, v),
-                    None => comp.name.clone(),
-                };
-                names.insert(id.clone(), display);
+                names.insert(id.clone(), component_label(comp).into_owned());
             }
         }
 
