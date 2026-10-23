@@ -161,6 +161,69 @@ fn fail_on_multiple_conditions_all_checked() {
 }
 
 #[test]
+fn gate_messages_name_purl_less_components_as_the_report_does() {
+    let cases: [([&str; 2], &[&str]); 7] = [
+        (
+            ["--fail-on", "added-components"],
+            &[
+                "error: added component busybox@1.37.0 (h:18e91983ca49) (--fail-on added-components)",
+                "error: added component busybox@1.37.0 (h:362aab88d0f5) (--fail-on added-components)",
+                "error: added component musl@1.2.6 (--fail-on added-components)",
+            ],
+        ),
+        (
+            ["--fail-on", "removed-components"],
+            &["error: removed component zlib@1.3.1 (--fail-on removed-components)"],
+        ),
+        (
+            ["--fail-on", "changed-components"],
+            &["error: changed component alpine@3.24.3 (--fail-on changed-components)"],
+        ),
+        (
+            ["--fail-on", "deps"],
+            &[
+                "error: added dependency edge alpine@3.24.3 -> musl@1.2.6 (--fail-on deps)",
+                "error: removed dependency edge alpine@3.24.3 -> zlib@1.3.1 (--fail-on deps)",
+                "error: added dependency edge musl@1.2.6 -> alpine@3.24.3 (--fail-on deps)",
+            ],
+        ),
+        (
+            ["--fail-on", "cyclic-dependency"],
+            &["error: dependency cycle detected: alpine@3.24.3 -> musl@1.2.6 -> alpine@3.24.3 (--fail-on cyclic-dependency)"],
+        ),
+        (
+            ["--allow-license", "MIT"],
+            &[
+                "error: component app has no license information (--allow-license requires it)",
+                "error: component alpine@3.24.3 has no license information (--allow-license requires it)",
+                "error: license GPL-2.0-only is not allowed (component busybox@1.37.0 (h:362aab88d0f5))",
+                "error: license GPL-2.0-only is not allowed (component busybox@1.37.0 (h:18e91983ca49))",
+            ],
+        ),
+        (
+            ["--deny-license", "GPL-2.0-only"],
+            &[
+                "error: license GPL-2.0-only is denied (component busybox@1.37.0 (h:362aab88d0f5))",
+                "error: license GPL-2.0-only is denied (component busybox@1.37.0 (h:18e91983ca49))",
+            ],
+        ),
+    ];
+
+    for (gate, expected) in cases {
+        let out = sbom_diff()
+            .arg(fixture("purl-less-gates-old.json"))
+            .arg(fixture("purl-less-gates-new.json"))
+            .args(gate)
+            .arg("--quiet")
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.lines().collect::<Vec<_>>(), expected, "{gate:?}");
+    }
+}
+
+#[test]
 fn fail_on_license_changed_exits_3() {
     let out = sbom_diff()
         .arg(fixture("license-changed-old.json"))

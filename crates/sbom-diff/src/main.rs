@@ -7,14 +7,14 @@ use packageurl::PackageUrl;
 use sbom_diff::{
     pair_ecosystem,
     renderer::{
-        format_option, format_set, CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions,
-        Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
+        format_option, format_set, CsvRenderer, JsonRenderer, Labels, MarkdownRenderer,
+        RenderOptions, Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
     ComponentChange, Differ, Field, FieldChange,
 };
 use sbom_model::versions::is_version_downgrade_for_ecosystem;
 use sbom_model::{changed_checksums, copyleft_obligations_added, is_hash_algorithm_downgrade};
-use sbom_model::{ComponentId, DependencyKind, LicenseRequirement, Licensing, Sbom};
+use sbom_model::{DependencyKind, LicenseRequirement, Licensing, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::io;
@@ -126,84 +126,84 @@ enum Output {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Violation {
     AddedComponent {
-        id: ComponentId,
+        name: String,
     },
     RemovedComponent {
-        id: ComponentId,
+        name: String,
     },
     ChangedComponent {
-        id: ComponentId,
+        name: String,
     },
     MissingHashesAdded {
-        id: ComponentId,
+        name: String,
     },
     MissingHashesDropped {
-        id: ComponentId,
+        name: String,
     },
     LicenseChanged {
-        id: ComponentId,
+        name: String,
         old: BTreeSet<String>,
         new: BTreeSet<String>,
     },
     LicenseExpressionChanged {
-        id: ComponentId,
+        name: String,
         old: Option<String>,
         new: Option<String>,
     },
     LicenseIntroduced {
-        id: ComponentId,
+        name: String,
         licenses: Vec<String>,
     },
     CopyleftAdded {
-        id: ComponentId,
+        name: String,
         licenses: Vec<String>,
     },
     VersionDowngrade {
-        id: ComponentId,
+        name: String,
         old: String,
         new: String,
     },
     SupplierChanged {
-        id: ComponentId,
+        name: String,
         old: Option<String>,
         new: Option<String>,
     },
     SupplierIntroduced {
-        id: ComponentId,
+        name: String,
         supplier: String,
     },
     PurlChanged {
-        id: ComponentId,
+        name: String,
         old: Option<String>,
         new: Option<String>,
     },
     EcosystemChanged {
-        id: ComponentId,
+        name: String,
         old: Option<String>,
         new: Option<String>,
     },
     HashAlgorithmDowngrade {
-        id: ComponentId,
+        name: String,
         old_algos: Vec<String>,
         new_algos: Vec<String>,
     },
     ChecksumChanged {
-        id: ComponentId,
+        name: String,
         algorithm: String,
         old: String,
         new: String,
     },
     DepsAdded {
-        parent: ComponentId,
-        child: ComponentId,
+        parent: String,
+        child: String,
     },
     DepsRemoved {
-        parent: ComponentId,
-        child: ComponentId,
+        parent: String,
+        child: String,
     },
     DepsKindChanged {
-        parent: ComponentId,
-        child: ComponentId,
+        parent: String,
+        child: String,
         old_kind: DependencyKind,
         new_kind: DependencyKind,
     },
@@ -215,119 +215,127 @@ enum Violation {
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Violation::AddedComponent { id } => {
-                write!(f, "added component {} (--fail-on added-components)", id)
+            Violation::AddedComponent { name } => {
+                write!(f, "added component {} (--fail-on added-components)", name)
             }
-            Violation::RemovedComponent { id } => {
-                write!(f, "removed component {} (--fail-on removed-components)", id)
+            Violation::RemovedComponent { name } => {
+                write!(
+                    f,
+                    "removed component {} (--fail-on removed-components)",
+                    name
+                )
             }
-            Violation::ChangedComponent { id } => {
-                write!(f, "changed component {} (--fail-on changed-components)", id)
+            Violation::ChangedComponent { name } => {
+                write!(
+                    f,
+                    "changed component {} (--fail-on changed-components)",
+                    name
+                )
             }
-            Violation::MissingHashesAdded { id } => {
+            Violation::MissingHashesAdded { name } => {
                 write!(
                     f,
                     "added component {} has no hashes (--fail-on missing-hashes)",
-                    id
+                    name
                 )
             }
-            Violation::MissingHashesDropped { id } => {
+            Violation::MissingHashesDropped { name } => {
                 write!(
                     f,
                     "changed component {} dropped all hashes (--fail-on missing-hashes)",
-                    id
+                    name
                 )
             }
-            Violation::LicenseChanged { id, old, new } => {
+            Violation::LicenseChanged { name, old, new } => {
                 write!(
                     f,
                     "license changed on component {}: {} -> {} (--fail-on license-changed)",
-                    id,
+                    name,
                     format_set(old),
                     format_set(new)
                 )
             }
-            Violation::LicenseExpressionChanged { id, old, new } => {
+            Violation::LicenseExpressionChanged { name, old, new } => {
                 write!(
                     f,
                     "license expression changed on component {}: {} -> {} (--fail-on license-changed)",
-                    id,
+                    name,
                     format_option(old),
                     format_option(new)
                 )
             }
-            Violation::LicenseIntroduced { id, licenses } => {
+            Violation::LicenseIntroduced { name, licenses } => {
                 write!(
                     f,
                     "added component {} introduces license(s): {} (--fail-on license-changed)",
-                    id,
+                    name,
                     licenses.join(", ")
                 )
             }
-            Violation::CopyleftAdded { id, licenses } => {
+            Violation::CopyleftAdded { name, licenses } => {
                 write!(
                     f,
                     "copyleft license introduced on component {}: {} (--fail-on copyleft-added)",
-                    id,
+                    name,
                     licenses.join(", ")
                 )
             }
-            Violation::VersionDowngrade { id, old, new } => {
+            Violation::VersionDowngrade { name, old, new } => {
                 write!(
                     f,
                     "version downgrade on component {}: {} -> {} (--fail-on version-downgrade)",
-                    id, old, new
+                    name, old, new
                 )
             }
-            Violation::SupplierChanged { id, old, new } => {
+            Violation::SupplierChanged { name, old, new } => {
                 write!(
                     f,
                     "supplier changed on component {}: {} -> {} (--fail-on supplier-changed)",
-                    id,
+                    name,
                     format_option(old),
                     format_option(new)
                 )
             }
-            Violation::SupplierIntroduced { id, supplier } => {
+            Violation::SupplierIntroduced { name, supplier } => {
                 write!(
                     f,
                     "added component {} has supplier: {} (--fail-on supplier-changed)",
-                    id, supplier
+                    name, supplier
                 )
             }
-            Violation::PurlChanged { id, old, new } => {
+            Violation::PurlChanged { name, old, new } => {
                 write!(
                     f,
                     "purl changed on component {}: {} -> {} (--fail-on purl-changed)",
-                    id,
+                    name,
                     format_option(old),
                     format_option(new)
                 )
             }
-            Violation::EcosystemChanged { id, old, new } => {
+            Violation::EcosystemChanged { name, old, new } => {
                 write!(
                     f,
                     "ecosystem changed on component {}: {} -> {} (--fail-on ecosystem-changed)",
-                    id,
+                    name,
                     format_option(old),
                     format_option(new)
                 )
             }
             Violation::HashAlgorithmDowngrade {
-                id,
+                name,
                 old_algos,
                 new_algos,
             } => {
                 write!(
                     f,
                     "hash algorithm downgrade on component {}: [{}] -> [{}] (--fail-on hash-algorithm-downgrade)",
-                    id,
+                    name,
                     old_algos.join(", "),
                     new_algos.join(", "),
                 )
             }
             Violation::ChecksumChanged {
-                id,
+                name,
                 algorithm,
                 old,
                 new,
@@ -335,7 +343,7 @@ impl fmt::Display for Violation {
                 write!(
                     f,
                     "checksum changed on component {} without a version change: {} {} -> {} (--fail-on checksum-changed)",
-                    id, algorithm, old, new
+                    name, algorithm, old, new
                 )
             }
             Violation::DepsAdded { parent, child } => {
@@ -552,6 +560,10 @@ fn offending_requirements(
 }
 
 fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
+    if deny.is_empty() && allow.is_empty() {
+        return false;
+    }
+    let labels = Labels::for_sbom(sbom);
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
     let deny_lower: HashSet<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
     let allow_lower: HashSet<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
@@ -562,7 +574,7 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
         if !allow.is_empty() && comp.licenses.is_empty() {
             eprintln!(
                 "error: component {} has no license information (--allow-license requires it)",
-                comp.id
+                labels.component(comp)
             );
             violation = true;
             continue;
@@ -576,7 +588,7 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
             eprintln!(
                 "error: license {} is denied (component {})",
                 offending_requirements(licensing, |req| requirement_listed(req, &deny_lower)),
-                comp.id
+                labels.component(comp)
             );
             violation = true;
         }
@@ -587,7 +599,7 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
             eprintln!(
                 "error: license {} is not allowed (component {})",
                 offending_requirements(licensing, |req| !requirement_listed(req, &allow_lower)),
-                comp.id
+                labels.component(comp)
             );
             violation = true;
         }
@@ -605,8 +617,9 @@ fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
         return false;
     }
 
+    let labels = Labels::for_sbom(sbom);
     for cycle in &cycles {
-        let names: Vec<_> = cycle.iter().map(|id| id.to_string()).collect();
+        let names: Vec<_> = cycle.iter().map(|id| labels.id(id)).collect();
         eprintln!(
             "error: dependency cycle detected: {} (--fail-on cyclic-dependency)",
             names.join(" -> ")
@@ -617,7 +630,7 @@ fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
 
 /// builds the `copyleft-added` violation for a changed component, if the new
 /// licensing imposes a copyleft obligation the old one did not.
-fn copyleft_violation(change: &ComponentChange, active: bool) -> Option<Violation> {
+fn copyleft_violation(change: &ComponentChange, name: &str, active: bool) -> Option<Violation> {
     if !active {
         return None;
     }
@@ -626,7 +639,7 @@ fn copyleft_violation(change: &ComponentChange, active: bool) -> Option<Violatio
         return None;
     }
     Some(Violation::CopyleftAdded {
-        id: change.id.clone(),
+        name: name.to_owned(),
         licenses: introduced.into_iter().collect(),
     })
 }
@@ -642,6 +655,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
         return Vec::new();
     }
 
+    let labels = Labels::new(diff);
     let mut violations = Vec::new();
 
     let check_added = active.contains(&FailOn::AddedComponents);
@@ -653,19 +667,20 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     let check_ecosystem_changed = active.contains(&FailOn::EcosystemChanged);
 
     for comp in &diff.added {
+        let name = labels.component(comp);
         if check_added {
             violations.push(Violation::AddedComponent {
-                id: comp.id.clone(),
+                name: name.to_owned(),
             });
         }
         if check_missing_hashes && comp.hashes.is_empty() {
             violations.push(Violation::MissingHashesAdded {
-                id: comp.id.clone(),
+                name: name.to_owned(),
             });
         }
         if check_license_changed && !comp.licenses.is_empty() {
             violations.push(Violation::LicenseIntroduced {
-                id: comp.id.clone(),
+                name: name.to_owned(),
                 licenses: comp.licenses.iter().cloned().collect(),
             });
         }
@@ -675,14 +690,14 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                 copyleft_obligations_added(Licensing::from_ids(&none), comp.licensing());
             if !introduced.is_empty() {
                 violations.push(Violation::CopyleftAdded {
-                    id: comp.id.clone(),
+                    name: name.to_owned(),
                     licenses: introduced.into_iter().collect(),
                 });
             }
         }
         if check_supplier_changed && comp.supplier.is_some() {
             violations.push(Violation::SupplierIntroduced {
-                id: comp.id.clone(),
+                name: name.to_owned(),
                 supplier: comp.supplier.clone().unwrap(),
             });
         }
@@ -691,7 +706,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
     if active.contains(&FailOn::RemovedComponents) {
         for comp in &diff.removed {
             violations.push(Violation::RemovedComponent {
-                id: comp.id.clone(),
+                name: labels.component(comp).to_owned(),
             });
         }
     }
@@ -711,14 +726,15 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
         || check_checksum_changed;
 
     for change in &diff.changed {
+        let name = labels.component(&change.new);
         if check_changed {
             violations.push(Violation::ChangedComponent {
-                id: change.id.clone(),
+                name: name.to_owned(),
             });
         }
         if check_missing_hashes && !change.old.hashes.is_empty() && change.new.hashes.is_empty() {
             violations.push(Violation::MissingHashesDropped {
-                id: change.id.clone(),
+                name: name.to_owned(),
             });
         }
         if any_field_check {
@@ -729,24 +745,24 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                     {
                         if check_license_changed {
                             violations.push(Violation::LicenseChanged {
-                                id: change.id.clone(),
+                                name: name.to_owned(),
                                 old: old.clone(),
                                 new: new.clone(),
                             });
                         }
-                        violations.extend(copyleft_violation(change, check_copyleft_added));
+                        violations.extend(copyleft_violation(change, name, check_copyleft_added));
                     }
                     FieldChange::LicenseExpression(old, new)
                         if check_license_changed || check_copyleft_added =>
                     {
                         if check_license_changed {
                             violations.push(Violation::LicenseExpressionChanged {
-                                id: change.id.clone(),
+                                name: name.to_owned(),
                                 old: old.clone(),
                                 new: new.clone(),
                             });
                         }
-                        violations.extend(copyleft_violation(change, check_copyleft_added));
+                        violations.extend(copyleft_violation(change, name, check_copyleft_added));
                     }
                     FieldChange::Version(Some(old_ver), Some(new_ver))
                         if check_version_downgrade
@@ -757,14 +773,14 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                             ) =>
                     {
                         violations.push(Violation::VersionDowngrade {
-                            id: change.id.clone(),
+                            name: name.to_owned(),
                             old: old_ver.clone(),
                             new: new_ver.clone(),
                         });
                     }
                     FieldChange::Supplier(old_sup, new_sup) if check_supplier_changed => {
                         violations.push(Violation::SupplierChanged {
-                            id: change.id.clone(),
+                            name: name.to_owned(),
                             old: old_sup.clone(),
                             new: new_sup.clone(),
                         });
@@ -777,14 +793,14 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                             ) =>
                     {
                         violations.push(Violation::PurlChanged {
-                            id: change.id.clone(),
+                            name: name.to_owned(),
                             old: old_purl.clone(),
                             new: new_purl.clone(),
                         });
                     }
                     FieldChange::Ecosystem(old_eco, new_eco) if check_ecosystem_changed => {
                         violations.push(Violation::EcosystemChanged {
-                            id: change.id.clone(),
+                            name: name.to_owned(),
                             old: old_eco.clone(),
                             new: new_eco.clone(),
                         });
@@ -796,7 +812,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                             && is_hash_algorithm_downgrade(old_hashes, new_hashes)
                         {
                             violations.push(Violation::HashAlgorithmDowngrade {
-                                id: change.id.clone(),
+                                name: name.to_owned(),
                                 old_algos: old_hashes.keys().cloned().collect(),
                                 new_algos: new_hashes.keys().cloned().collect(),
                             });
@@ -804,7 +820,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
                         if check_checksum_changed && change.old.version == change.new.version {
                             for (algorithm, old, new) in changed_checksums(old_hashes, new_hashes) {
                                 violations.push(Violation::ChecksumChanged {
-                                    id: change.id.clone(),
+                                    name: name.to_owned(),
                                     algorithm,
                                     old,
                                     new,
@@ -822,20 +838,20 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
         for edge in &diff.edge_diffs {
             for child in edge.added.keys() {
                 violations.push(Violation::DepsAdded {
-                    parent: edge.parent.clone(),
-                    child: child.clone(),
+                    parent: labels.id(&edge.parent).to_owned(),
+                    child: labels.id(child).to_owned(),
                 });
             }
             for child in edge.removed.keys() {
                 violations.push(Violation::DepsRemoved {
-                    parent: edge.parent.clone(),
-                    child: child.clone(),
+                    parent: labels.id(&edge.parent).to_owned(),
+                    child: labels.id(child).to_owned(),
                 });
             }
             for (child, (old_kind, new_kind)) in &edge.kind_changed {
                 violations.push(Violation::DepsKindChanged {
-                    parent: edge.parent.clone(),
-                    child: child.clone(),
+                    parent: labels.id(&edge.parent).to_owned(),
+                    child: labels.id(child).to_owned(),
                     old_kind: *old_kind,
                     new_kind: *new_kind,
                 });
@@ -965,7 +981,7 @@ fn only_masked_gate_warnings(only: &[Field], fail_on: &[FailOn]) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sbom_model::Component;
+    use sbom_model::{Component, ComponentId};
 
     #[test]
     fn gate_field_dependencies_maps_every_variant() {
@@ -1993,8 +2009,8 @@ mod tests {
         assert_eq!(vs.len(), 1);
         assert!(matches!(
             &vs[0],
-            Violation::CopyleftAdded { id, licenses }
-                if id == &copyleft.id && licenses == &["AGPL-3.0-only".to_string()]
+            Violation::CopyleftAdded { name, licenses }
+                if name == "copyleft-pkg@1.0" && licenses == &["AGPL-3.0-only".to_string()]
         ));
     }
 

@@ -1,0 +1,44 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": { "type": "application", "name": "app", "bom-ref": "app" }
+  },
+  "components": [
+    {
+      "type": "operating-system",
+      "name": "alpine",
+      "version": "3.24.3",
+      "bom-ref": "os"
+    },
+    {
+      "type": "library",
+      "name": "musl",
+      "version": "1.2.6",
+      "bom-ref": "musl",
+      "licenses": [{ "license": { "id": "MIT" } }]
+    },
+    {
+      "type": "library",
+      "name": "busybox",
+      "version": "1.37.0",
+      "bom-ref": "busybox-acme",
+      "supplier": { "name": "acme" },
+      "licenses": [{ "license": { "id": "GPL-2.0-only" } }]
+    },
+    {
+      "type": "library",
+      "name": "busybox",
+      "version": "1.37.0",
+      "bom-ref": "busybox-vendor",
+      "supplier": { "name": "vendor" },
+      "licenses": [{ "license": { "id": "GPL-2.0-only" } }]
+    }
+  ],
+  "dependencies": [
+    { "ref": "app", "dependsOn": ["os"] },
+    { "ref": "os", "dependsOn": ["musl"] },
+    { "ref": "musl", "dependsOn": ["os"] }
+  ]
+}

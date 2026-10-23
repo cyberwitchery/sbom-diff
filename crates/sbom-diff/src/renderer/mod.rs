@@ -21,7 +21,7 @@ pub use sarif::SarifRenderer;
 pub use text::TextRenderer;
 
 use crate::{component_label, ComponentChange, Diff, EcosystemCounts, EdgeDiff, FieldChange};
-use sbom_model::{is_hash_algorithm_downgrade, Component, ComponentId, DependencyKind};
+use sbom_model::{is_hash_algorithm_downgrade, Component, ComponentId, DependencyKind, Sbom};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -88,24 +88,38 @@ pub fn format_set(set: &BTreeSet<String>) -> String {
 /// the names one report gives its components, shared by the component and edge sections.
 ///
 /// purl-less components that would share a `name@version` each get a short id suffix.
-pub(super) struct Labels<'a> {
+pub struct Labels<'a> {
     by_id: HashMap<&'a ComponentId, Cow<'a, str>>,
 }
 
 impl<'a> Labels<'a> {
-    pub(super) fn new(diff: &'a Diff) -> Self {
+    /// labels the components the report of `diff` names.
+    pub fn new(diff: &'a Diff) -> Self {
         let purl_less = diff
             .added
             .iter()
             .chain(&diff.removed)
             .chain(diff.changed.iter().map(|c| &c.new))
             .filter(|c| c.purl.is_none());
-        let mut by_id: HashMap<&ComponentId, Cow<str>> = diff
-            .component_names
-            .iter()
-            .map(|(id, name)| (id, Cow::Borrowed(name.as_str())))
-            .chain(purl_less.map(|c| (&c.id, component_label(c))))
-            .collect();
+        Self::disambiguated(
+            diff.component_names
+                .iter()
+                .map(|(id, name)| (id, Cow::Borrowed(name.as_str())))
+                .chain(purl_less.map(|c| (&c.id, component_label(c)))),
+        )
+    }
+
+    /// labels every component of `sbom`, telling apart twins anywhere in it.
+    pub fn for_sbom(sbom: &'a Sbom) -> Self {
+        Self::disambiguated(
+            sbom.components
+                .iter()
+                .map(|(id, c)| (id, component_label(c))),
+        )
+    }
+
+    fn disambiguated(names: impl Iterator<Item = (&'a ComponentId, Cow<'a, str>)>) -> Self {
+        let mut by_id: HashMap<&ComponentId, Cow<str>> = names.collect();
 
         let mut uses: HashMap<String, usize> = HashMap::new();
         for label in by_id.values() {
@@ -121,11 +135,13 @@ impl<'a> Labels<'a> {
         Labels { by_id }
     }
 
-    pub(super) fn component<'s>(&'s self, c: &'s Component) -> &'s str {
+    /// the name of `c`: its purl, else its label.
+    pub fn component<'s>(&'s self, c: &'s Component) -> &'s str {
         c.purl.as_deref().unwrap_or_else(|| self.id(&c.id))
     }
 
-    pub(super) fn id<'s>(&'s self, id: &'s ComponentId) -> &'s str {
+    /// the label of `id`, or the id itself if it has none.
+    pub fn id<'s>(&'s self, id: &'s ComponentId) -> &'s str {
         self.by_id
             .get(id)
             .map_or(id.as_str(), |label| label.as_ref())
