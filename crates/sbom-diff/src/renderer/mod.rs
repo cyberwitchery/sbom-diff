@@ -85,7 +85,7 @@ pub fn format_set(set: &BTreeSet<String>) -> String {
     }
 }
 
-/// the names one report gives its components, shared by the component and edge sections.
+/// the names components go by in a report's sections and in the gate and license errors.
 ///
 /// purl-less components that would share a `name@version` each get a short id suffix.
 pub struct Labels<'a> {
@@ -114,12 +114,14 @@ impl<'a> Labels<'a> {
         Self::disambiguated(
             sbom.components
                 .iter()
+                .filter(|(_, c)| c.purl.is_none())
                 .map(|(id, c)| (id, component_label(c))),
         )
     }
 
     fn disambiguated(names: impl Iterator<Item = (&'a ComponentId, Cow<'a, str>)>) -> Self {
-        let mut by_id: HashMap<&ComponentId, Cow<str>> = names.collect();
+        let mut by_id: HashMap<&ComponentId, Cow<str>> =
+            names.filter(|(_, label)| !label.is_empty()).collect();
 
         let mut uses: HashMap<String, usize> = HashMap::new();
         for label in by_id.values() {

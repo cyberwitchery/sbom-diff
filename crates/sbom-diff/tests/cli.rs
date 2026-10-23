@@ -162,8 +162,12 @@ fn fail_on_multiple_conditions_all_checked() {
 
 #[test]
 fn gate_messages_name_purl_less_components_as_the_report_does() {
-    let cases: [([&str; 2], &[&str]); 7] = [
+    let gates = ["purl-less-gates-old.json", "purl-less-gates-new.json"];
+    let empty_name = ["purl-less-gates-empty-name.json"; 2];
+    let scoped_cycle = ["gates-scoped-purl-cycle.json"; 2];
+    let cases: [([&str; 2], [&str; 2], &[&str]); 9] = [
         (
+            gates,
             ["--fail-on", "added-components"],
             &[
                 "error: added component busybox@1.37.0 (h:18e91983ca49) (--fail-on added-components)",
@@ -172,14 +176,17 @@ fn gate_messages_name_purl_less_components_as_the_report_does() {
             ],
         ),
         (
+            gates,
             ["--fail-on", "removed-components"],
             &["error: removed component zlib@1.3.1 (--fail-on removed-components)"],
         ),
         (
+            gates,
             ["--fail-on", "changed-components"],
             &["error: changed component alpine@3.24.3 (--fail-on changed-components)"],
         ),
         (
+            gates,
             ["--fail-on", "deps"],
             &[
                 "error: added dependency edge alpine@3.24.3 -> musl@1.2.6 (--fail-on deps)",
@@ -188,10 +195,12 @@ fn gate_messages_name_purl_less_components_as_the_report_does() {
             ],
         ),
         (
+            gates,
             ["--fail-on", "cyclic-dependency"],
             &["error: dependency cycle detected: alpine@3.24.3 -> musl@1.2.6 -> alpine@3.24.3 (--fail-on cyclic-dependency)"],
         ),
         (
+            gates,
             ["--allow-license", "MIT"],
             &[
                 "error: component app has no license information (--allow-license requires it)",
@@ -201,18 +210,29 @@ fn gate_messages_name_purl_less_components_as_the_report_does() {
             ],
         ),
         (
+            gates,
             ["--deny-license", "GPL-2.0-only"],
             &[
                 "error: license GPL-2.0-only is denied (component busybox@1.37.0 (h:362aab88d0f5))",
                 "error: license GPL-2.0-only is denied (component busybox@1.37.0 (h:18e91983ca49))",
             ],
         ),
+        (
+            empty_name,
+            ["--allow-license", "MIT"],
+            &["error: component h:446cb7cf9a59575e4638df39ac540b19eb35c1cac0be080ce4bad643db1b01e2 has no license information (--allow-license requires it)"],
+        ),
+        (
+            scoped_cycle,
+            ["--fail-on", "cyclic-dependency"],
+            &["error: dependency cycle detected: pkg:npm/%40scope/a@1.0.0 -> pkg:npm/%40scope/b@1.0.0 -> pkg:npm/%40scope/a@1.0.0 (--fail-on cyclic-dependency)"],
+        ),
     ];
 
-    for (gate, expected) in cases {
+    for ([old, new], gate, expected) in cases {
         let out = sbom_diff()
-            .arg(fixture("purl-less-gates-old.json"))
-            .arg(fixture("purl-less-gates-new.json"))
+            .arg(fixture(old))
+            .arg(fixture(new))
             .args(gate)
             .arg("--quiet")
             .output()
