@@ -1,6 +1,6 @@
 use super::{
-    kind_suffix, write_full, write_summary, FieldChangeFormatter, FullFormatter, RenderOptions,
-    Renderer, SectionKind, SummaryFormatter, SummaryRenderer,
+    kind_suffix, write_full, write_summary, FieldChangeFormatter, FullFormatter, Labels,
+    RenderOptions, Renderer, SectionKind, SummaryFormatter, SummaryRenderer,
 };
 use crate::{Diff, EcosystemCounts, EdgeDiff};
 use sbom_model::Component;
@@ -141,13 +141,14 @@ impl FullFormatter for MarkdownRenderer {
         writeln!(w)
     }
 
-    fn component_list<W: Write>(&self, w: &mut W, components: &[Component]) -> std::io::Result<()> {
+    fn component_list<W: Write>(
+        &self,
+        w: &mut W,
+        labels: &Labels,
+        components: &[Component],
+    ) -> std::io::Result<()> {
         for c in components {
-            writeln!(
-                w,
-                "- {}",
-                code_span(c.purl.as_deref().unwrap_or(c.id.as_str()))
-            )?;
+            writeln!(w, "- {}", code_span(labels.component(c)))?;
         }
         Ok(())
     }
@@ -161,15 +162,20 @@ impl FullFormatter for MarkdownRenderer {
         writeln!(w)
     }
 
-    fn edge_entry<W: Write>(&self, w: &mut W, diff: &Diff, edge: &EdgeDiff) -> std::io::Result<()> {
-        writeln!(w, "#### {}", code_span(diff.display_name(&edge.parent)))?;
+    fn edge_entry<W: Write>(
+        &self,
+        w: &mut W,
+        labels: &Labels,
+        edge: &EdgeDiff,
+    ) -> std::io::Result<()> {
+        writeln!(w, "#### {}", code_span(labels.id(&edge.parent)))?;
         if !edge.removed.is_empty() {
             writeln!(w, "**Removed dependencies:**")?;
             for (removed, kind) in &edge.removed {
                 writeln!(
                     w,
                     "- {}{}",
-                    code_span(diff.display_name(removed)),
+                    code_span(labels.id(removed)),
                     kind_suffix(kind)
                 )?;
             }
@@ -177,12 +183,7 @@ impl FullFormatter for MarkdownRenderer {
         if !edge.added.is_empty() {
             writeln!(w, "**Added dependencies:**")?;
             for (added, kind) in &edge.added {
-                writeln!(
-                    w,
-                    "- {}{}",
-                    code_span(diff.display_name(added)),
-                    kind_suffix(kind)
-                )?;
+                writeln!(w, "- {}{}", code_span(labels.id(added)), kind_suffix(kind))?;
             }
         }
         if !edge.kind_changed.is_empty() {
@@ -191,7 +192,7 @@ impl FullFormatter for MarkdownRenderer {
                 writeln!(
                     w,
                     "- {}: {} &rarr; {}",
-                    code_span(diff.display_name(changed)),
+                    code_span(labels.id(changed)),
                     old_kind,
                     new_kind
                 )?;

@@ -1,6 +1,6 @@
 use super::{
-    kind_suffix, write_full, write_summary, FieldChangeFormatter, FullFormatter, RenderOptions,
-    Renderer, SectionKind, SummaryFormatter, SummaryRenderer,
+    kind_suffix, write_full, write_summary, FieldChangeFormatter, FullFormatter, Labels,
+    RenderOptions, Renderer, SectionKind, SummaryFormatter, SummaryRenderer,
 };
 use crate::{Diff, EcosystemCounts, EdgeDiff};
 use sbom_model::Component;
@@ -120,9 +120,14 @@ impl FullFormatter for TextRenderer {
         writeln!(w)
     }
 
-    fn component_list<W: Write>(&self, w: &mut W, components: &[Component]) -> std::io::Result<()> {
+    fn component_list<W: Write>(
+        &self,
+        w: &mut W,
+        labels: &Labels,
+        components: &[Component],
+    ) -> std::io::Result<()> {
         for c in components {
-            writeln!(w, "{}", c.purl.as_deref().unwrap_or(c.id.as_str()))?;
+            writeln!(w, "{}", labels.component(c))?;
         }
         Ok(())
     }
@@ -132,19 +137,24 @@ impl FullFormatter for TextRenderer {
         writeln!(w, "----------------")
     }
 
-    fn edge_entry<W: Write>(&self, w: &mut W, diff: &Diff, edge: &EdgeDiff) -> std::io::Result<()> {
-        writeln!(w, "{}", diff.display_name(&edge.parent))?;
+    fn edge_entry<W: Write>(
+        &self,
+        w: &mut W,
+        labels: &Labels,
+        edge: &EdgeDiff,
+    ) -> std::io::Result<()> {
+        writeln!(w, "{}", labels.id(&edge.parent))?;
         for (removed, kind) in &edge.removed {
-            writeln!(w, "  - {}{}", diff.display_name(removed), kind_suffix(kind))?;
+            writeln!(w, "  - {}{}", labels.id(removed), kind_suffix(kind))?;
         }
         for (added, kind) in &edge.added {
-            writeln!(w, "  + {}{}", diff.display_name(added), kind_suffix(kind))?;
+            writeln!(w, "  + {}{}", labels.id(added), kind_suffix(kind))?;
         }
         for (changed, (old_kind, new_kind)) in &edge.kind_changed {
             writeln!(
                 w,
                 "  ~ {} ({} -> {})",
-                diff.display_name(changed),
+                labels.id(changed),
                 old_kind,
                 new_kind
             )?;

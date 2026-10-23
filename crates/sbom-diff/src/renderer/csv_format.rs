@@ -1,5 +1,5 @@
 use super::{
-    format_option, format_set, format_vec_or_none, RenderOptions, Renderer, SummaryRenderer,
+    format_option, format_set, format_vec_or_none, Labels, RenderOptions, Renderer, SummaryRenderer,
 };
 use crate::{Diff, FieldChange};
 use sbom_model::is_hash_algorithm_downgrade;
@@ -55,22 +55,23 @@ impl Renderer for CsvRenderer {
             write_warning_rows(&mut wtr, opts)?;
         }
 
+        let labels = Labels::new(diff);
         for comp in &diff.added {
-            let display = comp.purl.as_deref().unwrap_or(comp.id.as_str());
+            let display = labels.component(comp);
             let eco = comp.ecosystem.as_deref().unwrap_or("");
             let ver = comp.version.as_deref().unwrap_or("");
             wtr.write_record(["added", display, eco, "version", "", ver])?;
         }
 
         for comp in &diff.removed {
-            let display = comp.purl.as_deref().unwrap_or(comp.id.as_str());
+            let display = labels.component(comp);
             let eco = comp.ecosystem.as_deref().unwrap_or("");
             let ver = comp.version.as_deref().unwrap_or("");
             wtr.write_record(["removed", display, eco, "version", ver, ""])?;
         }
 
         for change in &diff.changed {
-            let display = change.new.purl.as_deref().unwrap_or(change.id.as_str());
+            let display = labels.component(&change.new);
             let eco = change.new.ecosystem.as_deref().unwrap_or("");
             for fc in &change.changes {
                 let (field, old, new) = csv_field_change(fc, change.is_downgrade);
@@ -79,13 +80,13 @@ impl Renderer for CsvRenderer {
         }
 
         for edge in &diff.edge_diffs {
-            let parent = diff.display_name(&edge.parent);
+            let parent = labels.id(&edge.parent);
             for (child, kind) in &edge.added {
-                let child_name = diff.display_name(child);
+                let child_name = labels.id(child);
                 wtr.write_record(["edge-added", parent, "", child_name, "", &kind.to_string()])?;
             }
             for (child, kind) in &edge.removed {
-                let child_name = diff.display_name(child);
+                let child_name = labels.id(child);
                 wtr.write_record([
                     "edge-removed",
                     parent,
@@ -96,7 +97,7 @@ impl Renderer for CsvRenderer {
                 ])?;
             }
             for (child, (old_kind, new_kind)) in &edge.kind_changed {
-                let child_name = diff.display_name(child);
+                let child_name = labels.id(child);
                 wtr.write_record([
                     "edge-kind-changed",
                     parent,

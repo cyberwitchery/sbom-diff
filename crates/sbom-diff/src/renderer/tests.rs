@@ -490,6 +490,92 @@ fn test_markdown_renderer_shows_totals() {
     assert!(out.contains("| Unchanged | 5 |"));
 }
 
+fn mock_diff_purl_less() -> Diff {
+    use sbom_model::{ComponentId, DependencyKind};
+
+    let old = Component::new("alpine".into(), Some("3.23.4".into()));
+    let new = Component::new("alpine".into(), Some("3.24.3".into()));
+    let musl = Component::new("musl".into(), Some("1.2.6".into()));
+    let zlib = Component::new("zlib".into(), Some("1.3.1".into()));
+    let twin = Component::new("busybox".into(), Some("1.37.0".into()));
+    let mut vendored = twin.clone();
+    vendored.supplier = Some("vendor".into());
+    vendored.id = ComponentId::new(None, &[("name", "busybox"), ("supplier", "vendor")]);
+
+    let mut names = BTreeMap::new();
+    names.insert(new.id.clone(), "alpine@3.24.3".to_string());
+    names.insert(musl.id.clone(), "musl@1.2.6".to_string());
+    names.insert(zlib.id.clone(), "zlib@1.3.1".to_string());
+    names.insert(twin.id.clone(), "busybox@1.37.0".to_string());
+
+    Diff {
+        added: vec![musl.clone(), twin.clone(), vendored],
+        removed: vec![zlib.clone()],
+        changed: vec![ComponentChange {
+            id: new.id.clone(),
+            old,
+            new: new.clone(),
+            changes: vec![FieldChange::Version(
+                Some("3.23.4".into()),
+                Some("3.24.3".into()),
+            )],
+            is_downgrade: false,
+        }],
+        edge_diffs: vec![crate::EdgeDiff {
+            parent: new.id,
+            added: BTreeMap::from([
+                (musl.id, DependencyKind::Runtime),
+                (twin.id, DependencyKind::Runtime),
+            ]),
+            removed: BTreeMap::from([(zlib.id, DependencyKind::Runtime)]),
+            kind_changed: BTreeMap::new(),
+        }],
+        component_names: names,
+        ..Diff::default()
+    }
+}
+
+fn render_default(renderer: impl Renderer, diff: &Diff) -> String {
+    let mut buf = Vec::new();
+    renderer
+        .render(diff, &RenderOptions::default(), &mut buf)
+        .unwrap();
+    String::from_utf8(buf).unwrap()
+}
+
+#[test]
+fn test_renderers_label_purl_less_components() {
+    let diff = mock_diff_purl_less();
+    let twins: Vec<String> = diff.added[1..]
+        .iter()
+        .map(|c| format!("busybox@1.37.0 ({})", &c.id.as_str()[..14]))
+        .collect();
+    let outputs = [
+        ("text", render_default(TextRenderer, &diff)),
+        ("markdown", render_default(MarkdownRenderer, &diff)),
+        ("csv", render_default(CsvRenderer, &diff)),
+        ("sarif", render_default(SarifRenderer, &diff)),
+    ];
+
+    for (format, out) in outputs {
+        for label in [
+            "alpine@3.24.3",
+            "musl@1.2.6",
+            "zlib@1.3.1",
+            &twins[0],
+            &twins[1],
+        ] {
+            assert!(out.contains(label), "{format}: no {label}\n{out}");
+        }
+        let rest = out.replace(&twins[0], "").replace(&twins[1], "");
+        assert!(!rest.contains("h:"), "{format}: raw id\n{out}");
+        assert!(
+            !rest.contains("busybox@"),
+            "{format}: ambiguous twin\n{out}"
+        );
+    }
+}
+
 #[test]
 fn test_json_renderer_includes_totals() {
     let diff = mock_diff_with_hash_edge_diffs();
@@ -1412,23 +1498,9 @@ fn test_csv_renderer_added_removed_changed() {
     assert_eq!(
         csv_parse(out.as_bytes())[1..],
         [
-            csv_row(&["added", diff.added[0].id.as_str(), "", "version", "", "2.0"]),
-            csv_row(&[
-                "removed",
-                diff.removed[0].id.as_str(),
-                "",
-                "version",
-                "3.0",
-                ""
-            ]),
-            csv_row(&[
-                "changed",
-                diff.changed[0].id.as_str(),
-                "",
-                "version",
-                "1.0",
-                "1.1"
-            ]),
+            csv_row(&["added", "pkg-b@2.0", "", "version", "", "2.0"]),
+            csv_row(&["removed", "pkg-c@3.0", "", "version", "3.0", ""]),
+            csv_row(&["changed", "pkg-a@1.1", "", "version", "1.0", "1.1"]),
         ]
     );
 }
@@ -1627,33 +1699,12 @@ fn test_csv_renderer_group_by_ecosystem() {
     assert_eq!(
         rows[1..],
         [
-            csv_row(&[
-                "added",
-                diff.added[0].id.as_str(),
-                "npm",
-                "version",
-                "",
-                "4.18.0"
-            ]),
-            csv_row(&[
-                "added",
-                diff.added[1].id.as_str(),
-                "cargo",
-                "version",
-                "",
-                "1.0.0"
-            ]),
-            csv_row(&[
-                "removed",
-                diff.removed[0].id.as_str(),
-                "npm",
-                "version",
-                "4.17.21",
-                ""
-            ]),
+            csv_row(&["added", "express@4.18.0", "npm", "version", "", "4.18.0"]),
+            csv_row(&["added", "serde@1.0.0", "cargo", "version", "", "1.0.0"]),
+            csv_row(&["removed", "lodash@4.17.21", "npm", "version", "4.17.21", ""]),
             csv_row(&[
                 "changed",
-                diff.changed[0].id.as_str(),
+                "react@18.0.0",
                 "npm",
                 "version",
                 "17.0.0",
@@ -1769,7 +1820,7 @@ fn test_csv_renderer_downgrade() {
         rows[1..],
         [csv_row(&[
             "changed",
-            diff.changed[0].id.as_str(),
+            "pkg-a@1.0.0",
             "",
             "version-downgrade",
             "2.0.0",
