@@ -110,6 +110,27 @@ fn undeclared_element(
     }
 }
 
+/// the name in an `Organization: name (email)` or `Person: name (email)` supplier;
+/// `None` for `NOASSERTION`, `NONE` or an empty name.
+fn supplier_name(supplier: &str) -> Option<String> {
+    if matches!(supplier, "NOASSERTION" | "NONE") {
+        return None;
+    }
+    let name = supplier
+        .strip_prefix("Organization:")
+        .or_else(|| supplier.strip_prefix("Person:"))
+        .unwrap_or(supplier)
+        .trim();
+    let parenthesized = name
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once('('));
+    let name = match parenthesized {
+        Some((name, email)) if email.is_empty() || email.contains('@') => name.trim_end(),
+        _ => name,
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// yields each line of a tag-value document paired with whether the line
 /// begins outside a `<text>` ... `</text>` block, i.e. whether it can carry
 /// a tag.
@@ -845,17 +866,7 @@ impl SpdxReader {
                 props.push(("version", v.as_str()));
             }
 
-            // NOASSERTION/NONE are "unknown supplier" sentinels, not supplier names.
-            let supplier = pkg
-                .package_supplier
-                .clone()
-                .filter(|s| s != "NOASSERTION" && s != "NONE")
-                .map(|s| {
-                    s.strip_prefix("Organization: ")
-                        .or_else(|| s.strip_prefix("Person: "))
-                        .map(|stripped| stripped.to_string())
-                        .unwrap_or(s)
-                });
+            let supplier = pkg.package_supplier.as_deref().and_then(supplier_name);
             if let Some(ref s) = supplier {
                 props.push(("supplier", s.as_str()));
             }
@@ -1208,7 +1219,38 @@ mod tests {
 
     #[test]
     fn test_noassertion_supplier_filtered() {
-        let json = r#"{
+        let cases = [
+            ("NOASSERTION", None),
+            ("NONE", None),
+            ("Organization: Acme Corp", Some("Acme Corp")),
+            ("Person: alice", Some("alice")),
+            ("Organization: ", None),
+            ("", None),
+            (
+                "Organization: Acme Corp (ops@acme.example)",
+                Some("Acme Corp"),
+            ),
+            ("Person: Jane Doe (jane@example.com)", Some("Jane Doe")),
+            ("Person: Jane Doe ()", Some("Jane Doe")),
+            ("Organization: Acme (Europe)", Some("Acme (Europe)")),
+            (
+                "Organization: Acme (Europe) (ops@acme.example)",
+                Some("Acme (Europe)"),
+            ),
+        ];
+        let packages: Vec<_> = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (supplier, _))| {
+                serde_json::json!({
+                    "name": format!("pkg-{i}"),
+                    "SPDXID": format!("SPDXRef-{i}"),
+                    "downloadLocation": "NONE",
+                    "supplier": supplier,
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({
             "spdxVersion": "SPDX-2.3",
             "dataLicense": "CC0-1.0",
             "SPDXID": "SPDXRef-DOCUMENT",
@@ -1218,50 +1260,16 @@ mod tests {
                 "creators": ["Tool: manual"],
                 "created": "2023-01-01T00:00:00Z"
             },
-            "packages": [
-                {
-                    "name": "noassertion-pkg",
-                    "SPDXID": "SPDXRef-noassertion",
-                    "downloadLocation": "NONE",
-                    "supplier": "NOASSERTION"
-                },
-                {
-                    "name": "none-pkg",
-                    "SPDXID": "SPDXRef-none",
-                    "downloadLocation": "NONE",
-                    "supplier": "NONE"
-                },
-                {
-                    "name": "org-pkg",
-                    "SPDXID": "SPDXRef-org",
-                    "downloadLocation": "NONE",
-                    "supplier": "Organization: Acme Corp"
-                },
-                {
-                    "name": "person-pkg",
-                    "SPDXID": "SPDXRef-person",
-                    "downloadLocation": "NONE",
-                    "supplier": "Person: alice"
-                }
-            ],
+            "packages": packages,
             "relationships": []
-        }"#;
-        let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+        });
+        let sbom = SpdxReader::read_json(doc.to_string().as_bytes()).unwrap();
 
-        let find = |name: &str| sbom.components.values().find(|c| c.name == name).unwrap();
-
-        assert_eq!(find("noassertion-pkg").supplier, None);
-        assert_eq!(find("none-pkg").supplier, None);
-        assert_eq!(
-            find("org-pkg").supplier,
-            Some("Acme Corp".to_string()),
-            "a real Organization supplier must still parse"
-        );
-        assert_eq!(
-            find("person-pkg").supplier,
-            Some("alice".to_string()),
-            "a real Person supplier must still parse"
-        );
+        for (i, (supplier, expected)) in cases.iter().enumerate() {
+            let name = format!("pkg-{i}");
+            let comp = sbom.components.values().find(|c| c.name == name).unwrap();
+            assert_eq!(comp.supplier.as_deref(), *expected, "supplier {supplier:?}");
+        }
     }
 
     #[test]
@@ -2468,7 +2476,12 @@ PackageChecksum: SHA1: da39a3ee5e6b4b0d3255bfef95601890afd80709
 
     #[test]
     fn test_read_tag_value_with_supplier() {
-        let tv = "\
+        for (supplier, expected) in [
+            ("Organization: Acme Corp", Some("Acme Corp")),
+            ("Organization:", None),
+        ] {
+            let tv = format!(
+                "\
 SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
 SPDXID: SPDXRef-DOCUMENT
@@ -2481,12 +2494,18 @@ PackageName: pkg-a
 SPDXID: SPDXRef-pkg-a
 PackageVersion: 1.0.0
 PackageDownloadLocation: NOASSERTION
-PackageSupplier: Organization: Acme Corp
+PackageSupplier: {supplier}
 PackageLicenseConcluded: NOASSERTION
 PackageCopyrightText: NOASSERTION
-";
-        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
-        assert_eq!(sbom.components[0].supplier, Some("Acme Corp".to_string()));
+"
+            );
+            let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+            assert_eq!(
+                sbom.components[0].supplier.as_deref(),
+                expected,
+                "{supplier:?}"
+            );
+        }
     }
 
     #[test]

@@ -37,6 +37,7 @@ both adapters produce:
 - supplier:
   - source: `component.supplier.name`
   - target: `Component.supplier`
+  - surrounding whitespace is trimmed, and an empty name is ignored
 - dependency relationships:
   - source: top-level `dependencies` entries (`ref` + `dependsOn`)
   - mapping path:
@@ -84,8 +85,8 @@ both adapters produce:
 - supplier:
   - source: `package.supplier`
   - target: `Component.supplier`
-  - the `Organization: ` / `Person: ` prefix is stripped
-  - `NOASSERTION` and `NONE` are ignored
+  - the `Organization: ` / `Person: ` prefix is stripped, and so is a trailing `(email)`: a parenthesized group that is empty or contains `@`
+  - `NOASSERTION`, `NONE` and an empty name are ignored
 - dependency relationships:
   - source: top-level `relationships`
   - these relationship types become dependency edges; every other type is ignored:

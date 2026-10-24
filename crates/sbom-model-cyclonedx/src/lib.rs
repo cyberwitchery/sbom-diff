@@ -513,7 +513,7 @@ impl CycloneDxReader {
             let supplier = cdx_comp
                 .supplier
                 .as_ref()
-                .and_then(|s| s.name.as_ref().map(|n| n.to_string()))
+                .and_then(|s| s.name.as_ref().map(|n| n.trim().to_string()))
                 .filter(|s| !s.is_empty());
             let s_str = supplier.clone().unwrap_or_default();
             if supplier.is_some() {
@@ -790,21 +790,23 @@ mod tests {
 
     #[test]
     fn test_supplier_with_empty_name_is_none() {
-        let json = r#"{
-            "bomFormat": "CycloneDX",
-            "specVersion": "1.4",
-            "version": 1,
-            "components": [
-                {
-                    "type": "library",
-                    "name": "pkg-a",
-                    "version": "1.0.0",
-                    "supplier": {"name": ""}
-                }
-            ]
-        }"#;
-        let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
-        assert_eq!(sbom.components[0].supplier, None);
+        for (name, expected) in [("", None), (" ", None), (" Acme Corp ", Some("Acme Corp"))] {
+            let json = serde_json::json!({
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.4",
+                "version": 1,
+                "components": [
+                    {
+                        "type": "library",
+                        "name": "pkg-a",
+                        "version": "1.0.0",
+                        "supplier": {"name": name}
+                    }
+                ]
+            });
+            let sbom = CycloneDxReader::read_json(json.to_string().as_bytes()).unwrap();
+            assert_eq!(sbom.components[0].supplier.as_deref(), expected, "{name:?}");
+        }
     }
 
     #[test]
