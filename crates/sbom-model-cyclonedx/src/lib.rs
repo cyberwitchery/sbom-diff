@@ -1,5 +1,6 @@
 #![doc = include_str!("../readme.md")]
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use sbom_model::{
     canonical_algorithm_name, canonical_license_case, parse_license_expression, Component,
     ComponentId, DependencyKind, Sbom,
@@ -359,7 +360,14 @@ impl CycloneDxReader {
 
         if let Some(meta) = bom.metadata {
             if let Some(timestamp) = meta.timestamp {
-                sbom.metadata.timestamp = Some(timestamp.to_string());
+                sbom.metadata.timestamp = Some(
+                    DateTime::parse_from_rfc3339(timestamp.as_ref())
+                        .map(|t| {
+                            t.with_timezone(&Utc)
+                                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+                        })
+                        .unwrap_or_else(|_| timestamp.to_string()),
+                );
             }
             if let Some(tools) = meta.tools {
                 match tools {
@@ -645,6 +653,32 @@ mod tests {
         }"#;
         let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
         assert_eq!(sbom.metadata.tools, vec!["cargo-cyclonedx 0.5.0", "syft"]);
+    }
+
+    #[test]
+    fn test_timestamp_read_as_rfc3339_utc() {
+        for (written, timestamp) in [
+            ("2026-10-23T13:40:35+00:00", "2026-10-23T13:40:35Z"),
+            ("2026-10-23T15:40:35+02:00", "2026-10-23T13:40:35Z"),
+            ("2026-10-23T13:40:35.5Z", "2026-10-23T13:40:35.500Z"),
+            ("yesterday", "yesterday"),
+        ] {
+            let json = format!(
+                r#"{{
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "version": 1,
+                "metadata": {{"timestamp": "{written}"}},
+                "components": []
+            }}"#
+            );
+            let sbom = CycloneDxReader::read_json(json.as_bytes()).unwrap();
+            assert_eq!(
+                sbom.metadata.timestamp.as_deref(),
+                Some(timestamp),
+                "{written}"
+            );
+        }
     }
 
     #[test]
