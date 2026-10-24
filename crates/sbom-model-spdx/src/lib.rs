@@ -545,6 +545,30 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     (kept, dropped)
 }
 
+/// inserts an empty `PackageName:` above each `SPDXID:` whose document,
+/// package or file section already has one, so spdx-rs 0.5 reads a package
+/// section without a name as a package of its own.
+fn name_nameless_packages(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut has_id = false;
+    for (line, tagged) in scanned_lines(input) {
+        if tagged {
+            let head = line.trim_start();
+            if head.starts_with("PackageName:") || head.starts_with("FileName:") {
+                has_id = false;
+            } else if head.starts_with("SPDXID:") {
+                if has_id {
+                    out.push_str("PackageName: <text></text>\n");
+                }
+                has_id = true;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// joins diagnostics, keeping a warning bounded on a badly broken document.
 fn joined(reasons: &[String]) -> String {
     const SHOWN: usize = 5;
@@ -727,6 +751,8 @@ impl SpdxReader {
 
         // spdx-rs 0.5 panics on an unknown tag and discards everything below a line it cannot read.
         let (input, unreadable) = filter_unreadable_lines(input);
+        // spdx-rs 0.5 folds a package section with no PackageName into the section above it.
+        let input = name_nameless_packages(&input);
         let input = input.as_str();
 
         // spdx-rs 0.5 has two further tag-value parsing quirks we work around:
@@ -773,6 +799,11 @@ impl SpdxReader {
 
         let raw_packages: Vec<&str> = tag_lines(input)
             .filter_map(|line| line.strip_prefix("PackageName:").map(str::trim))
+            .map(|name| {
+                name.strip_prefix("<text>")
+                    .and_then(|name| name.strip_suffix("</text>"))
+                    .unwrap_or(name)
+            })
             .collect();
         let read = spdx_doc.package_information.len();
         if read < raw_packages.len() {
@@ -2993,8 +3024,9 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_text_block_interior_is_never_a_tag_line() {
-        let tv =
-            tag_value_around("PackageComment: <text>this line has no colon\nnor does this</text>");
+        let tv = tag_value_around(
+            "PackageComment: <text>this line has no colon\nSPDXID: SPDXRef-quoted\nnor does this</text>",
+        );
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
         assert_eq!(component_names(&sbom), vec!["alpha", "omega"]);
         assert!(
@@ -3034,14 +3066,55 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_residual_truncation_is_an_error_not_a_partial_sbom() {
-        let tv = tag_value_around("SnippetByteRange: not-a-range");
-        let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.contains("read only 1 of the document's 2 packages"),
-            "{message}"
-        );
-        assert!(message.contains("'omega'"), "{message}");
+        for (middle, count, lost) in [
+            (
+                "SnippetByteRange: not-a-range",
+                "read only 1 of the document's 2 packages",
+                "'omega'",
+            ),
+            (
+                "SnippetByteRange: not-a-range\n\nSPDXID: SPDXRef-beta",
+                "read only 1 of the document's 3 packages",
+                "'' and",
+            ),
+        ] {
+            let tv = tag_value_around(middle);
+            let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains(count), "{message}");
+            assert!(message.contains(lost), "{message}");
+        }
+    }
+
+    #[test]
+    fn test_tag_value_package_section_without_a_name_is_its_own_package() {
+        let nameless =
+            "SPDXID: SPDXRef-beta\nPackageVersion: 9.9.9\nPackageDownloadLocation: NOASSERTION\n";
+        for tv in [
+            tag_value_around(&format!("\n{nameless}")),
+            tag_value_around("").replacen(
+                "PackageName: alpha",
+                &format!("{nameless}\nPackageName: alpha"),
+                1,
+            ),
+        ] {
+            let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+            let mut read: Vec<_> = sbom
+                .components
+                .values()
+                .map(|c| (c.name.as_str(), c.version.as_deref()))
+                .collect();
+            read.sort();
+            assert_eq!(
+                read,
+                [
+                    ("", Some("9.9.9")),
+                    ("alpha", Some("1.0.0")),
+                    ("omega", Some("2.0.0"))
+                ],
+                "{tv}"
+            );
+        }
     }
 
     #[test]
