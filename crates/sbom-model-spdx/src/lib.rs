@@ -365,6 +365,18 @@ fn elide(text: &str) -> String {
     }
 }
 
+/// the tag of a line and the value after its colon, split as spdx-rs 0.5 splits them.
+fn split_tag(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    let at = line
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(line.len());
+    let (tag, rest) = line.split_at(at);
+    rest.trim_start()
+        .strip_prefix(':')
+        .map(|value| (tag, value))
+}
+
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
 /// block, or `None` if it can. `beside` and `below` describe the `<text>`
 /// blocks spdx-rs would read as this line's value.
@@ -374,15 +386,7 @@ fn unreadable_line(line: &str, beside: Option<bool>, below: Option<bool>) -> Opt
         return None;
     }
 
-    // spdx-rs reads the tag with nom's `alphanumeric0`, then demands a colon.
-    let tag_len = line
-        .find(|c: char| !c.is_ascii_alphanumeric())
-        .unwrap_or(line.len());
-    let (tag, rest) = line.split_at(tag_len);
-    let value = (!tag.is_empty())
-        .then(|| rest.trim_start().strip_prefix(':'))
-        .flatten();
-    let Some(value) = value else {
+    let Some((tag, value)) = split_tag(line).filter(|(tag, _)| !tag.is_empty()) else {
         return Some(format!("'{}' is not a tag-value pair", elide(line)));
     };
     if !READABLE_TAGS.contains(&tag) {
@@ -545,23 +549,43 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     (kept, dropped)
 }
 
-/// inserts an empty `PackageName:` above each `SPDXID:` whose document,
-/// package or file section already has one, so spdx-rs 0.5 reads a package
-/// section without a name as a package of its own.
-fn name_nameless_packages(input: &str) -> String {
+/// a package name that occurs nowhere in `input`.
+fn unused_name(input: &str) -> String {
+    let longest_run = input.split(|c: char| c != '_').map(str::len).max();
+    format!(
+        "__spdx_rs_nameless_package{}",
+        "_".repeat(longest_run.unwrap_or(0) + 1)
+    )
+}
+
+/// names `nameless` each package section with an empty `PackageName:`, or with
+/// none, which a second `SPDXID:` in a document, package or file section marks.
+fn name_nameless_packages(input: &str, nameless: &str) -> String {
+    let named = format!("PackageName: {nameless}");
+    let lines: Vec<(&str, bool)> = scanned_lines(input).collect();
     let mut out = String::with_capacity(input.len());
     let mut has_id = false;
-    for (line, tagged) in scanned_lines(input) {
-        if tagged {
-            let head = line.trim_start();
-            if head.starts_with("PackageName:") || head.starts_with("FileName:") {
+    for (i, &(mut line, tagged)) in lines.iter().enumerate() {
+        match split_tag(line).filter(|_| tagged) {
+            Some(("PackageName", value)) => {
+                let text_below = lines[i + 1..]
+                    .iter()
+                    .find(|(below, _)| !below.trim().is_empty())
+                    .is_some_and(|(below, _)| below.trim_start().starts_with("<text>"));
+                if value.trim().is_empty() && !text_below {
+                    line = named.as_str();
+                }
                 has_id = false;
-            } else if head.starts_with("SPDXID:") {
+            }
+            Some(("FileName", _)) => has_id = false,
+            Some(("SPDXID", _)) => {
                 if has_id {
-                    out.push_str("PackageName: <text></text>\n");
+                    out.push_str(&named);
+                    out.push('\n');
                 }
                 has_id = true;
             }
+            _ => {}
         }
         out.push_str(line);
         out.push('\n');
@@ -751,8 +775,9 @@ impl SpdxReader {
 
         // spdx-rs 0.5 panics on an unknown tag and discards everything below a line it cannot read.
         let (input, unreadable) = filter_unreadable_lines(input);
-        // spdx-rs 0.5 folds a package section with no PackageName into the section above it.
-        let input = name_nameless_packages(&input);
+        // spdx-rs 0.5 misreads a package section whose PackageName is empty or missing.
+        let nameless = unused_name(&input);
+        let input = name_nameless_packages(&input, &nameless);
         let input = input.as_str();
 
         // spdx-rs 0.5 has two further tag-value parsing quirks we work around:
@@ -796,13 +821,17 @@ impl SpdxReader {
         spdx_doc
             .package_information
             .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
+        for package in &mut spdx_doc.package_information {
+            if package.package_name == nameless {
+                package.package_name.clear();
+            }
+        }
 
         let raw_packages: Vec<&str> = tag_lines(input)
-            .filter_map(|line| line.strip_prefix("PackageName:").map(str::trim))
-            .map(|name| {
-                name.strip_prefix("<text>")
-                    .and_then(|name| name.strip_suffix("</text>"))
-                    .unwrap_or(name)
+            .filter_map(|line| match split_tag(line)? {
+                ("PackageName", name) if name.trim() == nameless => Some(""),
+                ("PackageName", name) => Some(name.trim()),
+                _ => None,
             })
             .collect();
         let read = spdx_doc.package_information.len();
@@ -3077,6 +3106,11 @@ PackageDownloadLocation: NOASSERTION
                 "read only 1 of the document's 3 packages",
                 "'' and",
             ),
+            (
+                "PackageName : beta\nSPDXID: SPDXRef-beta\nSnippetByteRange: not-a-range",
+                "read only 2 of the document's 3 packages",
+                "'omega'",
+            ),
         ] {
             let tv = tag_value_around(middle);
             let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
@@ -3097,6 +3131,16 @@ PackageDownloadLocation: NOASSERTION
                 &format!("{nameless}\nPackageName: alpha"),
                 1,
             ),
+            tag_value_around(&format!("\nPackageName: \n{nameless}")),
+            tag_value_around(&format!("\n{nameless}")).replacen(
+                "PackageName: alpha",
+                "PackageName : alpha",
+                1,
+            ),
+            tag_value_around(&format!(
+                "\nFileName : ./f.rs\nSPDXID: SPDXRef-f\n\n{nameless}"
+            )),
+            tag_value_around(&format!("PackageComment: <text>never closed\n\n{nameless}")),
         ] {
             let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
             let mut read: Vec<_> = sbom
@@ -3115,6 +3159,14 @@ PackageDownloadLocation: NOASSERTION
                 "{tv}"
             );
         }
+    }
+
+    #[test]
+    fn test_tag_value_package_named_like_the_nameless_placeholder_keeps_its_name() {
+        let name = "__spdx_rs_nameless_package__";
+        let tv = tag_value_around("\nSPDXID: SPDXRef-beta\n").replacen("alpha", name, 1);
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(component_names(&sbom), ["", name, "omega"], "{tv}");
     }
 
     #[test]
