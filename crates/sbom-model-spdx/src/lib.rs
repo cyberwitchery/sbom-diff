@@ -1,5 +1,6 @@
 #![doc = include_str!("../readme.md")]
 
+use chrono::SecondsFormat;
 use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
     Sbom,
@@ -827,7 +828,7 @@ impl SpdxReader {
         let mut sbom = Sbom::default();
 
         let ci = spdx_doc.document_creation_information.creation_info;
-        sbom.metadata.timestamp = Some(ci.created.to_string());
+        sbom.metadata.timestamp = Some(ci.created.to_rfc3339_opts(SecondsFormat::AutoSi, true));
         for creator in ci.creators {
             if let Some(stripped) = creator.strip_prefix("Tool: ") {
                 sbom.metadata.tools.push(stripped.to_string());
@@ -1650,6 +1651,34 @@ mod tests {
             sbom.metadata.authors,
             vec!["Organization: Acme Corp", "Person: alice"]
         );
+    }
+
+    #[test]
+    fn test_created_read_as_rfc3339_utc() {
+        for (created, timestamp) in [
+            ("2010-01-29T18:30:22Z", "2010-01-29T18:30:22Z"),
+            ("2010-01-29T20:30:22+02:00", "2010-01-29T18:30:22Z"),
+            ("2010-01-29T18:30:22.5Z", "2010-01-29T18:30:22.500Z"),
+        ] {
+            let json = format!(
+                r#"{{
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "test",
+                "documentNamespace": "http://spdx.org/spdxdocs/test",
+                "creationInfo": {{"creators": ["Tool: manual"], "created": "{created}"}},
+                "packages": [],
+                "relationships": []
+            }}"#
+            );
+            let sbom = SpdxReader::read_json(json.as_bytes()).unwrap();
+            assert_eq!(
+                sbom.metadata.timestamp.as_deref(),
+                Some(timestamp),
+                "{created}"
+            );
+        }
     }
 
     #[test]

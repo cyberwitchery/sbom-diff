@@ -664,6 +664,7 @@ dependencies = [
 name = "sbom-model-cyclonedx"
 version = "0.9.1"
 dependencies = [
+ "chrono",
  "cyclonedx-bom",
  "packageurl",
  "sbom-model",
@@ -677,6 +678,7 @@ dependencies = [
 name = "sbom-model-spdx"
 version = "0.9.1"
 dependencies = [
+ "chrono",
  "packageurl",
  "sbom-model",
  "serde",
