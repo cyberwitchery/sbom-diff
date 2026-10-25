@@ -549,7 +549,7 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
     (kept, dropped)
 }
 
-/// a package name that occurs nowhere in `input`.
+/// a value that occurs nowhere in `input`.
 fn unused_name(input: &str) -> String {
     let longest_run = input.split(|c: char| c != '_').map(str::len).max();
     format!(
@@ -558,27 +558,24 @@ fn unused_name(input: &str) -> String {
     )
 }
 
-/// names `nameless` each package section with an empty `PackageName:`, or with
-/// none, which a second `SPDXID:` in a document, package or file section marks.
-fn name_nameless_packages(input: &str, nameless: &str) -> String {
-    let named = format!("PackageName: {nameless}");
+/// fills `placeholder` into each empty tag value, which spdx-rs 0.5 would read
+/// the next line as, and into the name of each package section with no
+/// `PackageName:`, which a second `SPDXID:` in a document, package or file
+/// section marks.
+fn fill_empty_values(input: &str, placeholder: &str) -> String {
+    let named = format!("PackageName: {placeholder}");
     let lines: Vec<(&str, bool)> = scanned_lines(input).collect();
     let mut out = String::with_capacity(input.len());
     let mut has_id = false;
-    for (i, &(mut line, tagged)) in lines.iter().enumerate() {
-        match split_tag(line).filter(|_| tagged) {
-            Some(("PackageName", value)) => {
-                let text_below = lines[i + 1..]
-                    .iter()
-                    .find(|(below, _)| !below.trim().is_empty())
-                    .is_some_and(|(below, _)| below.trim_start().starts_with("<text>"));
-                if value.trim().is_empty() && !text_below {
-                    line = named.as_str();
-                }
-                has_id = false;
-            }
-            Some(("FileName", _)) => has_id = false,
-            Some(("SPDXID", _)) => {
+    for (i, &(line, tagged)) in lines.iter().enumerate() {
+        let Some((tag, value)) = split_tag(line).filter(|_| tagged) else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        match tag {
+            "PackageName" | "FileName" => has_id = false,
+            "SPDXID" => {
                 if has_id {
                     out.push_str(&named);
                     out.push('\n');
@@ -587,7 +584,17 @@ fn name_nameless_packages(input: &str, nameless: &str) -> String {
             }
             _ => {}
         }
-        out.push_str(line);
+        let text_below = || {
+            lines[i + 1..]
+                .iter()
+                .find(|(below, _)| !below.trim().is_empty())
+                .is_some_and(|(below, _)| below.trim_start().starts_with("<text>"))
+        };
+        if value.trim().is_empty() && !text_below() {
+            out.push_str(&format!("{tag}: {placeholder}"));
+        } else {
+            out.push_str(line);
+        }
         out.push('\n');
     }
     out
@@ -775,9 +782,9 @@ impl SpdxReader {
 
         // spdx-rs 0.5 panics on an unknown tag and discards everything below a line it cannot read.
         let (input, unreadable) = filter_unreadable_lines(input);
-        // spdx-rs 0.5 misreads a package section whose PackageName is empty or missing.
-        let nameless = unused_name(&input);
-        let input = name_nameless_packages(&input, &nameless);
+        // spdx-rs 0.5 misreads an empty value and a package section with no PackageName.
+        let placeholder = unused_name(&input);
+        let input = fill_empty_values(&input, &placeholder);
         let input = input.as_str();
 
         // spdx-rs 0.5 has two further tag-value parsing quirks we work around:
@@ -821,15 +828,37 @@ impl SpdxReader {
         spdx_doc
             .package_information
             .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
-        for package in &mut spdx_doc.package_information {
-            if package.package_name == nameless {
-                package.package_name.clear();
+        let clear = |value: &mut String| {
+            if *value == placeholder {
+                value.clear();
             }
+        };
+        let creation_info = &mut spdx_doc.document_creation_information.creation_info;
+        creation_info.creators.iter_mut().for_each(clear);
+        for package in &mut spdx_doc.package_information {
+            clear(&mut package.package_name);
+            clear(&mut package.package_spdx_identifier);
+            [
+                &mut package.package_version,
+                &mut package.package_supplier,
+                &mut package.package_summary_description,
+                &mut package.package_detailed_description,
+            ]
+            .into_iter()
+            .flatten()
+            .for_each(clear);
+        }
+        for file in &mut spdx_doc.file_information {
+            clear(&mut file.file_spdx_identifier);
+        }
+        for relationship in &mut spdx_doc.relationships {
+            clear(&mut relationship.spdx_element_id);
+            clear(&mut relationship.related_spdx_element);
         }
 
         let raw_packages: Vec<&str> = tag_lines(input)
             .filter_map(|line| match split_tag(line)? {
-                ("PackageName", name) if name.trim() == nameless => Some(""),
+                ("PackageName", name) if name.trim() == placeholder => Some(""),
                 ("PackageName", name) => Some(name.trim()),
                 _ => None,
             })
@@ -858,7 +887,8 @@ impl SpdxReader {
             .creators
             .clone();
         let actual_creators: Vec<String> = tag_lines(input)
-            .filter_map(|line| line.strip_prefix("Creator:").map(|v| v.trim().to_string()))
+            .filter_map(|line| line.strip_prefix("Creator:").map(str::trim))
+            .map(|creator| if creator == placeholder { "" } else { creator }.to_string())
             .collect();
         spdx_doc
             .document_creation_information
@@ -2689,6 +2719,17 @@ Creator: Tool: not-a-real-tool
     }
 
     #[test]
+    fn test_tag_value_empty_tag_inside_a_text_block_is_text() {
+        let tv = tag_value_around("PackageDescription: <text>Features:\nNotes:\n</text>");
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let alpha = sbom.components.values().find(|c| c.name == "alpha");
+        assert_eq!(
+            alpha.and_then(|c| c.description.as_deref()),
+            Some("Features:\nNotes:\n")
+        );
+    }
+
+    #[test]
     fn test_tag_value_text_block_does_not_mask_phantom_creator() {
         let quoted = format!(
             "{TV_HEADER}PackageDescription: <text>quotes a document header:
@@ -3167,6 +3208,67 @@ PackageDownloadLocation: NOASSERTION
         let tv = tag_value_around("\nSPDXID: SPDXRef-beta\n").replacen("alpha", name, 1);
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
         assert_eq!(component_names(&sbom), ["", name, "omega"], "{tv}");
+    }
+
+    #[test]
+    fn test_tag_value_empty_value_reads_as_an_empty_text_block() {
+        let rows = [
+            "PackageVersion: \nPackageSummary: below",
+            "PackageSupplier: \nPackageVersion: 3.0",
+            "PackageSummary: \n\n# a comment",
+            "PackageDescription: \nPackageVersion: 3.0",
+            "PackageFileName: \nPackageVersion: 3.0",
+            "PackageSourceInfo: \nPackageVersion: 3.0",
+            "PackageCopyrightText: \nPackageVersion: 3.0",
+            "PackageComment: \nPackageVersion: 3.0",
+            "Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-omega\nRelationshipComment: \nPackageVersion: 3.0",
+        ];
+        let docs = rows.map(tag_value_around).into_iter().chain([
+            tag_value_around("").replacen("SPDXRef-alpha", "", 1),
+            tag_value_around("FileName: f\nSPDXID: SPDXRef-f").replacen("SPDXRef-alpha", "", 1),
+            tag_value_around("FileName: f\nSPDXID: "),
+            format!(
+                "{}Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-omega\nRelationshipComment: \n",
+                tag_value_around("")
+            ),
+        ]);
+        for tv in docs {
+            let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+            let block = tv.replace(": \n", ": <text></text>\n");
+            let expected = SpdxReader::read_tag_value(block.as_bytes()).unwrap();
+            assert_eq!(sbom.components, expected.components, "{tv}");
+            assert_eq!(sbom.dependencies, expected.dependencies, "{tv}");
+            assert_eq!(sbom.warnings, expected.warnings, "{tv}");
+        }
+    }
+
+    #[test]
+    fn test_tag_value_empty_value_below_an_unterminated_text_block_is_empty() {
+        let tv = tag_value_around(
+            "PackageComment: <text>never closed\nPackageVersion: \nPackageSummary: kept",
+        );
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let alpha = sbom.components.values().find(|c| c.name == "alpha");
+        assert_eq!(
+            alpha.map(|c| (c.version.as_deref(), c.description.as_deref())),
+            Some((Some(""), Some("kept")))
+        );
+    }
+
+    #[test]
+    fn test_tag_value_empty_creator_is_empty_not_the_line_below() {
+        let tv = tag_value_around("").replacen("Tool: test-generator", "", 1);
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(
+            sbom.metadata.timestamp.as_deref(),
+            Some("2024-01-01T00:00:00Z")
+        );
+        assert_eq!(sbom.metadata.authors, [""]);
+        assert!(
+            !sbom.warnings.iter().any(|w| w.contains("__spdx_rs")),
+            "{:?}",
+            sbom.warnings
+        );
     }
 
     #[test]
