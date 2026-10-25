@@ -848,6 +848,13 @@ impl SpdxReader {
             .flatten()
             .for_each(clear);
         }
+        for file in &mut spdx_doc.file_information {
+            clear(&mut file.file_spdx_identifier);
+        }
+        for relationship in &mut spdx_doc.relationships {
+            clear(&mut relationship.spdx_element_id);
+            clear(&mut relationship.related_spdx_element);
+        }
 
         let raw_packages: Vec<&str> = tag_lines(input)
             .filter_map(|line| match split_tag(line)? {
@@ -2712,6 +2719,17 @@ Creator: Tool: not-a-real-tool
     }
 
     #[test]
+    fn test_tag_value_empty_tag_inside_a_text_block_is_text() {
+        let tv = tag_value_around("PackageDescription: <text>Features:\nNotes:\n</text>");
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        let alpha = sbom.components.values().find(|c| c.name == "alpha");
+        assert_eq!(
+            alpha.and_then(|c| c.description.as_deref()),
+            Some("Features:\nNotes:\n")
+        );
+    }
+
+    #[test]
     fn test_tag_value_text_block_does_not_mask_phantom_creator() {
         let quoted = format!(
             "{TV_HEADER}PackageDescription: <text>quotes a document header:
@@ -3207,6 +3225,8 @@ PackageDownloadLocation: NOASSERTION
         ];
         let docs = rows.map(tag_value_around).into_iter().chain([
             tag_value_around("").replacen("SPDXRef-alpha", "", 1),
+            tag_value_around("FileName: f\nSPDXID: SPDXRef-f").replacen("SPDXRef-alpha", "", 1),
+            tag_value_around("FileName: f\nSPDXID: "),
             format!(
                 "{}Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-omega\nRelationshipComment: \n",
                 tag_value_around("")
@@ -3218,6 +3238,7 @@ PackageDownloadLocation: NOASSERTION
             let expected = SpdxReader::read_tag_value(block.as_bytes()).unwrap();
             assert_eq!(sbom.components, expected.components, "{tv}");
             assert_eq!(sbom.dependencies, expected.dependencies, "{tv}");
+            assert_eq!(sbom.warnings, expected.warnings, "{tv}");
         }
     }
 
