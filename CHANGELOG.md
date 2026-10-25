@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- fix an empty value in an SPDX tag-value document, which spdx-tools writes as a bare `Tag: ` line for every empty text field, taking the line below it as its value: an empty `PackageVersion` took `PackageDownloadLocation: NONE` as the version, so a diff against the document's SPDX JSON twin, which carries `""`, reported the package as changed and labelled it `alpha@PackageDownloadLocation: NONE`; an empty `PackageDescription` or `PackageSummary` took the comment line below it as the description; an empty field that is never compared, such as `PackageFileName` or `PackageCopyrightText`, still swallowed the line below it; and an empty `RelationshipComment` or `AnnotationComment` on a document's last tag made the document fail to load. an empty value is now read as empty, as the JSON reader reads `""`, unless a `<text>` block on a later line is its value
+
 ## [0.9.2] - 2026-10-25
 
 - fix `--fail-on supplier-changed` failing on SPDX suppliers that differ from the other sbom's only in spelling: the email SPDX allows after the name, `Organization: Acme Corp (ops@acme.example)` against a CycloneDX `Acme Corp`, and an empty name, `Organization: `, `""` or tag-value `PackageSupplier: Organization:`, against no supplier. a supplier is now its name alone, so a changed email between two SPDX documents is no longer a supplier change, as changed CycloneDX contact details already aren't; spaces around a name are ignored, an empty name in either format, a CycloneDX `supplier.name` of only spaces included, is no supplier, and a parenthesized part that holds no `@`, such as `Acme (Europe)`, stays part of the name. a component without a purl whose SPDX supplier had an email or an empty name gets a new `h:` id, the same one its CycloneDX twin already had
