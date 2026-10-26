@@ -5,7 +5,7 @@ use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
     Sbom,
 };
-use spdx_rs::models::RelationshipType;
+use spdx_rs::models::{RelationshipType, SpdxExpression};
 use spdx_rs::parsers::spdx_from_tag_value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -378,40 +378,45 @@ fn split_tag(line: &str) -> Option<(&str, &str)> {
 }
 
 /// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
-/// block, or `None` if it can. `beside` and `below` describe the `<text>`
-/// blocks spdx-rs would read as this line's value.
-fn unreadable_line(line: &str, beside: Option<bool>, below: Option<bool>) -> Option<String> {
+/// block, or `None` if it can, and errors on a license expression it cannot
+/// parse. `beside` and `below` are the `<text>` blocks spdx-rs would read as
+/// this line's value.
+fn unreadable_line(
+    line: &str,
+    beside: Option<&str>,
+    below: Option<&str>,
+) -> Result<Option<String>, String> {
     let line = line.trim_start();
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
-        return None;
+        return Ok(None);
     }
 
     let Some((tag, value)) = split_tag(line).filter(|(tag, _)| !tag.is_empty()) else {
-        return Some(format!("'{}' is not a tag-value pair", elide(line)));
+        return Ok(Some(format!("'{}' is not a tag-value pair", elide(line))));
     };
     if !READABLE_TAGS.contains(&tag) {
-        return Some(format!("tag '{tag}' is not one spdx-rs 0.5 can read"));
+        return Ok(Some(format!("tag '{tag}' is not one spdx-rs 0.5 can read")));
     }
 
     let value = value.trim_start();
+    let value = beside
+        .or(below.filter(|_| value.is_empty()))
+        .unwrap_or(value);
     if LICENSE_EXPRESSION_TAGS.contains(&tag) {
-        return empty_license_expression(value, beside, below)
-            .then(|| format!("tag '{tag}': the license expression is empty"));
+        if value.trim().is_empty() {
+            return Ok(Some(format!(
+                "tag '{tag}': the license expression is empty"
+            )));
+        }
+        return match SpdxExpression::parse(value) {
+            Ok(_) => Ok(None),
+            Err(_) => Err(format!(
+                "tag '{tag}': '{}' is not a valid SPDX license expression",
+                elide(&value.split_whitespace().collect::<Vec<_>>().join(" "))
+            )),
+        };
     }
-    // a `<text>` value can run past this line, so its content is not ours to judge.
-    if value.contains("<text>") {
-        return None;
-    }
-    unreadable_value(tag, value).map(|reason| format!("tag '{tag}': {reason}"))
-}
-
-/// whether spdx-rs 0.5 will parse a license tag's value as the empty
-/// expression it unwraps a parse error on.
-fn empty_license_expression(value: &str, beside: Option<bool>, below: Option<bool>) -> bool {
-    if value.starts_with("<text>") {
-        return beside.unwrap_or(false);
-    }
-    value.trim_end().is_empty() && below.unwrap_or(true)
+    Ok(unreadable_value(tag, value.trim_start()).map(|reason| format!("tag '{tag}': {reason}")))
 }
 
 /// reports why spdx-rs 0.5 panics on a known tag's value, or `None`. Values
@@ -438,10 +443,14 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
                 .then(|| format!("'{kind}' is not a relationship type"))
         }
         "FileType" => {
+            let value = value.lines().next().unwrap_or_default();
             (!FILE_TYPES.contains(&value)).then(|| format!("'{value}' is not a file type"))
         }
-        "AnnotationType" => (!ANNOTATION_TYPES.contains(&value))
-            .then(|| format!("'{value}' is not an annotation type")),
+        "AnnotationType" => {
+            let value = value.lines().next().unwrap_or_default();
+            (!ANNOTATION_TYPES.contains(&value))
+                .then(|| format!("'{value}' is not an annotation type"))
+        }
         _ => None,
     }
 }
@@ -455,24 +464,30 @@ fn unreadable_checksum(value: &str) -> Option<String> {
         .then(|| format!("'{algorithm}' is not a checksum algorithm"))
 }
 
-/// the `<text>` blocks a tag's value runs into: per line, whether the block
-/// opening beside the tag is blank, and whether the one an empty value
-/// continues into below the tag is blank. `None` where there is no such block;
-/// a block spdx-rs never closes is not one, matching [`scanned_lines`].
-fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
+/// the `<text>` blocks a tag's value runs into: per line, the text of the
+/// block opening on it, and the line whose block an empty value continues
+/// into below it. `None` where there is no such block; a block spdx-rs never
+/// closes is not one, matching [`scanned_lines`].
+fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
     let lines: Vec<&str> = input.lines().collect();
     let mut beside = vec![None; lines.len()];
     let mut at_head = vec![false; lines.len()];
-    let mut open_at: Option<(usize, bool)> = None;
+    let mut open_at: Option<(usize, String)> = None;
     for (number, line) in lines.iter().enumerate() {
-        match open_at {
-            Some((at, blank)) => match line.split_once("</text>") {
-                Some((content, _)) => {
-                    beside[at] = Some(blank && content.trim().is_empty());
-                    open_at = None;
+        match open_at.take() {
+            Some((at, mut text)) => {
+                text.push('\n');
+                match line.split_once("</text>") {
+                    Some((content, _)) => {
+                        text.push_str(content);
+                        beside[at] = Some(text);
+                    }
+                    None => {
+                        text.push_str(line);
+                        open_at = Some((at, text));
+                    }
                 }
-                None => open_at = Some((at, blank && line.trim().is_empty())),
-            },
+            }
             None => {
                 let head = line.trim_start();
                 let open = match head.strip_prefix("<text>") {
@@ -486,8 +501,8 @@ fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
                 };
                 let Some(open) = open else { continue };
                 match open.split_once("</text>") {
-                    Some((content, _)) => beside[number] = Some(content.trim().is_empty()),
-                    None => open_at = Some((number, open.trim().is_empty())),
+                    Some((content, _)) => beside[number] = Some(content.to_string()),
+                    None => open_at = Some((number, open.to_string())),
                 }
             }
         }
@@ -496,7 +511,7 @@ fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
     let mut carry = None;
     for number in (0..lines.len()).rev() {
         if at_head[number] {
-            carry = beside[number];
+            carry = beside[number].is_some().then_some(number);
         } else if !lines[number].trim().is_empty() {
             carry = None;
         }
@@ -507,13 +522,14 @@ fn text_blocks(input: &str) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
 
 /// drops the lines spdx-rs 0.5 would panic on or stop at and strips trailing
 /// whitespace outside `<text>` blocks, returning the remaining document and
-/// one diagnostic per dropped line.
-fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
+/// one diagnostic per dropped line, or an error for a line that must not be
+/// dropped.
+fn filter_unreadable_lines(input: &str) -> Result<(String, Vec<String>), Error> {
     let mut kept = String::with_capacity(input.len());
     let mut dropped = Vec::new();
     let mut in_dropped_block = false;
     let mut value_below_dropped = false;
-    let (beside, below) = text_blocks(input);
+    let (blocks, below) = text_blocks(input);
     let mut lines = scanned_lines(input).enumerate().peekable();
     while let Some((number, (line, tagged))) = lines.next() {
         let ends_outside_text = lines
@@ -527,9 +543,11 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
         if tagged && value_below_dropped {
             value_below_dropped = line.trim().is_empty();
         } else if tagged {
-            let beside = beside.get(number).copied().flatten();
+            let beside = blocks.get(number).and_then(Option::as_deref);
             let below = below.get(number + 1).copied().flatten();
-            in_dropped_block = match unreadable_line(line, beside, below) {
+            let reason = unreadable_line(line, beside, below.and_then(|at| blocks[at].as_deref()))
+                .map_err(|reason| Error::TagValue(format!("line {}: {reason}", number + 1)))?;
+            in_dropped_block = match reason {
                 Some(reason) => {
                     dropped.push(format!("line {}: {reason}", number + 1));
                     value_below_dropped = below.is_some()
@@ -546,7 +564,7 @@ fn filter_unreadable_lines(input: &str) -> (String, Vec<String>) {
             kept.push('\n');
         }
     }
-    (kept, dropped)
+    Ok((kept, dropped))
 }
 
 /// a value that occurs nowhere in `input`.
@@ -757,7 +775,8 @@ impl SpdxReader {
     /// lines the underlying parser cannot read — an unknown tag, a line that
     /// is not a tag-value pair — are dropped and named in [`Sbom::warnings`].
     /// a document the parser still cut short is reported as an error rather
-    /// than returned as a partial SBOM.
+    /// than returned as a partial SBOM, and so is a license expression the
+    /// SPDX expression parser rejects.
     ///
     /// # Example
     ///
@@ -781,7 +800,7 @@ impl SpdxReader {
         Self::check_spdx_version_tag_value(input)?;
 
         // spdx-rs 0.5 panics on an unknown tag and discards everything below a line it cannot read.
-        let (input, unreadable) = filter_unreadable_lines(input);
+        let (input, unreadable) = filter_unreadable_lines(input)?;
         // spdx-rs 0.5 misreads an empty value and a package section with no PackageName.
         let placeholder = unused_name(&input);
         let input = fill_empty_values(&input, &placeholder);
@@ -3487,6 +3506,137 @@ PackageDownloadLocation: NOASSERTION
             ("ExternalRef", "'' is not an external reference category"),
         ] {
             assert_line_dropped(&format!("{tag}:"), mentions);
+        }
+    }
+
+    #[test]
+    fn test_tag_value_every_value_spelling_is_read_skipped_or_an_error() {
+        enum Expect {
+            Read(&'static str),
+            Skipped(&'static str),
+            Error(&'static str),
+        }
+        use Expect::*;
+        let around = |line: &str| {
+            let tag = line.split(':').next().unwrap_or_default();
+            tag_value_around(&format!("{}{line}", section_opening(tag)))
+        };
+        for (line, expect) in [
+            (
+                "ExternalRef: <text></text>",
+                Skipped("line 13: tag 'ExternalRef': '' is not an external reference category"),
+            ),
+            (
+                "ExternalRef: <text>BOGUS purl pkg:cargo/alpha@1.0.0</text>",
+                Skipped("'BOGUS' is not an external reference category"),
+            ),
+            (
+                "ExternalRef:\n<text>BOGUS purl pkg:cargo/alpha@1.0.0</text>",
+                Skipped("'BOGUS' is not an external reference category"),
+            ),
+            (
+                "ExternalRef: <text>BOGUS purl\npkg:cargo/alpha@1.0.0</text>",
+                Skipped("'BOGUS' is not an external reference category"),
+            ),
+            (
+                "ExternalRef:\n\n<text>PACKAGE-MANAGER purl pkg:cargo/alpha@1.0.0</text>",
+                Read("ExternalRef: PACKAGE-MANAGER purl pkg:cargo/alpha@1.0.0"),
+            ),
+            (
+                "Relationship: <text>SPDXRef-alpha</text>",
+                Skipped("'' is not a relationship type"),
+            ),
+            (
+                "Relationship: <text>SPDXRef-alpha SPONSORS SPDXRef-omega</text>",
+                Skipped("'SPONSORS' is not a relationship type"),
+            ),
+            (
+                "Relationship:\n<text>SPDXRef-alpha\nDEPENDS_ON\nSPDXRef-omega</text>",
+                Read("Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-omega"),
+            ),
+            (
+                "FileType: <text>\n</text>",
+                Skipped("'' is not a file type"),
+            ),
+            (
+                "FileType:\n<text>\nSOURCE\n</text>",
+                Read("FileType: SOURCE"),
+            ),
+            (
+                "AnnotationType: <text>PRAISE</text>",
+                Skipped("'PRAISE' is not an annotation type"),
+            ),
+            (
+                "AnnotationType:\n<text>REVIEW\n</text>",
+                Read("AnnotationType: REVIEW"),
+            ),
+            (
+                "PackageChecksum: <text></text>",
+                Skipped("checksum '' names no algorithm"),
+            ),
+            (
+                "FileChecksum: <text>NOTANALGO: abcdef</text>",
+                Skipped("'NOTANALGO' is not a checksum algorithm"),
+            ),
+            (
+                "PackageChecksum:\n<text>SHA1: d6a770ba38583ed4bb4525bd96e50461655d2758</text>",
+                Read("PackageChecksum: SHA1: d6a770ba38583ed4bb4525bd96e50461655d2758"),
+            ),
+            (
+                "ExternalDocumentRef: <text>DocumentRef-x http://x NOTANALGO: abcdef</text>",
+                Skipped("'NOTANALGO' is not a checksum algorithm"),
+            ),
+            (
+                "PackageLicenseDeclared: Apache License 2.0",
+                Error("line 13: tag 'PackageLicenseDeclared': 'Apache License 2.0' is not a valid SPDX license expression"),
+            ),
+            (
+                "PackageLicenseConcluded: (MIT",
+                Error("line 13: tag 'PackageLicenseConcluded': '(MIT' is not"),
+            ),
+            (
+                "LicenseConcluded: MIT OR",
+                Error("line 15: tag 'LicenseConcluded': 'MIT OR' is not"),
+            ),
+            (
+                "LicenseInfoInFile: MIT/X11",
+                Error("line 15: tag 'LicenseInfoInFile': 'MIT/X11' is not"),
+            ),
+            (
+                "SnippetLicenseConcluded: BSD-3-Clause, MIT",
+                Error("line 17: tag 'SnippetLicenseConcluded': 'BSD-3-Clause, MIT' is not"),
+            ),
+            (
+                "PackageLicenseDeclared: <text>MIT AND</text>",
+                Error("line 13: tag 'PackageLicenseDeclared': 'MIT AND' is not"),
+            ),
+            (
+                "PackageLicenseDeclared:\n<text>(GPL-2.0-only</text>",
+                Error("line 13: tag 'PackageLicenseDeclared': '(GPL-2.0-only' is not"),
+            ),
+            (
+                "PackageLicenseDeclared: <text>MIT\nAND</text>",
+                Error("line 13: tag 'PackageLicenseDeclared': 'MIT AND' is not"),
+            ),
+        ] {
+            let tv = around(line);
+            match expect {
+                Read(twin) => {
+                    let sbom = SpdxReader::read_tag_value(tv.as_bytes())
+                        .unwrap_or_else(|e| panic!("{line:?} should be readable: {e}"));
+                    let expected = SpdxReader::read_tag_value(around(twin).as_bytes()).unwrap();
+                    assert_eq!(sbom.components, expected.components, "{line:?}");
+                    assert_eq!(sbom.dependencies, expected.dependencies, "{line:?}");
+                    assert_eq!(sbom.warnings, expected.warnings, "{line:?}");
+                }
+                Skipped(mentions) => assert_line_dropped(line, mentions),
+                Error(mentions) => {
+                    let err = SpdxReader::read_tag_value(tv.as_bytes())
+                        .expect_err(line)
+                        .to_string();
+                    assert!(err.contains(mentions), "{line:?}: {err}");
+                }
+            }
         }
     }
 
