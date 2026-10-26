@@ -156,6 +156,10 @@ fn scanned_lines(input: &str) -> impl Iterator<Item = (&str, bool)> {
             } else {
                 // blocks open only at a value's head: after the colon, or on a continuation line.
                 let head = rest.trim_start();
+                // spdx-rs reads a `#` to the end of its line as a comment.
+                if head.starts_with('#') {
+                    break;
+                }
                 let opened = head.strip_prefix("<text>").or_else(|| {
                     head.split_once(':')
                         .and_then(|(_, value)| value.trim_start().strip_prefix("<text>"))
@@ -490,6 +494,9 @@ fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
             }
             None => {
                 let head = line.trim_start();
+                if head.starts_with('#') {
+                    continue;
+                }
                 let open = match head.strip_prefix("<text>") {
                     Some(open) => {
                         at_head[number] = true;
@@ -542,6 +549,9 @@ fn filter_unreadable_lines(input: &str) -> Result<(String, Vec<String>), Error> 
         };
         if tagged && value_below_dropped {
             value_below_dropped = line.trim().is_empty();
+        } else if tagged && line.trim() == "#" {
+            // spdx-rs would read the next non-blank line as this empty comment's text.
+            in_dropped_block = true;
         } else if tagged {
             let beside = blocks.get(number).and_then(Option::as_deref);
             let below = below.get(number + 1).copied().flatten();
@@ -3617,6 +3627,15 @@ PackageDownloadLocation: NOASSERTION
             (
                 "PackageLicenseDeclared: <text>MIT\nAND</text>",
                 Error("line 13: tag 'PackageLicenseDeclared': 'MIT AND' is not"),
+            ),
+            (
+                "#\nPackageLicenseDeclared: GPL-3.0-only",
+                Read("PackageLicenseDeclared: GPL-3.0-only"),
+            ),
+            ("#\n# second package\n#", Read("# second package")),
+            (
+                "# note: <text>see below\nPackageLicenseDeclared: <text>MIT AND</text>",
+                Error("line 14: tag 'PackageLicenseDeclared': 'MIT AND' is not"),
             ),
         ] {
             let tv = around(line);
