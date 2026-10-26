@@ -519,7 +519,7 @@ fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
     for number in (0..lines.len()).rev() {
         if at_head[number] {
             carry = beside[number].is_some().then_some(number);
-        } else if !lines[number].trim().is_empty() {
+        } else if !matches!(lines[number].trim(), "" | "#") {
             carry = None;
         }
         below[number] = carry;
@@ -548,7 +548,7 @@ fn filter_unreadable_lines(input: &str) -> Result<(String, Vec<String>), Error> 
             line
         };
         if tagged && value_below_dropped {
-            value_below_dropped = line.trim().is_empty();
+            value_below_dropped = matches!(line.trim(), "" | "#");
         } else if tagged && line.trim() == "#" {
             // spdx-rs would read the next non-blank line as this empty comment's text.
             in_dropped_block = true;
@@ -3633,6 +3633,14 @@ PackageDownloadLocation: NOASSERTION
                 Read("PackageLicenseDeclared: GPL-3.0-only"),
             ),
             ("#\n# second package\n#", Read("# second package")),
+            (
+                "PackageLicenseDeclared:\n#\n<text>GPL-3.0-only</text>",
+                Read("PackageLicenseDeclared: GPL-3.0-only"),
+            ),
+            (
+                "ExternalRef:\n#\n<text>BOGUS purl pkg:cargo/alpha@1.0.0</text>",
+                Skipped("'BOGUS' is not an external reference category"),
+            ),
             (
                 "# note: <text>see below\nPackageLicenseDeclared: <text>MIT AND</text>",
                 Error("line 14: tag 'PackageLicenseDeclared': 'MIT AND' is not"),
