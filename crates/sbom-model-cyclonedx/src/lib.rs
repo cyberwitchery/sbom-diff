@@ -242,12 +242,13 @@ impl CycloneDxReader {
     }
 
     /// fills the schema defaults `cyclonedx-bom` requires a value for, and
-    /// removes component `data`, which it models as one object, not an array.
+    /// removes component `data` and `modelCard`, which it models more narrowly.
     fn normalize(value: &mut serde_json::Value, component: bool) {
         match value {
             serde_json::Value::Object(members) => {
                 if component {
                     members.remove("data");
+                    members.remove("modelCard");
                 }
                 for (key, member) in members.iter_mut() {
                     if let serde_json::Value::Array(entries) = member {
@@ -255,7 +256,7 @@ impl CycloneDxReader {
                             .iter_mut()
                             .filter_map(serde_json::Value::as_object_mut);
                         match key.as_str() {
-                            "properties" => entries.for_each(|property| {
+                            "properties" | "environmentVars" => entries.for_each(|property| {
                                 property.entry("name").or_insert("".into());
                                 property.entry("value").or_insert("".into());
                             }),
@@ -2006,7 +2007,7 @@ mod tests {
             }
         }
         type Shape = (&'static str, fn(&mut Value));
-        let shapes: [Shape; 6] = [
+        let shapes: [Shape; 8] = [
             ("no top-level version", |d| {
                 d.as_object_mut().unwrap().remove("version");
             }),
@@ -2024,9 +2025,20 @@ mod tests {
                 let data = json!([{"type": "dataset", "sensitiveData": ["PII"]}]);
                 set(d, &COMPONENTS, "data", data)
             }),
-            ("an affected version range with no status", |d| {
-                let versions = json!([{"range": "vers:npm/<1"}]);
+            ("an affected range or version with no status", |d| {
+                let versions = json!([{"range": "vers:npm/<1"}, {"version": "1.0"}]);
                 d["vulnerabilities"] = json!([{"affects": [{"ref": "a", "versions": versions}]}]);
+            }),
+            ("model card datasets", |d| {
+                let datasets = json!([{"ref": "b"}, {"type": "dataset", "sensitiveData": ["PII"]}]);
+                d["components"][0]["modelCard"] =
+                    json!({"modelParameters": {"datasets": datasets}});
+            }),
+            ("an environment variable with no value", |d| {
+                let inputs = json!([{"environmentVars": [{"name": "X"}]}]);
+                let workflow =
+                    json!({"bom-ref": "w", "uid": "w", "taskTypes": ["build"], "inputs": inputs});
+                d["formulation"] = json!([{"workflows": [workflow]}]);
             }),
         ];
 
