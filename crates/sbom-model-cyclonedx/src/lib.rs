@@ -47,6 +47,15 @@ const READ_AS_SPEC_VERSION: &str = "1.5";
 /// the CycloneDX XML namespace, without its trailing spec version.
 const XML_NS_PREFIX: &str = "http://cyclonedx.org/schema/bom/";
 
+/// JSON members whose values are components.
+const COMPONENT_MEMBERS: &[&str] = &[
+    "component",
+    "components",
+    "ancestors",
+    "descendants",
+    "variants",
+];
+
 /// maximum nesting depth for recursive sub-component collection.
 ///
 /// real-world SBOMs rarely nest more than a handful of levels. A limit
@@ -103,6 +112,10 @@ impl CycloneDxReader {
             }
             Self::strip_evidence(&mut value);
         }
+        if let Some(bom) = value.as_object_mut() {
+            bom.entry("version").or_insert(1.into());
+        }
+        Self::normalize(&mut value, false);
         let bom = cyclonedx_bom::prelude::Bom::parse_json_value(value)?;
 
         let mut sbom = Self::bom_to_sbom(bom)?;
@@ -228,6 +241,45 @@ impl CycloneDxReader {
         }
     }
 
+    /// fills the schema defaults `cyclonedx-bom` requires a value for, and
+    /// removes component `data` and `modelCard`, which it models more narrowly.
+    fn normalize(value: &mut serde_json::Value, component: bool) {
+        match value {
+            serde_json::Value::Object(members) => {
+                if component {
+                    members.remove("data");
+                    members.remove("modelCard");
+                }
+                for (key, member) in members.iter_mut() {
+                    if let serde_json::Value::Array(entries) = member {
+                        let entries = entries
+                            .iter_mut()
+                            .filter_map(serde_json::Value::as_object_mut);
+                        match key.as_str() {
+                            "properties" | "environmentVars" => entries.for_each(|property| {
+                                property.entry("name").or_insert("".into());
+                                property.entry("value").or_insert("".into());
+                            }),
+                            "versions" => entries
+                                .filter(|v| v.contains_key("range") || v.contains_key("version"))
+                                .for_each(|v| {
+                                    v.entry("status").or_insert("affected".into());
+                                }),
+                            _ => {}
+                        }
+                    }
+                    Self::normalize(member, COMPONENT_MEMBERS.contains(&key.as_str()));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    Self::normalize(item, component);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// pre-check the CycloneDX namespace version in an XML document.
     ///
     /// the version is read from the root element's namespace.
@@ -279,7 +331,8 @@ impl CycloneDxReader {
     }
 
     /// re-encodes an XML document with the CycloneDX namespace `from` replaced
-    /// by [`READ_AS_SPEC_VERSION`]'s.
+    /// by [`READ_AS_SPEC_VERSION`]'s, dropping the `<provides>` children of
+    /// `<dependency>`, which that version lacks.
     ///
     /// only namespace declarations are rewritten; element text and attribute
     /// values are untouched.
@@ -288,6 +341,9 @@ impl CycloneDxReader {
 
         let from = format!("{XML_NS_PREFIX}{from}");
         let to = format!("{XML_NS_PREFIX}{READ_AS_SPEC_VERSION}");
+        let is = |name: &xml::name::OwnedName, local: &str| {
+            name.local_name == local && name.namespace.as_deref() == Some(from.as_str())
+        };
 
         let mut out = Vec::new();
         {
@@ -296,8 +352,30 @@ impl CycloneDxReader {
                 .write_document_declaration(true)
                 .create_writer(&mut out);
 
+            let mut is_dependency = Vec::new();
+            let mut dropped = 0usize;
             for event in xml::EventReader::new(data) {
                 let event = event.map_err(|e| Error::XmlRewrite(e.to_string()))?;
+                match &event {
+                    xml::reader::XmlEvent::StartElement { name, .. } => {
+                        if dropped > 0
+                            || (is_dependency.last() == Some(&true) && is(name, "provides"))
+                        {
+                            dropped += 1;
+                            continue;
+                        }
+                        is_dependency.push(is(name, "dependency"));
+                    }
+                    xml::reader::XmlEvent::EndElement { .. } if dropped > 0 => {
+                        dropped -= 1;
+                        continue;
+                    }
+                    xml::reader::XmlEvent::EndElement { .. } => {
+                        is_dependency.pop();
+                    }
+                    _ if dropped > 0 => continue,
+                    _ => {}
+                }
                 let rewritten = match &event {
                     xml::reader::XmlEvent::StartDocument {
                         version,
@@ -1905,6 +1983,90 @@ mod tests {
             find("listed").licenses,
             BTreeSet::from(["Apache-2.0".to_string(), "MIT".to_string()])
         );
+    }
+
+    #[test]
+    fn test_schema_valid_shapes_cyclonedx_bom_refuses_read_as_if_absent() {
+        use serde_json::{json, Value};
+        const PROPERTY_HOLDERS: [&str; 4] = [
+            "/metadata",
+            "/metadata/component",
+            "/components/0",
+            "/services/0",
+        ];
+        const COMPONENTS: [&str; 5] = [
+            "/metadata/component",
+            "/components/0",
+            "/components/0/pedigree/ancestors/0",
+            "/components/0/pedigree/descendants/0",
+            "/components/0/pedigree/variants/0",
+        ];
+        fn set(doc: &mut Value, at: &[&str], member: &str, value: Value) {
+            for at in at {
+                doc.pointer_mut(at).unwrap()[member] = value.clone();
+            }
+        }
+        type Shape = (&'static str, fn(&mut Value));
+        let shapes: [Shape; 8] = [
+            ("no top-level version", |d| {
+                d.as_object_mut().unwrap().remove("version");
+            }),
+            ("a property with no name", |d| {
+                set(d, &PROPERTY_HOLDERS, "properties", json!([{"value": "x"}]))
+            }),
+            ("a property with no value", |d| {
+                set(d, &PROPERTY_HOLDERS, "properties", json!([{"name": "x"}]))
+            }),
+            ("a component data array", |d| {
+                let data = json!([{"type": "configuration", "name": "app.ini"}]);
+                set(d, &COMPONENTS, "data", data)
+            }),
+            ("component data with sensitiveData", |d| {
+                let data = json!([{"type": "dataset", "sensitiveData": ["PII"]}]);
+                set(d, &COMPONENTS, "data", data)
+            }),
+            ("an affected range or version with no status", |d| {
+                let versions = json!([{"range": "vers:npm/<1"}, {"version": "1.0"}]);
+                d["vulnerabilities"] = json!([{"affects": [{"ref": "a", "versions": versions}]}]);
+            }),
+            ("model card datasets", |d| {
+                let datasets = json!([{"ref": "b"}, {"type": "dataset", "sensitiveData": ["PII"]}]);
+                d["components"][0]["modelCard"] =
+                    json!({"modelParameters": {"datasets": datasets}});
+            }),
+            ("an environment variable with no value", |d| {
+                let inputs = json!([{"environmentVars": [{"name": "X"}]}]);
+                let workflow =
+                    json!({"bom-ref": "w", "uid": "w", "taskTypes": ["build"], "inputs": inputs});
+                d["formulation"] = json!([{"workflows": [workflow]}]);
+            }),
+        ];
+
+        let upstream = json!([{"type": "library", "name": "upstream"}]);
+        let mut a = library("a", "a", "required");
+        a["pedigree"] =
+            json!({"ancestors": upstream, "descendants": upstream, "variants": upstream});
+        let base = json!({
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.5",
+            "version": 1,
+            "metadata": {"component": library("root", "root", "required")},
+            "components": [a, library("b", "b", "required")],
+            "services": [{"name": "s"}],
+            "dependencies": [{"ref": "a", "dependsOn": ["b"]}],
+        });
+        let read = |doc: &Value| CycloneDxReader::read_json(doc.to_string().as_bytes());
+        let expected = read(&base).unwrap();
+        let misread: Vec<_> = shapes
+            .into_iter()
+            .filter(|(_, add)| {
+                let mut doc = base.clone();
+                add(&mut doc);
+                read(&doc).ok().as_ref() != Some(&expected)
+            })
+            .map(|(shape, _)| shape)
+            .collect();
+        assert_eq!(misread, Vec::<&str>::new());
     }
 
     type ServicesReader = fn(&[(&str, &[&str])]) -> Sbom;
