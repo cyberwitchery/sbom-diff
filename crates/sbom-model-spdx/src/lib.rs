@@ -155,14 +155,15 @@ fn scanned_lines(input: &str) -> impl Iterator<Item = (&str, bool)> {
                 rest = &rest[at + "</text>".len()..];
             } else {
                 // blocks open only at a value's head: after the colon, or on a continuation line.
-                let head = rest.trim_start();
+                let head = rest.trim_start_matches(SEPARATORS);
                 // spdx-rs reads a `#` to the end of its line as a comment.
                 if head.starts_with('#') {
                     break;
                 }
                 let opened = head.strip_prefix("<text>").or_else(|| {
-                    head.split_once(':')
-                        .and_then(|(_, value)| value.trim_start().strip_prefix("<text>"))
+                    head.split_once(':').and_then(|(_, value)| {
+                        value.trim_start_matches(SEPARATORS).strip_prefix("<text>")
+                    })
                 });
                 let Some(after) = opened else { break };
                 // and only where a `</text>` follows, which is where spdx-rs's take_until succeeds.
@@ -360,6 +361,9 @@ const RELATIONSHIP_TYPES: &[&str] = &[
     "OTHER",
 ];
 
+/// the whitespace spdx-rs 0.5 skips around a tag, its colon and a value's fields.
+const SEPARATORS: [char; 4] = [' ', '\t', '\r', '\n'];
+
 /// shortens a line for a diagnostic.
 fn elide(text: &str) -> String {
     let text = text.trim();
@@ -371,12 +375,12 @@ fn elide(text: &str) -> String {
 
 /// the tag of a line and the value after its colon, split as spdx-rs 0.5 splits them.
 fn split_tag(line: &str) -> Option<(&str, &str)> {
-    let line = line.trim_start();
+    let line = line.trim_start_matches(SEPARATORS);
     let at = line
         .find(|c: char| !c.is_ascii_alphanumeric())
         .unwrap_or(line.len());
     let (tag, rest) = line.split_at(at);
-    rest.trim_start()
+    rest.trim_start_matches(SEPARATORS)
         .strip_prefix(':')
         .map(|value| (tag, value))
 }
@@ -390,7 +394,7 @@ fn unreadable_line(
     beside: Option<&str>,
     below: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let line = line.trim_start();
+    let line = line.trim_start_matches(SEPARATORS);
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
         return Ok(None);
     }
@@ -402,7 +406,7 @@ fn unreadable_line(
         return Ok(Some(format!("tag '{tag}' is not one spdx-rs 0.5 can read")));
     }
 
-    let value = value.trim_start();
+    let value = value.trim_start_matches(SEPARATORS);
     let value = beside
         .or(below.filter(|_| value.is_empty()))
         .unwrap_or(value);
@@ -412,6 +416,9 @@ fn unreadable_line(
                 "tag '{tag}': the license expression is empty"
             )));
         }
+        if let Some(reason) = stray_whitespace(value) {
+            return Err(format!("tag '{tag}': {reason}"));
+        }
         return match SpdxExpression::parse(value) {
             Ok(_) => Ok(None),
             Err(_) => Err(format!(
@@ -420,32 +427,34 @@ fn unreadable_line(
             )),
         };
     }
-    Ok(unreadable_value(tag, value.trim_start()).map(|reason| format!("tag '{tag}': {reason}")))
+    Ok(unreadable_value(tag, value.trim_start_matches(SEPARATORS))
+        .map(|reason| format!("tag '{tag}': {reason}")))
 }
 
-/// reports why spdx-rs 0.5 panics on a known tag's value, or `None`. Values
-/// it rejects with an error instead are left to the truncation check.
+/// reports why spdx-rs 0.5 panics on or misreads a known tag's value, or
+/// `None`. Values it rejects with an error instead are left to the truncation
+/// check.
 fn unreadable_value(tag: &str, value: &str) -> Option<String> {
     match tag {
         "PackageChecksum" | "FileChecksum" => unreadable_checksum(value),
-        "ExternalDocumentRef" => value
-            .split_once(char::is_whitespace)
-            .and_then(|(_, rest)| rest.trim_start().split_once(char::is_whitespace))
-            .and_then(|(_, checksum)| unreadable_checksum(checksum.trim_start())),
-        "ExternalRef" => {
-            let category = value.split_whitespace().next().unwrap_or_default();
-            (!EXTERNAL_REF_CATEGORIES.contains(&category))
-                .then(|| format!("'{category}' is not an external reference category"))
-        }
-        "Relationship" => {
-            let kind = value
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or_default()
-                .to_uppercase();
-            (!RELATIONSHIP_TYPES.contains(&kind.as_str()))
-                .then(|| format!("'{kind}' is not a relationship type"))
-        }
+        "ExternalDocumentRef" => match fields::<3>(value) {
+            Ok([_, _, ""]) => None,
+            Ok([_, _, checksum]) => unreadable_checksum(checksum),
+            Err(reason) => Some(reason),
+        },
+        "ExternalRef" => match fields::<3>(value) {
+            Ok([category, ..]) => (!EXTERNAL_REF_CATEGORIES.contains(&category))
+                .then(|| format!("'{category}' is not an external reference category")),
+            Err(reason) => Some(reason),
+        },
+        "Relationship" => match fields::<3>(value) {
+            Ok([_, kind, _]) => {
+                let kind = kind.to_uppercase();
+                (!RELATIONSHIP_TYPES.contains(&kind.as_str()))
+                    .then(|| format!("'{kind}' is not a relationship type"))
+            }
+            Err(reason) => Some(reason),
+        },
         "FileType" => {
             let value = value.lines().next().unwrap_or_default();
             (!FILE_TYPES.contains(&value)).then(|| format!("'{value}' is not a file type"))
@@ -461,11 +470,43 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
 
 /// reports why spdx-rs 0.5 cannot read a checksum value, or `None` if it can.
 fn unreadable_checksum(value: &str) -> Option<String> {
-    let Some((algorithm, _)) = value.split_once(':') else {
+    let Some((algorithm, digest)) = value.split_once(':') else {
         return Some(format!("checksum '{}' names no algorithm", elide(value)));
     };
-    (!CHECKSUM_ALGORITHMS.contains(&algorithm))
-        .then(|| format!("'{algorithm}' is not a checksum algorithm"))
+    stray_whitespace(algorithm)
+        .or_else(|| stray_whitespace(digest))
+        .or_else(|| {
+            (!CHECKSUM_ALGORITHMS.contains(&algorithm))
+                .then(|| format!("'{algorithm}' is not a checksum algorithm"))
+        })
+}
+
+/// reports whitespace spdx-rs 0.5 does not skip at the head of a value or field.
+fn stray_whitespace(text: &str) -> Option<String> {
+    let first = text.trim_start_matches(SEPARATORS).chars().next()?;
+    first
+        .is_whitespace()
+        .then(|| format!("U+{:04X} is not a space or a tab", u32::from(first)))
+}
+
+/// splits a value into `N` whitespace-separated fields as spdx-rs 0.5 does, the
+/// last running to the end of the value.
+fn fields<const N: usize>(value: &str) -> Result<[&str; N], String> {
+    let mut fields = [""; N];
+    let mut rest = value;
+    for (i, field) in fields.iter_mut().enumerate() {
+        if let Some(reason) = stray_whitespace(rest) {
+            return Err(reason);
+        }
+        rest = rest.trim_start_matches(SEPARATORS);
+        let end = if i + 1 == N {
+            rest.len()
+        } else {
+            rest.find(char::is_whitespace).unwrap_or(rest.len())
+        };
+        (*field, rest) = rest.split_at(end);
+    }
+    Ok(fields)
 }
 
 /// the `<text>` blocks a tag's value runs into: per line, the text of the
@@ -493,7 +534,7 @@ fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
                 }
             }
             None => {
-                let head = line.trim_start();
+                let head = line.trim_start_matches(SEPARATORS);
                 if head.starts_with('#') {
                     continue;
                 }
@@ -502,9 +543,9 @@ fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
                         at_head[number] = true;
                         Some(open)
                     }
-                    None => head
-                        .split_once(':')
-                        .and_then(|(_, value)| value.trim_start().strip_prefix("<text>")),
+                    None => head.split_once(':').and_then(|(_, value)| {
+                        value.trim_start_matches(SEPARATORS).strip_prefix("<text>")
+                    }),
                 };
                 let Some(open) = open else { continue };
                 match open.split_once("</text>") {
@@ -3662,6 +3703,68 @@ PackageDownloadLocation: NOASSERTION
                         .expect_err(line)
                         .to_string();
                     assert!(err.contains(mentions), "{line:?}: {err}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_tag_value_whitespace_spdx_rs_does_not_skip_is_skipped_or_an_error() {
+        for ws in ['\u{a0}', '\u{b}', '\u{c}', '\u{85}', '\u{2003}', '\u{3000}'] {
+            for (line, skipped) in [
+                (
+                    "Relationship:{ws}SPDXRef-alpha DEPENDS_ON SPDXRef-omega",
+                    true,
+                ),
+                (
+                    "Relationship: SPDXRef-alpha{ws}DEPENDS_ON SPDXRef-omega",
+                    true,
+                ),
+                (
+                    "ExternalRef:{ws}PACKAGE-MANAGER purl pkg:cargo/alpha@1.0.0",
+                    true,
+                ),
+                (
+                    "ExternalRef: PACKAGE-MANAGER{ws}purl pkg:cargo/alpha@1.0.0",
+                    true,
+                ),
+                (
+                    "ExternalRef: PACKAGE-MANAGER purl{ws}pkg:cargo/alpha@1.0.0",
+                    true,
+                ),
+                (
+                    "ExternalDocumentRef: DocumentRef-x{ws}http://x SHA1: 85ed0817af83a24ad8da",
+                    true,
+                ),
+                (
+                    "PackageChecksum:{ws}SHA1: 85ed0817af83a24ad8da68c2b5094de69833983c",
+                    true,
+                ),
+                (
+                    "PackageChecksum: SHA1:{ws}85ed0817af83a24ad8da68c2b5094de69833983c",
+                    true,
+                ),
+                ("PackageLicenseConcluded:{ws}MIT", false),
+                ("PackageLicenseDeclared:{ws}MIT", false),
+                ("LicenseConcluded:{ws}MIT", false),
+                ("LicenseInfoInFile:{ws}MIT", false),
+            ] {
+                let line = line.replace("{ws}", &ws.to_string());
+                let tag = line.split(':').next().unwrap_or_default();
+                let opening = section_opening(tag);
+                let mentions = format!(
+                    "line {}: tag '{tag}': U+{:04X} is not a space or a tab",
+                    13 + opening.lines().count(),
+                    u32::from(ws)
+                );
+                if skipped {
+                    assert_line_dropped(&line, &mentions);
+                } else {
+                    let tv = tag_value_around(&format!("{opening}{line}"));
+                    let err = SpdxReader::read_tag_value(tv.as_bytes())
+                        .expect_err(&line)
+                        .to_string();
+                    assert!(err.contains(&mentions), "{line:?}: {err}");
                 }
             }
         }
