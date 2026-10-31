@@ -438,6 +438,9 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
     match tag {
         "PackageChecksum" | "FileChecksum" => unreadable_checksum(value),
         "ExternalDocumentRef" => match fields::<3>(value) {
+            Ok([id, ..]) if splits_document_ref(id) => {
+                Some(format!("'{id}' is not a document reference id"))
+            }
             Ok([_, _, ""]) => None,
             Ok([_, _, checksum]) => unreadable_checksum(checksum),
             Err(reason) => Some(reason),
@@ -466,6 +469,13 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// whether spdx-rs 0.5 ends a `DocumentRef-` id before the end of its field.
+fn splits_document_ref(field: &str) -> bool {
+    field.strip_prefix("DocumentRef-").is_some_and(|id| {
+        id.contains(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '-' | '+'))
+    })
 }
 
 /// reports why spdx-rs 0.5 cannot read a checksum value, or `None` if it can.
@@ -3636,6 +3646,22 @@ PackageDownloadLocation: NOASSERTION
             (
                 "ExternalDocumentRef: <text>DocumentRef-x http://x NOTANALGO: abcdef</text>",
                 Skipped("'NOTANALGO' is not a checksum algorithm"),
+            ),
+            (
+                "ExternalDocumentRef: DocumentRef-e_xt http://x SHA1: 85ed0817af83a24ad8da",
+                Skipped("line 13: tag 'ExternalDocumentRef': 'DocumentRef-e_xt' is not a document reference id"),
+            ),
+            (
+                "ExternalDocumentRef: DocumentRef-éxt http://x SHA1: 85ed0817af83a24ad8da",
+                Skipped("'DocumentRef-éxt' is not a document reference id"),
+            ),
+            (
+                "ExternalDocumentRef: DocumentRef-e_xt urn-x SHA1: 85ed0817af83a24ad8da",
+                Skipped("'DocumentRef-e_xt' is not a document reference id"),
+            ),
+            (
+                "ExternalDocumentRef: DocumentRef-e_xt http://x",
+                Skipped("'DocumentRef-e_xt' is not a document reference id"),
             ),
             (
                 "PackageLicenseDeclared: Apache License 2.0",
