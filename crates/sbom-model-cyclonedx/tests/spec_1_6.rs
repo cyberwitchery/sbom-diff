@@ -252,6 +252,27 @@ fn the_1_6_xml_spelling_of_evidence_identity_is_read_by_the_1_5_reader() {
 }
 
 #[test]
+fn a_1_6_xml_dependency_that_provides_reads_as_without_it() {
+    let xml = |provides: &str| {
+        format!(
+            r#"<?xml version="1.0"?>
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
+  <components>
+    <component type="library" bom-ref="a"><name>a</name><version>1</version></component>
+    <component type="library" bom-ref="b"><name>b</name><version>1</version></component>
+  </components>
+  <dependencies>
+    <dependency ref="a">{provides}<dependency ref="b"/></dependency>
+  </dependencies>
+</bom>"#
+        )
+    };
+    let with = CycloneDxReader::read_xml(xml(r#"<provides ref="b"/>"#).as_bytes()).unwrap();
+    let without = CycloneDxReader::read_xml(xml("").as_bytes()).unwrap();
+    assert_eq!(with, without);
+}
+
+#[test]
 fn a_1_6_document_that_stops_mid_element_reports_the_rewrite_failure() {
     let xml = br#"<?xml version="1.0"?>
 <bom xmlns="http://cyclonedx.org/schema/bom/1.6" version="1">
