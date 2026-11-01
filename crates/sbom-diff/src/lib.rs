@@ -204,6 +204,23 @@ impl Diff {
             .saturating_sub(self.added.len())
             .saturating_sub(self.changed.len());
     }
+
+    /// keeps only the changes to the fields in `only`: a changed component left
+    /// with none counts as unchanged, and edge diffs are dropped unless `only`
+    /// holds [`Field::Deps`].
+    pub fn retain_fields(&mut self, only: &[Field]) {
+        let changed = self.changed.len();
+        self.changed.retain_mut(|change| {
+            change.changes.retain(|fc| only.contains(&fc.field()));
+            change.is_downgrade &= only.contains(&Field::Version);
+            !change.changes.is_empty()
+        });
+        self.unchanged += changed - self.changed.len();
+        if !only.contains(&Field::Deps) {
+            self.edge_diffs.clear();
+            self.component_names.clear();
+        }
+    }
 }
 
 /// shared implementation for [`Diff::group_by_ecosystem`] and
@@ -353,6 +370,20 @@ pub enum FieldChange {
     Hashes(BTreeMap<String, String>, BTreeMap<String, String>),
     /// ecosystem changed: (old, new).
     Ecosystem(Option<String>, Option<String>),
+}
+
+impl FieldChange {
+    fn field(&self) -> Field {
+        match self {
+            FieldChange::Version(..) => Field::Version,
+            FieldChange::License(..) | FieldChange::LicenseExpression(..) => Field::License,
+            FieldChange::Supplier(..) => Field::Supplier,
+            FieldChange::Purl(..) => Field::Purl,
+            FieldChange::Description(..) => Field::Description,
+            FieldChange::Hashes(..) => Field::Hashes,
+            FieldChange::Ecosystem(..) => Field::Ecosystem,
+        }
+    }
 }
 
 /// fields that can be compared and filtered.
@@ -512,7 +543,7 @@ impl Differ {
                 matched_new.insert(id.clone());
                 id_mapping.insert(id.clone(), id.clone());
 
-                let fields = Self::compute_fields(old_comp, new_comp, only);
+                let fields = Self::compute_fields(old_comp, new_comp);
                 if !fields.is_empty() {
                     changed_pairs.push((id.clone(), id.clone(), fields));
                 }
@@ -644,7 +675,7 @@ impl Differ {
             matched_new.insert(new_id.clone());
             id_mapping.insert(old_id.clone(), new_id.clone());
 
-            let fields = Self::compute_fields(old_comp, new_comp, only);
+            let fields = Self::compute_fields(old_comp, new_comp);
             if !fields.is_empty() {
                 changed_pairs.push((old_id, new_id, fields));
             }
@@ -657,12 +688,7 @@ impl Differ {
         let unchanged = matched - changed_pairs.len();
 
         // 4. compute edge diffs (needs dependencies, not component values)
-        let should_include_deps = only.is_none_or(|fields| fields.contains(&Field::Deps));
-        let edge_diffs = if should_include_deps {
-            Self::compute_edge_diffs(&old, &new, &id_mapping)
-        } else {
-            Vec::new()
-        };
+        let edge_diffs = Self::compute_edge_diffs(&old, &new, &id_mapping);
 
         // 5. build human-readable name map (needs component maps intact)
         let component_names = Self::build_component_names(&old, &new, &edge_diffs);
@@ -701,7 +727,7 @@ impl Differ {
         let added: Vec<Component> = new.components.into_values().collect();
         let removed: Vec<Component> = old.components.into_values().collect();
 
-        Diff {
+        let mut diff = Diff {
             added,
             removed,
             changed,
@@ -711,7 +737,11 @@ impl Differ {
             new_total,
             unchanged,
             component_names,
+        };
+        if let Some(only) = only {
+            diff.retain_fields(only);
         }
+        diff
     }
 
     /// pairs same-identity candidates by aligning them in version order, so that
@@ -965,65 +995,56 @@ impl Differ {
     }
 
     /// compares two components field-by-field, returning the list of
-    /// [`FieldChange`]s. an empty vector means the components are identical
-    /// (modulo fields excluded by `only`).
+    /// [`FieldChange`]s. an empty vector means the components are identical.
     ///
     /// this is a pure comparison — it does not construct a [`ComponentChange`]
     /// or clone either component. the caller is responsible for building the
     /// final struct from owned values.
-    fn compute_fields(
-        old: &Component,
-        new: &Component,
-        only: Option<&[Field]>,
-    ) -> Vec<FieldChange> {
+    fn compute_fields(old: &Component, new: &Component) -> Vec<FieldChange> {
         let mut changes = Vec::new();
 
-        let should_include = |f: Field| only.is_none_or(|fields| fields.contains(&f));
-
-        if should_include(Field::Version) && old.version != new.version {
+        if old.version != new.version {
             changes.push(FieldChange::Version(
                 old.version.clone(),
                 new.version.clone(),
             ));
         }
 
-        if should_include(Field::License) {
-            if old.licenses != new.licenses {
-                changes.push(FieldChange::License(
-                    old.licenses.clone(),
-                    new.licenses.clone(),
-                ));
-            } else if !licensings_equivalent(old.licensing(), new.licensing()) {
-                changes.push(FieldChange::LicenseExpression(
-                    old.license_expression.clone(),
-                    new.license_expression.clone(),
-                ));
-            }
+        if old.licenses != new.licenses {
+            changes.push(FieldChange::License(
+                old.licenses.clone(),
+                new.licenses.clone(),
+            ));
+        } else if !licensings_equivalent(old.licensing(), new.licensing()) {
+            changes.push(FieldChange::LicenseExpression(
+                old.license_expression.clone(),
+                new.license_expression.clone(),
+            ));
         }
 
-        if should_include(Field::Supplier) && old.supplier != new.supplier {
+        if old.supplier != new.supplier {
             changes.push(FieldChange::Supplier(
                 old.supplier.clone(),
                 new.supplier.clone(),
             ));
         }
 
-        if should_include(Field::Purl) && !purls_equal(old.purl.as_deref(), new.purl.as_deref()) {
+        if !purls_equal(old.purl.as_deref(), new.purl.as_deref()) {
             changes.push(FieldChange::Purl(old.purl.clone(), new.purl.clone()));
         }
 
-        if should_include(Field::Description) && old.description != new.description {
+        if old.description != new.description {
             changes.push(FieldChange::Description(
                 old.description.clone(),
                 new.description.clone(),
             ));
         }
 
-        if should_include(Field::Hashes) && old.hashes != new.hashes {
+        if old.hashes != new.hashes {
             changes.push(FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()));
         }
 
-        if should_include(Field::Ecosystem) && old.ecosystem != new.ecosystem {
+        if old.ecosystem != new.ecosystem {
             changes.push(FieldChange::Ecosystem(
                 old.ecosystem.clone(),
                 new.ecosystem.clone(),
@@ -1670,6 +1691,53 @@ mod tests {
         // with filtering to include Deps - should have edge diff
         let diff_with_deps = Differ::diff(&old, &new, Some(&[Field::Deps]));
         assert_eq!(diff_with_deps.edge_diffs.len(), 1);
+    }
+
+    #[test]
+    fn retain_fields_keeps_only_the_named_fields() {
+        let mut a = Component::new("a".into(), Some("2.0".into()));
+        a.description = Some("old".into());
+        let mut b = Component::new("b".into(), Some("1.0".into()));
+        b.licenses = BTreeSet::from(["MIT".into(), "Apache-2.0".into()]);
+        b.license_expression = Some("MIT OR Apache-2.0".into());
+        let old = sbom_of(vec![a.clone(), b.clone()]);
+        a.version = Some("1.0".into());
+        a.description = Some("new".into());
+        b.license_expression = Some("MIT AND Apache-2.0".into());
+        let mut new = sbom_of(vec![a.clone(), b.clone()]);
+        new.dependencies
+            .entry(a.id.clone())
+            .or_default()
+            .insert(b.id.clone(), DependencyKind::Runtime);
+
+        let mut diff = Differ::diff(&old, &new, None);
+        diff.retain_fields(&[Field::Description]);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(
+            diff.changed[0].changes,
+            [FieldChange::Description(
+                Some("old".into()),
+                Some("new".into())
+            )]
+        );
+        assert!(!diff.changed[0].is_downgrade);
+        assert_eq!(diff.unchanged, 1);
+        assert!(diff.edge_diffs.is_empty());
+        assert!(diff.component_names.is_empty());
+
+        let mut diff = Differ::diff(&old, &new, None);
+        diff.retain_fields(&[Field::License, Field::Deps]);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(
+            diff.changed[0].changes,
+            [FieldChange::LicenseExpression(
+                Some("MIT OR Apache-2.0".into()),
+                Some("MIT AND Apache-2.0".into())
+            )]
+        );
+        assert_eq!(diff.unchanged, 1);
+        assert_eq!(diff.edge_diffs.len(), 1);
+        assert_eq!(diff.component_names.len(), 2);
     }
 
     #[test]
