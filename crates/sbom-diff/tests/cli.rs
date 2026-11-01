@@ -2471,6 +2471,21 @@ fn license_gates_read_deprecated_ids_and_a_gnu_plus_inside_an_expression() {
             &["--fail-on", "license-changed"],
             0,
         ),
+        (
+            "GPL-3.0-or-later",
+            "GPL-3.0-or-later",
+            &["--allow-license", "GPL-3.0+"],
+            0,
+        ),
+        (
+            "GPL-2.0-only",
+            "GPL-2.0-only",
+            &[
+                "--allow-license",
+                "GPL-2.0-only WITH Classpath-exception-2.0",
+            ],
+            2,
+        ),
     ] {
         let out = sbom_diff()
             .arg(sbom("old.json", old))

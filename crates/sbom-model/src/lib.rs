@@ -650,6 +650,20 @@ fn to_requirement(req: &spdx::LicenseReq) -> LicenseRequirement {
     }
 }
 
+/// the spelling copyleft burdens compare: a deprecated GNU id without `+` reads as its `-only` id.
+fn copyleft_spelling(id: &str) -> String {
+    let id = canonical_license_case(id);
+    spdx::license_id(&id)
+        .filter(|l| l.is_gnu() && l.is_deprecated() && !id.ends_with('+'))
+        .and_then(|l| {
+            spdx::gnu_license_id(
+                l.name.split_once("-with-").map_or(l.name, |(base, _)| base),
+                false,
+            )
+        })
+        .map_or(id, |l| l.name.to_string())
+}
+
 /// reads a flat identifier as the requirement it is inside an expression.
 fn flat_requirement(id: &str) -> LicenseRequirement {
     if let Ok(expr) = parse_expression(id) {
@@ -753,7 +767,7 @@ impl<'a> Licensing<'a> {
             .into_iter()
             .filter(|r| is_copyleft_license(&r.license))
             .filter(|r| !self.satisfiable(|other| other.license != r.license))
-            .map(|r| canonical_license_case(&r.license))
+            .map(|r| copyleft_spelling(&r.license))
             .collect()
     }
 
@@ -767,7 +781,7 @@ impl<'a> Licensing<'a> {
                 choice
                     .into_iter()
                     .filter(|r| is_copyleft_license(&r.license))
-                    .map(|r| canonical_license_case(&r.license))
+                    .map(|r| copyleft_spelling(&r.license))
                     .collect()
             })
             .collect();
@@ -909,15 +923,14 @@ pub fn copyleft_obligations_added(old: Licensing<'_>, new: Licensing<'_>) -> BTr
         }
         _ => {
             let already = old.mandatory_copyleft();
-            let carried =
-                |r: &LicenseRequirement| already.contains(&canonical_license_case(&r.license));
+            let carried = |r: &LicenseRequirement| already.contains(&copyleft_spelling(&r.license));
             if new.satisfiable(|r| !is_copyleft_license(&r.license) || carried(r)) {
                 return BTreeSet::new();
             }
             new.requirements()
                 .into_iter()
                 .filter(|r| is_copyleft_license(&r.license) && !carried(r))
-                .map(|r| canonical_license_case(&r.license))
+                .map(|r| copyleft_spelling(&r.license))
                 .collect()
         }
     }
@@ -1165,9 +1178,9 @@ pub fn is_copyleft_license(id: &str) -> bool {
 /// assert!(!copyleft_introduced(&old, &permissive));
 /// ```
 pub fn copyleft_introduced(old: &BTreeSet<String>, new: &BTreeSet<String>) -> bool {
-    let old: BTreeSet<String> = old.iter().map(|id| canonical_license_case(id)).collect();
+    let old: BTreeSet<String> = old.iter().map(|id| copyleft_spelling(id)).collect();
     new.iter()
-        .any(|id| is_copyleft_license(id) && !old.contains(&canonical_license_case(id)))
+        .any(|id| is_copyleft_license(id) && !old.contains(&copyleft_spelling(id)))
 }
 
 #[cfg(test)]
@@ -1262,6 +1275,9 @@ mod tests {
             assert!(licensings_equivalent(read, expected), "{flat}");
             assert!(read.satisfiable(|r| r.license == expression), "{flat}");
         }
+        // a flat id holding several requirements stays one opaque id
+        let compound = BTreeSet::from(["MIT AND GPL-3.0-only".to_string()]);
+        assert!(!Licensing::from_ids(&compound).satisfiable(|r| r.license == "MIT"));
     }
 
     #[test]
@@ -1389,7 +1405,7 @@ mod tests {
             ("MIT OR GPL-3.0-only", "GPL-3.0-only", &["GPL-3.0-only"]),
             ("GPL-3.0-only", "AGPL-3.0-only", &["AGPL-3.0-only"]),
             ("MIT", "MIT AND GPL-3.0-only", &["GPL-3.0-only"]),
-            ("MIT", "MIT AND GPL-2.0", &["GPL-2.0"]),
+            ("MIT", "MIT AND GPL-2.0", &["GPL-2.0-only"]),
             (
                 "MIT",
                 "GPL-2.0+ WITH Classpath-exception-2.0",
@@ -1435,6 +1451,12 @@ mod tests {
             ("MIT", "(mit OR gpl-3.0-only) AND mpl-2.0", &["MPL-2.0"]),
             ("GPL-2.0+", "gpl-2.0+", &[]),
             ("GPL-3.0+", "GPL-3.0-or-later", &[]),
+            ("GPL-2.0-only AND MIT", "MIT AND GPL-2.0", &[]),
+            (
+                "GPL-2.0-only WITH Classpath-exception-2.0",
+                "GPL-2.0 WITH Classpath-exception-2.0",
+                &[],
+            ),
         ] {
             assert_eq!(
                 copyleft_added(old, new),
@@ -1487,6 +1509,14 @@ mod tests {
         )
         .is_empty());
         assert!(!copyleft_introduced(&new, &respelled));
+
+        let gnu_plus: BTreeSet<String> = ["GPL-2.0+".into()].into();
+        let only: BTreeSet<String> = ["GPL-2.0-only".into()].into();
+        assert_eq!(
+            copyleft_obligations_added(Licensing::from_ids(&gnu_plus), Licensing::from_ids(&only)),
+            BTreeSet::from(["GPL-2.0-only".to_string()])
+        );
+        assert!(copyleft_introduced(&gnu_plus, &only));
     }
 
     #[test]
