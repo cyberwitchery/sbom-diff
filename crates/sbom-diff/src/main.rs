@@ -537,6 +537,20 @@ fn requirement_listed(req: &LicenseRequirement, list: &HashSet<String>) -> bool 
     req.exception.is_some() && list.contains(&req.to_string().to_ascii_lowercase())
 }
 
+/// lowercases a policy entry as the license gates read it: `GPL-3.0+` lists `gpl-3.0-or-later`.
+fn policy_spelling(entry: &str) -> String {
+    let ids = BTreeSet::from([entry.to_string()]);
+    let reqs = Licensing {
+        expression: Some(entry),
+        ids: &ids,
+    }
+    .requirements();
+    match reqs.first() {
+        Some(req) if reqs.len() == 1 => req.to_string().to_ascii_lowercase(),
+        _ => entry.to_ascii_lowercase(),
+    }
+}
+
 /// names the requirements that made a policy gate fire, for the diagnostic.
 fn offending_requirements(
     licensing: Licensing<'_>,
@@ -557,8 +571,8 @@ fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
     }
     let labels = Labels::for_sbom(sbom);
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
-    let deny_lower: HashSet<String> = deny.iter().map(|s| s.to_ascii_lowercase()).collect();
-    let allow_lower: HashSet<String> = allow.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let deny_lower: HashSet<String> = deny.iter().map(|s| policy_spelling(s)).collect();
+    let allow_lower: HashSet<String> = allow.iter().map(|s| policy_spelling(s)).collect();
 
     let mut violation = false;
     for comp in sbom.components.values() {
