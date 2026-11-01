@@ -2419,6 +2419,78 @@ fn fail_on_copyleft_added_ignores_a_license_name_case_change() {
 }
 
 #[test]
+fn license_gates_read_deprecated_ids_and_a_gnu_plus_inside_an_expression() {
+    let dir = std::env::temp_dir().join("sbom-diff-cli-test-deprecated-license-ids");
+    std::fs::create_dir_all(&dir).unwrap();
+    let sbom = |name: &str, expression: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[{{"type":"library","name":"x","version":"1.0","purl":"pkg:npm/x@1.0","licenses":[{{"expression":"{expression}"}}]}}]}}"#
+            ),
+        )
+        .unwrap();
+        path
+    };
+
+    for (old, new, gate, code) in [
+        (
+            "MIT AND GPL-2.0",
+            "MIT AND GPL-2.0",
+            &["--deny-license", "GPL-2.0"][..],
+            2,
+        ),
+        (
+            "MIT AND GPL-3.0+",
+            "MIT AND GPL-3.0+",
+            &["--deny-license", "GPL-3.0+"],
+            2,
+        ),
+        (
+            "MIT AND GPL-3.0+",
+            "MIT AND GPL-3.0+",
+            &["--deny-license", "GPL-3.0-or-later"],
+            2,
+        ),
+        (
+            "Apache-2.0 OR LGPL-2.1+",
+            "Apache-2.0 OR LGPL-2.1+",
+            &["--allow-license", "MIT", "--allow-license", "Apache-2.0"],
+            0,
+        ),
+        (
+            "MIT",
+            "MIT AND AGPL-3.0",
+            &["--fail-on", "copyleft-added"],
+            3,
+        ),
+        (
+            "MIT AND GPL-2.0",
+            "GPL-2.0 AND MIT",
+            &["--fail-on", "license-changed"],
+            0,
+        ),
+    ] {
+        let out = sbom_diff()
+            .arg(sbom("old.json", old))
+            .arg(sbom("new.json", new))
+            .args(gate)
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{old} -> {new} {gate:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn dropping_a_license_exception_is_a_license_change() {
     let out = sbom_diff()
         .arg(fixture("license-exception-old.spdx.json"))

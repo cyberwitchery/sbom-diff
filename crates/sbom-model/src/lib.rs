@@ -550,13 +550,19 @@ fn spdx_spelling(id: &str) -> Option<&'static str> {
 }
 
 fn parse_expression(expression: &str) -> Result<spdx::Expression, spdx::ParseError> {
-    spdx::Expression::parse(&canonical_license_case(expression))
+    let mode = spdx::ParseMode {
+        allow_deprecated: true,
+        allow_postfix_plus_on_gpl: true,
+        ..spdx::ParseMode::STRICT
+    };
+    spdx::Expression::parse_mode(&canonical_license_case(expression), mode)
 }
 
 /// extracts individual license IDs from an SPDX expression.
 ///
 /// parses the expression and returns all license IDs found, including
-/// `LicenseRef-` identifiers. if parsing fails, returns the string,
+/// `LicenseRef-` identifiers. deprecated identifiers are kept, and a GNU `+`
+/// reads as the `-or-later` identifier. if parsing fails, returns the string,
 /// respelled by [`canonical_license_case`], as a single-element set.
 ///
 /// # Example
@@ -644,6 +650,17 @@ fn to_requirement(req: &spdx::LicenseReq) -> LicenseRequirement {
     }
 }
 
+/// reads a flat identifier as the requirement it is inside an expression.
+fn flat_requirement(id: &str) -> LicenseRequirement {
+    if let Ok(expr) = parse_expression(id) {
+        let mut reqs = expr.requirements();
+        if let (Some(req), None) = (reqs.next(), reqs.next()) {
+            return to_requirement(&req.req);
+        }
+    }
+    LicenseRequirement::new(id)
+}
+
 /// the licensing a component declares.
 ///
 /// carries the SPDX expression when the source document had one, so `AND`/`OR`
@@ -695,9 +712,7 @@ impl<'a> Licensing<'a> {
                 return expr.evaluate(|req| acceptable(&to_requirement(req)));
             }
         }
-        self.ids
-            .iter()
-            .all(|id| acceptable(&LicenseRequirement::new(id)))
+        self.ids.iter().all(|id| acceptable(&flat_requirement(id)))
     }
 
     /// returns every requirement the licensing mentions, whether or not a
@@ -714,7 +729,7 @@ impl<'a> Licensing<'a> {
                 }
             }
         }
-        self.ids.iter().map(LicenseRequirement::new).collect()
+        self.ids.iter().map(|id| flat_requirement(id)).collect()
     }
 
     /// returns the minimal requirement sets that satisfy the licensing, or
@@ -728,7 +743,7 @@ impl<'a> Licensing<'a> {
         Some(BTreeSet::from([self
             .ids
             .iter()
-            .map(LicenseRequirement::new)
+            .map(|id| flat_requirement(id))
             .collect()]))
     }
 
@@ -1208,6 +1223,7 @@ mod tests {
         assert!(licensing("MIT OR Apache-2.0", &ids).satisfiable(only_mit));
         assert!(!licensing("MIT AND Apache-2.0", &ids).satisfiable(only_mit));
         assert!(licensing("mit OR Apache-2.0", &ids).satisfiable(only_mit));
+        assert!(licensing("MIT OR GPL-2.0", &ids).satisfiable(only_mit));
 
         let nested: BTreeSet<String> =
             ["Apache-2.0".into(), "BSD-3-Clause".into(), "MIT".into()].into();
@@ -1231,6 +1247,21 @@ mod tests {
         let free_text = licensing("Custom License", &ids);
         assert!(free_text.satisfiable(|r| r.license == "Custom License"));
         assert!(!free_text.satisfiable(|_| false));
+    }
+
+    #[test]
+    fn test_licensing_reads_a_flat_id_as_an_expression_does() {
+        for (flat, expression) in [
+            ("GPL-2.0+", "GPL-2.0-or-later"),
+            ("lgpl-2.1+", "LGPL-2.1-or-later"),
+        ] {
+            let ids = BTreeSet::from([flat.to_string()]);
+            let read = Licensing::from_ids(&ids);
+            let expected = licensing(expression, &ids);
+            assert_eq!(read.requirements(), expected.requirements(), "{flat}");
+            assert!(licensings_equivalent(read, expected), "{flat}");
+            assert!(read.satisfiable(|r| r.license == expression), "{flat}");
+        }
     }
 
     #[test]
@@ -1358,6 +1389,12 @@ mod tests {
             ("MIT OR GPL-3.0-only", "GPL-3.0-only", &["GPL-3.0-only"]),
             ("GPL-3.0-only", "AGPL-3.0-only", &["AGPL-3.0-only"]),
             ("MIT", "MIT AND GPL-3.0-only", &["GPL-3.0-only"]),
+            ("MIT", "MIT AND GPL-2.0", &["GPL-2.0"]),
+            (
+                "MIT",
+                "GPL-2.0+ WITH Classpath-exception-2.0",
+                &["GPL-2.0-or-later"],
+            ),
             (
                 "GPL-2.0-only OR GPL-3.0-only",
                 "AGPL-3.0-only",
@@ -1397,6 +1434,7 @@ mod tests {
             ),
             ("MIT", "(mit OR gpl-3.0-only) AND mpl-2.0", &["MPL-2.0"]),
             ("GPL-2.0+", "gpl-2.0+", &[]),
+            ("GPL-3.0+", "GPL-3.0-or-later", &[]),
         ] {
             assert_eq!(
                 copyleft_added(old, new),
@@ -1518,6 +1556,10 @@ mod tests {
             "mit or apache-2.0",
             "apache-2.0 or mit"
         ));
+        assert!(license_expressions_equivalent(
+            "MIT AND GPL-2.0",
+            "GPL-2.0 AND MIT"
+        ));
         assert!(!license_expressions_equivalent(
             "MIT OR Apache-2.0",
             "MIT OR BSD-3-Clause"
@@ -1597,6 +1639,12 @@ mod tests {
             ("MIT", &["MIT"]),
             ("MIT AND Apache-2.0", &["Apache-2.0", "MIT"]),
             ("mit OR apache-2.0", &["Apache-2.0", "MIT"]),
+            ("MIT AND GPL-2.0", &["GPL-2.0", "MIT"]),
+            ("GPL-3.0+", &["GPL-3.0-or-later"]),
+            (
+                "gpl-2.0+ WITH classpath-exception-2.0",
+                &["GPL-2.0-or-later"],
+            ),
             // invalid expression kept as-is
             ("Custom License", &["Custom License"]),
             ("LicenseRef-proprietary", &["LicenseRef-proprietary"]),
