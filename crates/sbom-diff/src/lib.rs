@@ -176,9 +176,9 @@ impl Diff {
 
         // filter edge diffs by parent ecosystem; keep edges whose parent is
         // unknown (not in the map) as a conservative default.
-        self.retain_edges(|parent| {
+        self.retain_edges(|edge| {
             component_ecosystems
-                .get(parent)
+                .get(&edge.parent)
                 .map(|eco| matches(eco.as_deref()))
                 .unwrap_or(true)
         });
@@ -194,9 +194,9 @@ impl Diff {
             .saturating_sub(self.changed.len());
     }
 
-    /// keeps the edge diffs whose parent `keep` accepts, and the names they still use.
-    fn retain_edges(&mut self, keep: impl Fn(&ComponentId) -> bool) {
-        self.edge_diffs.retain(|edge| keep(&edge.parent));
+    /// keeps the edge diffs `keep` accepts, after it trims them, and the names they still use.
+    fn retain_edges(&mut self, keep: impl FnMut(&mut EdgeDiff) -> bool) {
+        self.edge_diffs.retain_mut(keep);
 
         let mut referenced_ids = BTreeSet::new();
         for edge in &self.edge_diffs {
@@ -826,34 +826,58 @@ impl Differ {
 
     /// [`diff_owned`](Self::diff_owned) over the ecosystems `filter` keeps.
     ///
-    /// added and removed components are kept by their own ecosystem, a changed
-    /// component when either side's is kept, and an edge change by its parent's;
-    /// a kept change counts in both totals.
+    /// added and removed components are kept by their own ecosystem and a changed
+    /// component when either side's is kept; a kept change counts in both totals.
+    /// an edge change is kept when its parent is kept on either side and its child
+    /// on the side the edge is on: the new side for an added dependency, the old
+    /// side for a removed one, and either side for a changed kind.
     pub fn diff_filtered(old: Sbom, new: Sbom, filter: &EcosystemFilter) -> Diff {
         if filter.is_empty() {
             return Self::diff_owned(old, new, None);
         }
-        let ecosystems: BTreeMap<ComponentId, Option<String>> = old
-            .components
-            .iter()
-            .chain(&new.components)
-            .map(|(id, c)| (id.clone(), c.ecosystem.clone()))
-            .collect();
-        let kept_new = new.components.values().filter(|c| filter.keeps(c)).count();
+        let ecosystems = |sbom: &Sbom| -> BTreeMap<ComponentId, Option<String>> {
+            sbom.components
+                .iter()
+                .map(|(id, c)| (id.clone(), c.ecosystem.clone()))
+                .collect()
+        };
+        let (mut old_ecosystems, new_ecosystems) = (ecosystems(&old), ecosystems(&new));
+        let new_kept_total = new.components.values().filter(|c| filter.keeps(c)).count();
 
         let mut diff = Self::diff_owned(old, new, None);
+        // edge diffs name a matched component by its new id
+        old_ecosystems.extend(
+            diff.changed
+                .iter()
+                .map(|c| (c.id.clone(), c.old.ecosystem.clone())),
+        );
+        let kept = |side: &BTreeMap<ComponentId, Option<String>>,
+                    other: &BTreeMap<ComponentId, Option<String>>,
+                    id: &ComponentId| {
+            side.get(id)
+                .or_else(|| other.get(id))
+                .is_none_or(|eco| filter.matches(eco.as_deref()))
+        };
+        let kept_old = |id: &ComponentId| kept(&old_ecosystems, &new_ecosystems, id);
+        let kept_new = |id: &ComponentId| kept(&new_ecosystems, &old_ecosystems, id);
+
         diff.added.retain(|c| filter.keeps(c));
         diff.removed.retain(|c| filter.keeps(c));
         diff.changed
             .retain(|c| filter.keeps(&c.old) || filter.keeps(&c.new));
-        diff.retain_edges(|parent| {
-            ecosystems
-                .get(parent)
-                .is_none_or(|eco| filter.matches(eco.as_deref()))
+        diff.retain_edges(|edge| {
+            if !kept_old(&edge.parent) && !kept_new(&edge.parent) {
+                return false;
+            }
+            edge.added.retain(|child, _| kept_new(child));
+            edge.removed.retain(|child, _| kept_old(child));
+            edge.kind_changed
+                .retain(|child, _| kept_old(child) || kept_new(child));
+            !(edge.added.is_empty() && edge.removed.is_empty() && edge.kind_changed.is_empty())
         });
 
         let changed_new = diff.changed.iter().filter(|c| filter.keeps(&c.new)).count();
-        diff.unchanged = kept_new - diff.added.len() - changed_new;
+        diff.unchanged = new_kept_total - diff.added.len() - changed_new;
         let matched = diff.changed.len() + diff.unchanged;
         diff.old_total = diff.removed.len() + matched;
         diff.new_total = diff.added.len() + matched;
@@ -2574,6 +2598,118 @@ mod tests {
         assert_eq!((diff.unchanged, diff.old_total, diff.new_total), (1, 3, 4));
         let parents: Vec<_> = diff.edge_diffs.iter().map(|e| &e.parent).collect();
         assert_eq!(parents, [&id("same", "1.0")]);
+        let mut names: Vec<_> = diff.component_names.values().map(String::as_str).collect();
+        names.sort();
+        assert_eq!(names, ["gained@1.0", "lost@1.0", "same@1.0"]);
+    }
+
+    #[test]
+    fn diff_filtered_keeps_an_edge_change_when_both_ends_are_kept() {
+        let comp = |name: &str, eco: Option<&str>, purl: bool| {
+            let mut c = Component::new(name.into(), Some("1.0".into()));
+            c.ecosystem = eco.map(Into::into);
+            if purl {
+                let purl = format!("pkg:{}/{name}@1.0", eco.unwrap());
+                c.id = ComponentId::new(Some(&purl), &[]);
+                c.purl = Some(purl);
+            }
+            c
+        };
+        let parents =
+            ["adds", "removes", "kinds", "solo"].map(|name| comp(name, Some("npm"), false));
+        let old_comps = [
+            &parents[..],
+            &[comp("lost", Some("npm"), true), comp("gained", None, false)],
+        ]
+        .concat();
+        let new_comps = [
+            &parents[..],
+            &[
+                comp("lost", None, false),
+                comp("gained", Some("npm"), true),
+                comp("g", Some("golang"), false),
+            ],
+        ]
+        .concat();
+        let names: BTreeMap<_, _> = old_comps
+            .iter()
+            .chain(&new_comps)
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        let sbom = |comps: &[Component], edges: &[(&str, &str, DependencyKind)]| {
+            let mut sbom = Sbom::default();
+            for c in comps {
+                sbom.components.insert(c.id.clone(), c.clone());
+            }
+            let id = |name: &str| comps.iter().find(|c| c.name == name).unwrap().id.clone();
+            for &(parent, child, kind) in edges {
+                sbom.insert_dependency(id(parent), id(child), kind);
+            }
+            sbom
+        };
+        let (runtime, dev) = (DependencyKind::Runtime, DependencyKind::Dev);
+        let old = sbom(
+            &old_comps,
+            &[
+                ("removes", "lost", runtime),
+                ("removes", "gained", runtime),
+                ("kinds", "lost", runtime),
+                ("kinds", "gained", runtime),
+            ],
+        );
+        let new = sbom(
+            &new_comps,
+            &[
+                ("adds", "lost", runtime),
+                ("adds", "gained", runtime),
+                ("adds", "g", runtime),
+                ("kinds", "lost", dev),
+                ("kinds", "gained", dev),
+                ("solo", "g", runtime),
+            ],
+        );
+
+        for (filter, expected) in [
+            (
+                EcosystemFilter::new(["npm"], []),
+                ["adds +gained", "kinds ~gained ~lost", "removes -lost"],
+            ),
+            (
+                EcosystemFilter::new([], ["golang"]),
+                [
+                    "adds +gained +lost",
+                    "kinds ~gained ~lost",
+                    "removes -gained -lost",
+                ],
+            ),
+        ] {
+            let diff = Differ::diff_filtered(old.clone(), new.clone(), &filter);
+            let mut edges: Vec<_> = diff
+                .edge_diffs
+                .iter()
+                .map(|e| {
+                    let mut children: Vec<_> = e
+                        .added
+                        .keys()
+                        .map(|id| ('+', id))
+                        .chain(e.removed.keys().map(|id| ('-', id)))
+                        .chain(e.kind_changed.keys().map(|id| ('~', id)))
+                        .map(|(sign, id)| format!("{sign}{}", names[id]))
+                        .collect();
+                    children.sort();
+                    format!("{} {}", names[&e.parent], children.join(" "))
+                })
+                .collect();
+            edges.sort();
+            assert_eq!(edges, expected, "{filter:?}");
+            let mut kept: Vec<_> = diff.component_names.values().map(String::as_str).collect();
+            kept.sort();
+            assert_eq!(
+                kept,
+                ["adds@1.0", "kinds@1.0", "lost@1.0", "removes@1.0"],
+                "{filter:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,48 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "app",
+      "version": "1.0.0",
+      "bom-ref": "app-ref"
+    },
+    {
+      "type": "library",
+      "name": "b",
+      "version": "1.0.0",
+      "bom-ref": "b-ref",
+      "purl": "pkg:npm/b@1.0.0"
+    },
+    {
+      "type": "library",
+      "name": "c",
+      "version": "1.0.0",
+      "bom-ref": "c-ref",
+      "purl": "pkg:npm/c@1.0.0"
+    },
+    {
+      "type": "library",
+      "name": "x",
+      "version": "1.0.0",
+      "bom-ref": "x-ref"
+    },
+    {
+      "type": "library",
+      "name": "y",
+      "version": "1.0.0",
+      "bom-ref": "y-ref"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "app-ref",
+      "dependsOn": [
+        "c-ref",
+        "y-ref"
+      ]
+    }
+  ]
+}

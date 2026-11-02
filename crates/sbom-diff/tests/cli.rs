@@ -1496,6 +1496,48 @@ fn ecosystem_filter_scopes_every_gate() {
             ["--fail-on", "ecosystem-changed"],
             3,
         ),
+        (
+            "edge-scope-parent-old.json",
+            "edge-scope-parent-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "deps"],
+            3,
+        ),
+        (
+            "edge-scope-parent-new.json",
+            "edge-scope-parent-old.json",
+            ["--include-ecosystem", "unknown"],
+            ["--fail-on", "deps"],
+            3,
+        ),
+        (
+            "edge-scope-parent-old.json",
+            "edge-scope-parent-new.json",
+            ["--include-ecosystem", "cargo"],
+            ["--fail-on", "deps"],
+            0,
+        ),
+        (
+            "edge-scope-child-old.json",
+            "edge-scope-child-new.json",
+            ["--exclude-ecosystem", "golang"],
+            ["--fail-on", "deps"],
+            0,
+        ),
+        (
+            "edge-scope-child-new.json",
+            "edge-scope-child-old.json",
+            ["--exclude-ecosystem", "golang"],
+            ["--fail-on", "deps"],
+            0,
+        ),
+        (
+            "edge-scope-child-old.json",
+            "edge-scope-child-new.json",
+            ["--exclude-ecosystem", "pypi"],
+            ["--fail-on", "deps"],
+            3,
+        ),
     ] {
         let out = sbom_diff()
             .arg(fixture(old))
