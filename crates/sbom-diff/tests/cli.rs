@@ -1511,6 +1511,13 @@ fn ecosystem_filter_scopes_every_gate() {
             3,
         ),
         (
+            "edge-scope-parent-new.json",
+            "edge-scope-parent-old.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "deps"],
+            3,
+        ),
+        (
             "edge-scope-parent-old.json",
             "edge-scope-parent-new.json",
             ["--include-ecosystem", "cargo"],

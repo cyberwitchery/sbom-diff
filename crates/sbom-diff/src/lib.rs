@@ -2619,7 +2619,11 @@ mod tests {
             ["adds", "removes", "kinds", "solo"].map(|name| comp(name, Some("npm"), false));
         let old_comps = [
             &parents[..],
-            &[comp("lost", Some("npm"), true), comp("gained", None, false)],
+            &[
+                comp("lost", Some("npm"), true),
+                comp("gained", None, false),
+                comp("g", Some("golang"), false),
+            ],
         ]
         .concat();
         let new_comps = [
@@ -2628,6 +2632,7 @@ mod tests {
                 comp("lost", None, false),
                 comp("gained", Some("npm"), true),
                 comp("g", Some("golang"), false),
+                comp("p", Some("golang"), false),
             ],
         ]
         .concat();
@@ -2655,6 +2660,7 @@ mod tests {
                 ("removes", "gained", runtime),
                 ("kinds", "lost", runtime),
                 ("kinds", "gained", runtime),
+                ("kinds", "g", runtime),
             ],
         );
         let new = sbom(
@@ -2666,6 +2672,8 @@ mod tests {
                 ("kinds", "lost", dev),
                 ("kinds", "gained", dev),
                 ("solo", "g", runtime),
+                ("kinds", "g", dev),
+                ("p", "gained", runtime),
             ],
         );
 
