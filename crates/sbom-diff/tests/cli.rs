@@ -1438,6 +1438,83 @@ fn include_ecosystem_with_fail_on_respects_filter() {
 }
 
 #[test]
+fn ecosystem_filter_scopes_every_gate() {
+    for (old, new, filter, gate, code) in [
+        (
+            "dual-violation-old.json",
+            "dual-violation-new.json",
+            ["--exclude-ecosystem", "npm"],
+            ["--deny-license", "GPL-3.0-only"],
+            0,
+        ),
+        (
+            "dual-violation-old.json",
+            "dual-violation-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--deny-license", "GPL-3.0-only"],
+            2,
+        ),
+        (
+            "checksum-changed-old.json",
+            "checksum-changed-new.json",
+            ["--exclude-ecosystem", "npm"],
+            ["--allow-license", "MIT"],
+            0,
+        ),
+        (
+            "checksum-changed-old.json",
+            "checksum-changed-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--allow-license", "MIT"],
+            2,
+        ),
+        (
+            "cyclic-dep-old.json",
+            "cyclic-dep-new.json",
+            ["--include-ecosystem", "none"],
+            ["--fail-on", "cyclic-dependency"],
+            0,
+        ),
+        (
+            "cyclic-dep-old.json",
+            "cyclic-dep-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "cyclic-dependency"],
+            3,
+        ),
+        (
+            "ecosystem-changed-new.json",
+            "ecosystem-changed-old.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "ecosystem-changed"],
+            3,
+        ),
+        (
+            "ecosystem-changed-new.json",
+            "ecosystem-changed-old.json",
+            ["--include-ecosystem", "unknown"],
+            ["--fail-on", "ecosystem-changed"],
+            3,
+        ),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .arg("-q")
+            .args(filter)
+            .args(gate)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{old} {new} {filter:?} {gate:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn fail_on_hash_algorithm_downgrade_exits_3() {
     let out = sbom_diff()
         .arg(fixture("hash-downgrade-old.json"))

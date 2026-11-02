@@ -176,23 +176,12 @@ impl Diff {
 
         // filter edge diffs by parent ecosystem; keep edges whose parent is
         // unknown (not in the map) as a conservative default.
-        self.edge_diffs.retain(|edge| {
+        self.retain_edges(|parent| {
             component_ecosystems
-                .get(&edge.parent)
+                .get(parent)
                 .map(|eco| matches(eco.as_deref()))
                 .unwrap_or(true)
         });
-
-        // prune component_names to only IDs still referenced in edge diffs
-        let mut referenced_ids = BTreeSet::new();
-        for edge in &self.edge_diffs {
-            referenced_ids.insert(&edge.parent);
-            referenced_ids.extend(edge.added.keys());
-            referenced_ids.extend(edge.removed.keys());
-            referenced_ids.extend(edge.kind_changed.keys());
-        }
-        self.component_names
-            .retain(|id, _| referenced_ids.contains(id));
 
         self.old_total = filtered_old_total;
         self.new_total = filtered_new_total;
@@ -203,6 +192,21 @@ impl Diff {
         self.unchanged = filtered_new_total
             .saturating_sub(self.added.len())
             .saturating_sub(self.changed.len());
+    }
+
+    /// keeps the edge diffs whose parent `keep` accepts, and the names they still use.
+    fn retain_edges(&mut self, keep: impl Fn(&ComponentId) -> bool) {
+        self.edge_diffs.retain(|edge| keep(&edge.parent));
+
+        let mut referenced_ids = BTreeSet::new();
+        for edge in &self.edge_diffs {
+            referenced_ids.insert(&edge.parent);
+            referenced_ids.extend(edge.added.keys());
+            referenced_ids.extend(edge.removed.keys());
+            referenced_ids.extend(edge.kind_changed.keys());
+        }
+        self.component_names
+            .retain(|id, _| referenced_ids.contains(id));
     }
 
     /// keeps only the changes to the fields in `only`: a changed component left
@@ -452,6 +456,82 @@ fn purls_equal(old: Option<&str>, new: Option<&str>) -> bool {
             (Some(Some(a)), Some(Some(b))) => a == b,
             _ => false,
         }
+}
+
+/// the ecosystems a diff and its gates cover, as `--include-ecosystem` and
+/// `--exclude-ecosystem` select them.
+///
+/// names match case-insensitively, and a component without an ecosystem is in `unknown`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EcosystemFilter {
+    include: BTreeSet<String>,
+    exclude: BTreeSet<String>,
+}
+
+impl EcosystemFilter {
+    /// keeps the ecosystems in `include` (all of them when it is empty) not in `exclude`.
+    pub fn new<S: AsRef<str>>(
+        include: impl IntoIterator<Item = S>,
+        exclude: impl IntoIterator<Item = S>,
+    ) -> Self {
+        Self {
+            include: include
+                .into_iter()
+                .map(|eco| eco.as_ref().to_ascii_lowercase())
+                .collect(),
+            exclude: exclude
+                .into_iter()
+                .map(|eco| eco.as_ref().to_ascii_lowercase())
+                .collect(),
+        }
+    }
+
+    /// whether the filter names no ecosystem, and so keeps everything.
+    pub fn is_empty(&self) -> bool {
+        self.include.is_empty() && self.exclude.is_empty()
+    }
+
+    /// whether the filter keeps `ecosystem`; `None` is `unknown`.
+    pub fn matches(&self, ecosystem: Option<&str>) -> bool {
+        let ecosystem = ecosystem.unwrap_or("unknown").to_ascii_lowercase();
+        (self.include.is_empty() || self.include.contains(&ecosystem))
+            && !self.exclude.contains(&ecosystem)
+    }
+
+    fn keeps(&self, component: &Component) -> bool {
+        self.matches(component.ecosystem.as_deref())
+    }
+
+    /// `sbom` cut down to the components the filter keeps and the dependency edges between them.
+    pub fn restrict<'a>(&self, sbom: &'a Sbom) -> Cow<'a, Sbom> {
+        if self.is_empty() {
+            return Cow::Borrowed(sbom);
+        }
+        let mut restricted = Sbom {
+            metadata: sbom.metadata.clone(),
+            components: sbom
+                .components
+                .iter()
+                .filter(|(_, c)| self.keeps(c))
+                .map(|(id, c)| (id.clone(), c.clone()))
+                .collect(),
+            dependencies: BTreeMap::new(),
+            reverse_deps: BTreeMap::new(),
+            warnings: sbom.warnings.clone(),
+        };
+        for (parent, children) in &sbom.dependencies {
+            if !restricted.components.contains_key(parent) {
+                continue;
+            }
+            for (child, kind) in children {
+                if restricted.components.contains_key(child) {
+                    restricted.insert_dependency(parent.clone(), child.clone(), *kind);
+                }
+            }
+        }
+        restricted.rebuild_reverse_deps();
+        Cow::Owned(restricted)
+    }
 }
 
 /// SBOM comparison engine.
@@ -741,6 +821,42 @@ impl Differ {
         if let Some(only) = only {
             diff.retain_fields(only);
         }
+        diff
+    }
+
+    /// [`diff_owned`](Self::diff_owned) over the ecosystems `filter` keeps.
+    ///
+    /// added and removed components are kept by their own ecosystem, a changed
+    /// component when either side's is kept, and an edge change by its parent's;
+    /// a kept change counts in both totals.
+    pub fn diff_filtered(old: Sbom, new: Sbom, filter: &EcosystemFilter) -> Diff {
+        if filter.is_empty() {
+            return Self::diff_owned(old, new, None);
+        }
+        let ecosystems: BTreeMap<ComponentId, Option<String>> = old
+            .components
+            .iter()
+            .chain(&new.components)
+            .map(|(id, c)| (id.clone(), c.ecosystem.clone()))
+            .collect();
+        let kept_new = new.components.values().filter(|c| filter.keeps(c)).count();
+
+        let mut diff = Self::diff_owned(old, new, None);
+        diff.added.retain(|c| filter.keeps(c));
+        diff.removed.retain(|c| filter.keeps(c));
+        diff.changed
+            .retain(|c| filter.keeps(&c.old) || filter.keeps(&c.new));
+        diff.retain_edges(|parent| {
+            ecosystems
+                .get(parent)
+                .is_none_or(|eco| filter.matches(eco.as_deref()))
+        });
+
+        let changed_new = diff.changed.iter().filter(|c| filter.keeps(&c.new)).count();
+        diff.unchanged = kept_new - diff.added.len() - changed_new;
+        let matched = diff.changed.len() + diff.unchanged;
+        diff.old_total = diff.removed.len() + matched;
+        diff.new_total = diff.added.len() + matched;
         diff
     }
 
@@ -2353,6 +2469,111 @@ mod tests {
             });
             assert!(referenced, "stale component_name entry for {}", id);
         }
+    }
+
+    #[test]
+    fn ecosystem_filter_matches() {
+        for (include, exclude, ecosystem, kept) in [
+            (&[][..], &[][..], Some("npm"), true),
+            (&["npm"], &[], Some("NPM"), true),
+            (&["NPM"], &[], Some("npm"), true),
+            (&["npm"], &[], None, false),
+            (&["unknown"], &[], None, true),
+            (&[], &["Unknown"], None, false),
+            (&[], &["npm"], Some("pypi"), true),
+            (&["npm", "cargo"], &["cargo"], Some("cargo"), false),
+        ] {
+            assert_eq!(
+                EcosystemFilter::new(include, exclude).matches(ecosystem),
+                kept,
+                "{include:?} {exclude:?} {ecosystem:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restrict_finds_cycles_among_kept_components() {
+        let mut sbom = Sbom::default();
+        let [a, x, b] = [("cargo", "a"), ("golang", "x"), ("npm", "b")].map(|(eco, name)| {
+            let purl = format!("pkg:{eco}/{name}@1.0");
+            let mut c = Component::new(name.into(), Some("1.0".into()));
+            c.id = ComponentId::new(Some(&purl), &[]);
+            c.purl = Some(purl);
+            c.ecosystem = Some(eco.into());
+            sbom.components.insert(c.id.clone(), c.clone());
+            c.id
+        });
+        for (parent, child) in [(&a, &x), (&x, &b), (&b, &a), (&a, &b)] {
+            sbom.insert_dependency(parent.clone(), child.clone(), DependencyKind::Runtime);
+        }
+
+        assert_eq!(
+            sbom.detect_cycles(),
+            [vec![a.clone(), x.clone(), b.clone(), a.clone()]]
+        );
+        let no_golang = EcosystemFilter::new([], ["golang"]).restrict(&sbom);
+        assert_eq!(
+            no_golang.detect_cycles(),
+            [vec![a.clone(), b.clone(), a.clone()]]
+        );
+        let edges: Vec<_> = no_golang
+            .dependencies
+            .iter()
+            .flat_map(|(parent, children)| children.keys().map(move |child| (parent, child)))
+            .collect();
+        assert_eq!(edges, [(&a, &b), (&b, &a)]);
+        assert!(EcosystemFilter::new(["npm"], [])
+            .restrict(&sbom)
+            .detect_cycles()
+            .is_empty());
+    }
+
+    #[test]
+    fn diff_filtered_keeps_a_change_by_either_ecosystem() {
+        let id = |name: &str, version: &str| Component::new(name.into(), Some(version.into())).id;
+        let sbom = |comps: [(&str, Option<&str>, &str); 5], edges: [(usize, usize); 2]| {
+            let mut sbom = Sbom::default();
+            for (name, eco, version) in comps {
+                let mut c = Component::new(name.into(), Some(version.into()));
+                c.ecosystem = eco.map(Into::into);
+                sbom.components.insert(c.id.clone(), c);
+            }
+            for (parent, child) in edges {
+                let (p, c) = (comps[parent], comps[child]);
+                sbom.insert_dependency(id(p.0, p.2), id(c.0, c.2), DependencyKind::Runtime);
+            }
+            sbom
+        };
+        let old = sbom(
+            [
+                ("same", Some("npm"), "1.0"),
+                ("lost", Some("npm"), "1.0"),
+                ("gained", None, "1.0"),
+                ("other", Some("cargo"), "1.0"),
+                ("gone", Some("cargo"), "1.0"),
+            ],
+            [(0, 1), (3, 4)],
+        );
+        let new = sbom(
+            [
+                ("same", Some("npm"), "1.0"),
+                ("lost", None, "1.0"),
+                ("gained", Some("npm"), "1.0"),
+                ("other", Some("cargo"), "2.0"),
+                ("added", Some("npm"), "1.0"),
+            ],
+            [(0, 2), (3, 4)],
+        );
+
+        let diff = Differ::diff_filtered(old, new, &EcosystemFilter::new(["npm"], []));
+        let mut changed: Vec<_> = diff.changed.iter().map(|c| c.new.name.as_str()).collect();
+        changed.sort();
+        assert_eq!(changed, ["gained", "lost"]);
+        assert_eq!(diff.added.len(), 1);
+        assert!(diff.removed.is_empty());
+        assert_eq!((diff.unchanged, diff.old_total, diff.new_total), (1, 3, 4));
+        let parents: Vec<_> = diff.edge_diffs.iter().map(|e| &e.parent).collect();
+        assert_eq!(parents, [&id("same", "1.0")]);
     }
 
     #[test]
