@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{Diff, EcosystemCounts, EdgeDiff};
 use sbom_model::Component;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::Write;
 
@@ -18,7 +19,7 @@ impl FieldChangeFormatter for TextRenderer {
         old: &str,
         new: &str,
     ) -> std::io::Result<()> {
-        writeln!(w, "  {}: {} -> {}", name, old, new)
+        writeln!(w, "  {}: {} -> {}", name, escaped(old), escaped(new))
     }
 
     fn hash_header<W: Write>(&self, w: &mut W, downgrade: bool) -> std::io::Result<()> {
@@ -30,7 +31,7 @@ impl FieldChangeFormatter for TextRenderer {
     }
 
     fn hash_removed<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
-        writeln!(w, "    - {}: {}", algo, digest)
+        writeln!(w, "    - {}: {}", escaped(algo), escaped(digest))
     }
 
     fn hash_changed<W: Write>(
@@ -40,15 +41,21 @@ impl FieldChangeFormatter for TextRenderer {
         old: &str,
         new: &str,
     ) -> std::io::Result<()> {
-        writeln!(w, "    ~ {}: {} -> {}", algo, old, new)
+        writeln!(
+            w,
+            "    ~ {}: {} -> {}",
+            escaped(algo),
+            escaped(old),
+            escaped(new)
+        )
     }
 
     fn hash_added<W: Write>(&self, w: &mut W, algo: &str, digest: &str) -> std::io::Result<()> {
-        writeln!(w, "    + {}: {}", algo, digest)
+        writeln!(w, "    + {}: {}", escaped(algo), escaped(digest))
     }
 
     fn component_header<W: Write>(&self, w: &mut W, id: &str) -> std::io::Result<()> {
-        writeln!(w, "{}", id)
+        writeln!(w, "{}", escaped(id))
     }
 }
 
@@ -57,10 +64,10 @@ impl FullFormatter for TextRenderer {
         writeln!(w, "[!] Warnings")?;
         writeln!(w, "------------")?;
         for warning in &opts.old_warnings {
-            writeln!(w, "[old] {}", warning)?;
+            writeln!(w, "[old] {}", escaped(warning))?;
         }
         for warning in &opts.new_warnings {
-            writeln!(w, "[new] {}", warning)?;
+            writeln!(w, "[new] {}", escaped(warning))?;
         }
         writeln!(w)
     }
@@ -83,14 +90,17 @@ impl FullFormatter for TextRenderer {
             writeln!(
                 w,
                 "{}: {} added, {} removed, {} changed",
-                eco, counts.added, counts.removed, counts.changed
+                escaped(eco),
+                counts.added,
+                counts.removed,
+                counts.changed
             )?;
         }
         writeln!(w)
     }
 
     fn full_ecosystem_header<W: Write>(&self, w: &mut W, ecosystem: &str) -> std::io::Result<()> {
-        writeln!(w, "[{}]", ecosystem)?;
+        writeln!(w, "[{}]", escaped(ecosystem))?;
         writeln!(w)
     }
 
@@ -127,7 +137,7 @@ impl FullFormatter for TextRenderer {
         components: &[Component],
     ) -> std::io::Result<()> {
         for c in components {
-            writeln!(w, "{}", labels.component(c))?;
+            writeln!(w, "{}", escaped(labels.component(c)))?;
         }
         Ok(())
     }
@@ -143,18 +153,23 @@ impl FullFormatter for TextRenderer {
         labels: &Labels,
         edge: &EdgeDiff,
     ) -> std::io::Result<()> {
-        writeln!(w, "{}", labels.id(&edge.parent))?;
+        writeln!(w, "{}", escaped(labels.id(&edge.parent)))?;
         for (removed, kind) in &edge.removed {
-            writeln!(w, "  - {}{}", labels.id(removed), kind_suffix(kind))?;
+            writeln!(
+                w,
+                "  - {}{}",
+                escaped(labels.id(removed)),
+                kind_suffix(kind)
+            )?;
         }
         for (added, kind) in &edge.added {
-            writeln!(w, "  + {}{}", labels.id(added), kind_suffix(kind))?;
+            writeln!(w, "  + {}{}", escaped(labels.id(added)), kind_suffix(kind))?;
         }
         for (changed, (old_kind, new_kind)) in &edge.kind_changed {
             writeln!(
                 w,
                 "  ~ {} ({} -> {})",
-                labels.id(changed),
+                escaped(labels.id(changed)),
                 old_kind,
                 new_kind
             )?;
@@ -192,10 +207,10 @@ impl SummaryFormatter for TextRenderer {
     fn write_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()> {
         writeln!(w, "Warnings:     {}", opts.warning_count())?;
         for warning in &opts.old_warnings {
-            writeln!(w, "  [old] {}", warning)?;
+            writeln!(w, "  [old] {}", escaped(warning))?;
         }
         for warning in &opts.new_warnings {
-            writeln!(w, "  [new] {}", warning)?;
+            writeln!(w, "  [new] {}", escaped(warning))?;
         }
         writeln!(w)
     }
@@ -230,7 +245,10 @@ impl SummaryFormatter for TextRenderer {
             writeln!(
                 w,
                 "  {}: {} added, {} removed, {} changed",
-                eco, counts.added, counts.removed, counts.changed
+                escaped(eco),
+                counts.added,
+                counts.removed,
+                counts.changed
             )?;
         }
         Ok(())
@@ -247,4 +265,24 @@ impl SummaryRenderer for TextRenderer {
         write_summary(self, diff, opts, writer)?;
         Ok(())
     }
+}
+
+/// writes control and bidi characters as escapes, so a value can neither break nor reorder its line.
+fn escaped(text: &str) -> Cow<'_, str> {
+    if !text.contains(is_escaped) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_escaped(c) {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
+}
+
+fn is_escaped(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }

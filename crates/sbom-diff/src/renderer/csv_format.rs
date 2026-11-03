@@ -3,19 +3,44 @@ use super::{
 };
 use crate::{Diff, FieldChange};
 use sbom_model::is_hash_algorithm_downgrade;
+use std::borrow::Cow;
 use std::io::Write;
 
-/// creates a [`csv::Writer`] configured for this crate's output conventions
+/// creates a [`CsvWriter`] configured for this crate's output conventions
 /// (LF line endings, no BOM).
-fn csv_writer<W: Write>(writer: W) -> csv::Writer<W> {
-    csv::WriterBuilder::new()
-        .terminator(csv::Terminator::Any(b'\n'))
-        .from_writer(writer)
+fn csv_writer<W: Write>(writer: W) -> CsvWriter<W> {
+    CsvWriter(
+        csv::WriterBuilder::new()
+            .terminator(csv::Terminator::Any(b'\n'))
+            .from_writer(writer),
+    )
+}
+
+/// a [`csv::Writer`] that prefixes `'` to every cell a spreadsheet would read as a formula.
+struct CsvWriter<W: Write>(csv::Writer<W>);
+
+impl<W: Write> CsvWriter<W> {
+    fn write_record<const N: usize>(&mut self, cells: [&str; N]) -> csv::Result<()> {
+        self.0
+            .write_record(cells.map(neutralize).iter().map(|cell| cell.as_bytes()))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+fn neutralize(cell: &str) -> Cow<'_, str> {
+    if cell.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        Cow::Owned(format!("'{cell}"))
+    } else {
+        Cow::Borrowed(cell)
+    }
 }
 
 /// writes parser-warning rows using the `status,component,ecosystem,field,old_value,new_value`
 /// schema, shared by the full and summary renderers so both surface warnings identically.
-fn write_warning_rows<W: Write>(wtr: &mut csv::Writer<W>, opts: &RenderOptions) -> csv::Result<()> {
+fn write_warning_rows<W: Write>(wtr: &mut CsvWriter<W>, opts: &RenderOptions) -> csv::Result<()> {
     for w in &opts.old_warnings {
         wtr.write_record(["warning", "old", "", "", w, ""])?;
     }
