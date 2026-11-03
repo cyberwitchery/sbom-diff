@@ -284,5 +284,9 @@ fn escaped(text: &str) -> Cow<'_, str> {
 }
 
 fn is_escaped(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    c.is_control()
+        || matches!(
+            c,
+            '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
 }

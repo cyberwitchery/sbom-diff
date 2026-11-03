@@ -2166,6 +2166,9 @@ fn test_text_escapes_control_characters_in_values() {
         ("\u{202e}", "\\u{202e}"),
         ("\u{2066}", "\\u{2066}"),
         ("\u{2069}", "\\u{2069}"),
+        ("\u{61c}", "\\u{61c}"),
+        ("\u{200e}", "\\u{200e}"),
+        ("\u{200f}", "\\u{200f}"),
     ] {
         let expected = clean.replace("VALUE", &format!("a{escape}b"));
         assert_eq!(render(&format!("a{c}b")), expected, "{c:?}");
