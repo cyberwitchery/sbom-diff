@@ -404,8 +404,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("warning: {}", w);
     }
 
-    // build render options and run license checks before diff_filtered consumes
-    // the SBOMs — this avoids cloning both SBOMs inside the differ.
+    // the differ consumes both sboms, so copy the warnings out first.
     let render_opts = RenderOptions {
         group_by_ecosystem: args.group_by_ecosystem,
         show_warnings: args.show_warnings,
@@ -414,15 +413,26 @@ fn main() -> anyhow::Result<()> {
     };
 
     let filter = EcosystemFilter::new(&args.include_ecosystem, &args.exclude_ecosystem);
-    let (license_violation, cycle_violation) = {
-        let new_sbom = filter.restrict(&new_sbom);
+    let sbom_gates = |sbom: &Sbom| {
         (
-            check_licenses(&new_sbom, &args.deny_license, &args.allow_license),
-            check_cyclic_dependencies(&new_sbom, &args.fail_on),
+            check_licenses(sbom, &args.deny_license, &args.allow_license),
+            check_cyclic_dependencies(sbom, &args.fail_on),
         )
     };
-
-    let mut diff = Differ::diff_filtered(old_sbom, new_sbom, &filter);
+    let sbom_gates_active = !args.deny_license.is_empty()
+        || !args.allow_license.is_empty()
+        || args.fail_on.contains(&FailOn::CyclicDependency);
+    // under a filter, the license and cycle gates read the new sbom cut down to
+    // the components the diff covers, which the differ works out; otherwise
+    // they read it whole, before the differ consumes it.
+    let (mut diff, (license_violation, cycle_violation)) =
+        if sbom_gates_active && !filter.is_empty() {
+            let (diff, scope) = Differ::diff_filtered_with_scope(old_sbom, new_sbom, &filter);
+            (diff, sbom_gates(&scope))
+        } else {
+            let verdicts = sbom_gates(&new_sbom);
+            (Differ::diff_filtered(old_sbom, new_sbom, &filter), verdicts)
+        };
 
     let violations = collect_violations(&diff, &args.fail_on);
     for v in &violations {

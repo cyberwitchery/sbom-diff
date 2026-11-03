@@ -1545,6 +1545,50 @@ fn ecosystem_filter_scopes_every_gate() {
             ["--fail-on", "deps"],
             3,
         ),
+        // pkg-a loses its npm purl, turns GPL and closes a cycle with pkg-b:
+        // the sbom gates see it as the diff gates do, by either ecosystem.
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "copyleft-added"],
+            3,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--deny-license", "GPL-3.0-only"],
+            2,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--allow-license", "MIT"],
+            2,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "cyclic-dependency"],
+            3,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "cargo"],
+            ["--deny-license", "GPL-3.0-only"],
+            0,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "cargo"],
+            ["--fail-on", "cyclic-dependency"],
+            0,
+        ),
     ] {
         let out = sbom_diff()
             .arg(fixture(old))
@@ -1559,6 +1603,34 @@ fn ecosystem_filter_scopes_every_gate() {
             Some(code),
             "{old} {new} {filter:?} {gate:?}: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn ecosystem_filter_groups_a_straddling_change_by_its_kept_side() {
+    for (filter, group) in [
+        ("--include-ecosystem", "npm"),
+        ("--include-ecosystem", "unknown"),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture("ecosystem-changed-new.json"))
+            .arg(fixture("ecosystem-changed-old.json"))
+            .args([
+                filter,
+                group,
+                "--group-by-ecosystem",
+                "--summary",
+                "-o",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            summary["ecosystem_breakdown"],
+            serde_json::json!({ group: { "added": 0, "changed": 1, "removed": 0 } }),
+            "{filter} {group}"
         );
     }
 }
