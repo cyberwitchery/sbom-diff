@@ -2591,6 +2591,115 @@ fn license_gates_read_deprecated_ids_and_a_gnu_plus_inside_an_expression() {
 }
 
 #[test]
+fn license_policy_entries_that_cannot_match_an_spdx_license_are_rejected_or_warned() {
+    let dir = std::env::temp_dir().join("sbom-diff-cli-test-policy-entries");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sbom.json");
+
+    for (flag, entry, license, code, warns) in [
+        (
+            "--deny-license",
+            "GPL-3.0-only OR AGPL-3.0-only",
+            r#"{"license":{"id":"GPL-3.0-only"}}"#,
+            1,
+            false,
+        ),
+        (
+            "--allow-license",
+            "MIT OR Apache-2.0",
+            r#"{"license":{"id":"MIT"}}"#,
+            1,
+            false,
+        ),
+        (
+            "--deny-license",
+            "GLP-3.0-only",
+            r#"{"license":{"id":"GPL-3.0-only"}}"#,
+            0,
+            true,
+        ),
+        (
+            "--deny-license",
+            "Proprietary",
+            r#"{"license":{"name":"Proprietary"}}"#,
+            2,
+            true,
+        ),
+        (
+            "--deny-license",
+            "GPL-2.0-only WITH Foo-exception",
+            r#"{"license":{"id":"GPL-2.0-only"}}"#,
+            0,
+            true,
+        ),
+        (
+            "--deny-license",
+            "LicenseRef-acme",
+            r#"{"expression":"LicenseRef-acme"}"#,
+            2,
+            false,
+        ),
+        (
+            "--deny-license",
+            "GPL-2.0+",
+            r#"{"expression":"GPL-2.0-or-later"}"#,
+            2,
+            false,
+        ),
+        (
+            "--deny-license",
+            "GPL-2.0-only WITH Classpath-exception-2.0",
+            r#"{"expression":"GPL-2.0-only WITH Classpath-exception-2.0"}"#,
+            2,
+            false,
+        ),
+        (
+            "--deny-license",
+            "GPL-2.0",
+            r#"{"expression":"MIT AND GPL-2.0"}"#,
+            2,
+            false,
+        ),
+        (
+            "--allow-license",
+            "mit",
+            r#"{"license":{"id":"MIT"}}"#,
+            0,
+            false,
+        ),
+    ] {
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[{{"type":"library","name":"x","version":"1.0","purl":"pkg:npm/x@1.0","licenses":[{license}]}}]}}"#
+            ),
+        )
+        .unwrap();
+        let out = sbom_diff()
+            .arg(&path)
+            .arg(&path)
+            .args([flag, entry])
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(code), "{flag} {entry}: {stderr}");
+        assert_eq!(
+            stderr.contains("once per license"),
+            code == 1,
+            "{flag} {entry}: {stderr}"
+        );
+        assert_eq!(
+            stderr.contains("can only match a free-text license name"),
+            warns,
+            "{flag} {entry}: {stderr}"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn dropping_a_license_exception_is_a_license_change() {
     let out = sbom_diff()
         .arg(fixture("license-exception-old.spdx.json"))

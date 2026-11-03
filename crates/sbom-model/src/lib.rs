@@ -602,6 +602,21 @@ pub fn parse_license_expression(license: &str) -> BTreeSet<String> {
     }
 }
 
+/// reports whether `expression` parses as SPDX, as [`Licensing`] reads it: each
+/// term a listed license or exception id, in any case, or a `LicenseRef-`.
+///
+/// # Example
+///
+/// ```
+/// use sbom_model::is_spdx_expression;
+///
+/// assert!(is_spdx_expression("mit OR GPL-2.0+"));
+/// assert!(!is_spdx_expression("Proprietary"));
+/// ```
+pub fn is_spdx_expression(expression: &str) -> bool {
+    parse_expression(expression).is_ok()
+}
+
 /// a single license requirement: one identifier plus the `WITH` exception
 /// bound to it, if any.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
