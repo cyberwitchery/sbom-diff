@@ -1438,6 +1438,90 @@ fn include_ecosystem_with_fail_on_respects_filter() {
 }
 
 #[test]
+fn ecosystem_filter_scopes_every_gate() {
+    for (old, new, filter, gate, code) in [
+        (
+            "dual-violation-old.json",
+            "dual-violation-new.json",
+            ["--exclude-ecosystem", "npm"],
+            ["--deny-license", "GPL-3.0-only"],
+            0,
+        ),
+        (
+            "checksum-changed-old.json",
+            "checksum-changed-new.json",
+            ["--exclude-ecosystem", "npm"],
+            ["--allow-license", "MIT"],
+            0,
+        ),
+        (
+            "cyclic-dep-old.json",
+            "cyclic-dep-new.json",
+            ["--include-ecosystem", "none"],
+            ["--fail-on", "cyclic-dependency"],
+            0,
+        ),
+        (
+            "ecosystem-changed-new.json",
+            "ecosystem-changed-old.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "ecosystem-changed"],
+            3,
+        ),
+        (
+            "edge-scope-parent-old.json",
+            "edge-scope-parent-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "deps"],
+            3,
+        ),
+        (
+            "edge-scope-parent-new.json",
+            "edge-scope-parent-old.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "deps"],
+            3,
+        ),
+        (
+            "edge-scope-child-old.json",
+            "edge-scope-child-new.json",
+            ["--exclude-ecosystem", "golang"],
+            ["--fail-on", "deps"],
+            0,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--deny-license", "GPL-3.0-only"],
+            2,
+        ),
+        (
+            "ecosystem-straddle-old.json",
+            "ecosystem-straddle-new.json",
+            ["--include-ecosystem", "npm"],
+            ["--fail-on", "cyclic-dependency"],
+            3,
+        ),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .arg("-q")
+            .args(filter)
+            .args(gate)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{old} {new} {filter:?} {gate:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
 fn fail_on_hash_algorithm_downgrade_exits_3() {
     let out = sbom_diff()
         .arg(fixture("hash-downgrade-old.json"))

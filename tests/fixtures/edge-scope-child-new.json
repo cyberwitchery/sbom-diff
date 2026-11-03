@@ -1,0 +1,29 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "app",
+      "version": "1.0.0",
+      "bom-ref": "app-ref",
+      "purl": "pkg:npm/app@1.0.0"
+    },
+    {
+      "type": "library",
+      "name": "g",
+      "version": "1.0.0",
+      "bom-ref": "g-ref",
+      "purl": "pkg:golang/example.com/g@1.0.0"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "app-ref",
+      "dependsOn": [
+        "g-ref"
+      ]
+    }
+  ]
+}

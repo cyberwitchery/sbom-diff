@@ -10,7 +10,7 @@ use sbom_diff::{
         format_option, format_set, CsvRenderer, JsonRenderer, Labels, MarkdownRenderer,
         RenderOptions, Renderer, SarifRenderer, SummaryRenderer, TextRenderer,
     },
-    ComponentChange, Differ, Field, FieldChange,
+    ComponentChange, Differ, EcosystemFilter, Field, FieldChange,
 };
 use sbom_model::versions::is_version_downgrade_for_ecosystem;
 use sbom_model::{changed_checksums, copyleft_obligations_added, is_hash_algorithm_downgrade};
@@ -53,11 +53,11 @@ struct Args {
     #[arg(long, value_enum)]
     fail_on: Vec<FailOn>,
 
-    /// only show changes for these ecosystems (repeatable)
+    /// only diff and gate these ecosystems (repeatable)
     #[arg(long)]
     include_ecosystem: Vec<String>,
 
-    /// exclude changes for these ecosystems (repeatable)
+    /// leave these ecosystems out of the diff and the gates (repeatable)
     #[arg(long)]
     exclude_ecosystem: Vec<String>,
 
@@ -404,8 +404,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("warning: {}", w);
     }
 
-    // build render options and run license checks before diff_owned consumes
-    // the SBOMs — this avoids cloning both SBOMs inside the differ.
+    // the differ consumes both sboms, so copy the warnings out first.
     let render_opts = RenderOptions {
         group_by_ecosystem: args.group_by_ecosystem,
         show_warnings: args.show_warnings,
@@ -413,69 +412,27 @@ fn main() -> anyhow::Result<()> {
         new_warnings: new_sbom.warnings.clone(),
     };
 
-    let license_violation = check_licenses(&new_sbom, &args.deny_license, &args.allow_license);
-    let cycle_violation = check_cyclic_dependencies(&new_sbom, &args.fail_on);
-
-    // build ecosystem filter and pre-count filtered totals.
-    let eco_include: HashSet<String> = args
-        .include_ecosystem
-        .iter()
-        .map(|s| s.to_ascii_lowercase())
-        .collect();
-    let eco_exclude: HashSet<String> = args
-        .exclude_ecosystem
-        .iter()
-        .map(|s| s.to_ascii_lowercase())
-        .collect();
-    let eco_filter_active = !eco_include.is_empty() || !eco_exclude.is_empty();
-
-    let eco_matches = |eco: Option<&str>| -> bool {
-        let eco_lower = eco.unwrap_or("unknown").to_ascii_lowercase();
-        if !eco_include.is_empty() && !eco_include.contains(&eco_lower) {
-            return false;
-        }
-        if eco_exclude.contains(&eco_lower) {
-            return false;
-        }
-        true
-    };
-
-    let (filtered_old_total, filtered_new_total, component_ecosystems) = if eco_filter_active {
-        // build ecosystem map from both SBOMs
-        let mut eco_map = std::collections::BTreeMap::new();
-        for (id, comp) in old_sbom.components.iter() {
-            eco_map.insert(id.clone(), comp.ecosystem.clone());
-        }
-        for (id, comp) in new_sbom.components.iter() {
-            eco_map.insert(id.clone(), comp.ecosystem.clone());
-        }
+    let filter = EcosystemFilter::new(&args.include_ecosystem, &args.exclude_ecosystem);
+    let sbom_gates = |sbom: &Sbom| {
         (
-            old_sbom
-                .components
-                .values()
-                .filter(|c| eco_matches(c.ecosystem.as_deref()))
-                .count(),
-            new_sbom
-                .components
-                .values()
-                .filter(|c| eco_matches(c.ecosystem.as_deref()))
-                .count(),
-            eco_map,
+            check_licenses(sbom, &args.deny_license, &args.allow_license),
+            check_cyclic_dependencies(sbom, &args.fail_on),
         )
-    } else {
-        (0, 0, std::collections::BTreeMap::new())
     };
-
-    let mut diff = Differ::diff_owned(old_sbom, new_sbom, None);
-
-    if eco_filter_active {
-        diff.filter_by_ecosystem(
-            &eco_matches,
-            filtered_old_total,
-            filtered_new_total,
-            &component_ecosystems,
-        );
-    }
+    let sbom_gates_active = !args.deny_license.is_empty()
+        || !args.allow_license.is_empty()
+        || args.fail_on.contains(&FailOn::CyclicDependency);
+    // under a filter, the license and cycle gates read the new sbom cut down to
+    // the components the diff covers, which the differ works out; otherwise
+    // they read it whole, before the differ consumes it.
+    let (mut diff, (license_violation, cycle_violation)) =
+        if sbom_gates_active && !filter.is_empty() {
+            let (diff, scope) = Differ::diff_filtered_with_scope(old_sbom, new_sbom, &filter);
+            (diff, sbom_gates(&scope))
+        } else {
+            let verdicts = sbom_gates(&new_sbom);
+            (Differ::diff_filtered(old_sbom, new_sbom, &filter), verdicts)
+        };
 
     let violations = collect_violations(&diff, &args.fail_on);
     for v in &violations {

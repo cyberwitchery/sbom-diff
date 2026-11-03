@@ -1,0 +1,15 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "app",
+      "version": "1.0.0",
+      "bom-ref": "app-ref",
+      "purl": "pkg:npm/app@1.0.0"
+    }
+  ],
+  "dependencies": []
+}
