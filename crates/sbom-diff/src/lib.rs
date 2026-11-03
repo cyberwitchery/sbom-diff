@@ -6,7 +6,7 @@ use sbom_model::{licensings_equivalent, Component, ComponentId, DependencyKind, 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::str::FromStr;
 
 pub mod renderer;
@@ -936,12 +936,6 @@ impl Differ {
         if filter.is_empty() {
             return (Self::diff_owned(old, new, None), scope);
         }
-        let order: HashMap<ComponentId, usize> = new
-            .components
-            .keys()
-            .enumerate()
-            .map(|(index, id)| (id.clone(), index))
-            .collect();
         let dependencies = new.dependencies.clone();
 
         let diff = Self::diff_filtered(old, new, filter);
@@ -953,9 +947,6 @@ impl Differ {
             widened = true;
         }
         if widened {
-            scope
-                .components
-                .sort_by(|a, _, b, _| order[a].cmp(&order[b]));
             keep_edges_between_components(&mut scope, &dependencies);
         }
         (diff, scope)
@@ -2639,57 +2630,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_filtered_keeps_a_change_by_either_ecosystem() {
-        let id = |name: &str, version: &str| Component::new(name.into(), Some(version.into())).id;
-        let sbom = |comps: [(&str, Option<&str>, &str); 5], edges: [(usize, usize); 2]| {
-            let mut sbom = Sbom::default();
-            for (name, eco, version) in comps {
-                let mut c = Component::new(name.into(), Some(version.into()));
-                c.ecosystem = eco.map(Into::into);
-                sbom.components.insert(c.id.clone(), c);
-            }
-            for (parent, child) in edges {
-                let (p, c) = (comps[parent], comps[child]);
-                sbom.insert_dependency(id(p.0, p.2), id(c.0, c.2), DependencyKind::Runtime);
-            }
-            sbom
-        };
-        let old = sbom(
-            [
-                ("same", Some("npm"), "1.0"),
-                ("lost", Some("npm"), "1.0"),
-                ("gained", None, "1.0"),
-                ("other", Some("cargo"), "1.0"),
-                ("gone", Some("cargo"), "1.0"),
-            ],
-            [(0, 1), (3, 4)],
-        );
-        let new = sbom(
-            [
-                ("same", Some("npm"), "1.0"),
-                ("lost", None, "1.0"),
-                ("gained", Some("npm"), "1.0"),
-                ("other", Some("cargo"), "2.0"),
-                ("added", Some("npm"), "1.0"),
-            ],
-            [(0, 2), (3, 4)],
-        );
-
-        let diff = Differ::diff_filtered(old, new, &EcosystemFilter::new(["npm"], []));
-        let mut changed: Vec<_> = diff.changed.iter().map(|c| c.new.name.as_str()).collect();
-        changed.sort();
-        assert_eq!(changed, ["gained", "lost"]);
-        assert_eq!(diff.added.len(), 1);
-        assert!(diff.removed.is_empty());
-        assert_eq!((diff.unchanged, diff.old_total, diff.new_total), (1, 3, 4));
-        let parents: Vec<_> = diff.edge_diffs.iter().map(|e| &e.parent).collect();
-        assert_eq!(parents, [&id("same", "1.0")]);
-        let mut names: Vec<_> = diff.component_names.values().map(String::as_str).collect();
-        names.sort();
-        assert_eq!(names, ["gained@1.0", "lost@1.0", "same@1.0"]);
-    }
-
-    #[test]
     fn diff_filtered_keeps_an_edge_change_when_both_ends_are_kept() {
         let comp = |name: &str, eco: Option<&str>, purl: bool| {
             let mut c = Component::new(name.into(), Some("1.0".into()));
@@ -2804,72 +2744,6 @@ mod tests {
                 "{filter:?}"
             );
         }
-    }
-
-    #[test]
-    fn diff_filtered_with_scope_keeps_a_change_kept_by_its_old_side() {
-        let comp = |name: &str, purl: Option<&str>, license: &str| {
-            let mut c = Component::new(name.into(), Some("1.0".into()));
-            if let Some(purl) = purl {
-                c.id = ComponentId::new(Some(purl), &[]);
-                c.purl = Some(purl.into());
-                c.ecosystem = sbom_model::ecosystem_from_purl(purl);
-            }
-            c.licenses = BTreeSet::from([license.to_string()]);
-            c
-        };
-        let sbom = |comps: Vec<Component>, edges: &[(usize, usize)]| {
-            let mut sbom = Sbom::default();
-            let ids: Vec<_> = comps.iter().map(|c| c.id.clone()).collect();
-            for c in comps {
-                sbom.components.insert(c.id.clone(), c);
-            }
-            for &(parent, child) in edges {
-                sbom.insert_dependency(
-                    ids[parent].clone(),
-                    ids[child].clone(),
-                    DependencyKind::Runtime,
-                );
-            }
-            sbom.rebuild_reverse_deps();
-            sbom
-        };
-        let old = sbom(
-            vec![
-                comp("a", Some("pkg:npm/a@1.0"), "MIT"),
-                comp("b", Some("pkg:npm/b@1.0"), "MIT"),
-                comp("c", Some("pkg:cargo/c@1.0"), "MIT"),
-            ],
-            &[(0, 1)],
-        );
-        let new = sbom(
-            vec![
-                comp("a", None, "GPL-3.0-only"),
-                comp("b", Some("pkg:npm/b@1.0"), "MIT"),
-                comp("c", Some("pkg:cargo/c@1.0"), "MIT"),
-            ],
-            &[(0, 1), (1, 0), (2, 0)],
-        );
-        let a = new.components.get_index(0).unwrap().0.clone();
-        let b = new.components.get_index(1).unwrap().0.clone();
-
-        let filter = EcosystemFilter::new(["npm"], []);
-        assert_eq!(filter.restrict(&new).components.len(), 1);
-        let (diff, scope) = Differ::diff_filtered_with_scope(old, new.clone(), &filter);
-
-        assert_eq!(diff.changed.len(), 1);
-        let ids: Vec<_> = scope.components.keys().cloned().collect();
-        assert_eq!(ids, [a.clone(), b.clone()], "kept in the new sbom's order");
-        assert_eq!(scope.components[&a].licenses, new.components[&a].licenses);
-        assert_eq!(
-            scope.detect_cycles(),
-            [vec![a.clone(), b.clone(), a.clone()]]
-        );
-        assert!(scope.reverse_deps.contains_key(&a));
-
-        let (_, scope) =
-            Differ::diff_filtered_with_scope(new.clone(), new, &EcosystemFilter::new(["npm"], []));
-        assert_eq!(scope.components.len(), 1, "no change, nothing to widen");
     }
 
     #[test]

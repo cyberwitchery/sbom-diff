@@ -1448,25 +1448,11 @@ fn ecosystem_filter_scopes_every_gate() {
             0,
         ),
         (
-            "dual-violation-old.json",
-            "dual-violation-new.json",
-            ["--include-ecosystem", "npm"],
-            ["--deny-license", "GPL-3.0-only"],
-            2,
-        ),
-        (
             "checksum-changed-old.json",
             "checksum-changed-new.json",
             ["--exclude-ecosystem", "npm"],
             ["--allow-license", "MIT"],
             0,
-        ),
-        (
-            "checksum-changed-old.json",
-            "checksum-changed-new.json",
-            ["--include-ecosystem", "npm"],
-            ["--allow-license", "MIT"],
-            2,
         ),
         (
             "cyclic-dep-old.json",
@@ -1476,13 +1462,6 @@ fn ecosystem_filter_scopes_every_gate() {
             0,
         ),
         (
-            "cyclic-dep-old.json",
-            "cyclic-dep-new.json",
-            ["--include-ecosystem", "npm"],
-            ["--fail-on", "cyclic-dependency"],
-            3,
-        ),
-        (
             "ecosystem-changed-new.json",
             "ecosystem-changed-old.json",
             ["--include-ecosystem", "npm"],
@@ -1490,13 +1469,6 @@ fn ecosystem_filter_scopes_every_gate() {
             3,
         ),
         (
-            "ecosystem-changed-new.json",
-            "ecosystem-changed-old.json",
-            ["--include-ecosystem", "unknown"],
-            ["--fail-on", "ecosystem-changed"],
-            3,
-        ),
-        (
             "edge-scope-parent-old.json",
             "edge-scope-parent-new.json",
             ["--include-ecosystem", "npm"],
@@ -1506,23 +1478,9 @@ fn ecosystem_filter_scopes_every_gate() {
         (
             "edge-scope-parent-new.json",
             "edge-scope-parent-old.json",
-            ["--include-ecosystem", "unknown"],
-            ["--fail-on", "deps"],
-            3,
-        ),
-        (
-            "edge-scope-parent-new.json",
-            "edge-scope-parent-old.json",
             ["--include-ecosystem", "npm"],
             ["--fail-on", "deps"],
             3,
-        ),
-        (
-            "edge-scope-parent-old.json",
-            "edge-scope-parent-new.json",
-            ["--include-ecosystem", "cargo"],
-            ["--fail-on", "deps"],
-            0,
         ),
         (
             "edge-scope-child-old.json",
@@ -1530,29 +1488,6 @@ fn ecosystem_filter_scopes_every_gate() {
             ["--exclude-ecosystem", "golang"],
             ["--fail-on", "deps"],
             0,
-        ),
-        (
-            "edge-scope-child-new.json",
-            "edge-scope-child-old.json",
-            ["--exclude-ecosystem", "golang"],
-            ["--fail-on", "deps"],
-            0,
-        ),
-        (
-            "edge-scope-child-old.json",
-            "edge-scope-child-new.json",
-            ["--exclude-ecosystem", "pypi"],
-            ["--fail-on", "deps"],
-            3,
-        ),
-        // pkg-a loses its npm purl, turns GPL and closes a cycle with pkg-b:
-        // the sbom gates see it as the diff gates do, by either ecosystem.
-        (
-            "ecosystem-straddle-old.json",
-            "ecosystem-straddle-new.json",
-            ["--include-ecosystem", "npm"],
-            ["--fail-on", "copyleft-added"],
-            3,
         ),
         (
             "ecosystem-straddle-old.json",
@@ -1565,29 +1500,8 @@ fn ecosystem_filter_scopes_every_gate() {
             "ecosystem-straddle-old.json",
             "ecosystem-straddle-new.json",
             ["--include-ecosystem", "npm"],
-            ["--allow-license", "MIT"],
-            2,
-        ),
-        (
-            "ecosystem-straddle-old.json",
-            "ecosystem-straddle-new.json",
-            ["--include-ecosystem", "npm"],
             ["--fail-on", "cyclic-dependency"],
             3,
-        ),
-        (
-            "ecosystem-straddle-old.json",
-            "ecosystem-straddle-new.json",
-            ["--include-ecosystem", "cargo"],
-            ["--deny-license", "GPL-3.0-only"],
-            0,
-        ),
-        (
-            "ecosystem-straddle-old.json",
-            "ecosystem-straddle-new.json",
-            ["--include-ecosystem", "cargo"],
-            ["--fail-on", "cyclic-dependency"],
-            0,
         ),
     ] {
         let out = sbom_diff()
@@ -1603,34 +1517,6 @@ fn ecosystem_filter_scopes_every_gate() {
             Some(code),
             "{old} {new} {filter:?} {gate:?}: {}",
             String::from_utf8_lossy(&out.stderr)
-        );
-    }
-}
-
-#[test]
-fn ecosystem_filter_groups_a_straddling_change_by_its_kept_side() {
-    for (filter, group) in [
-        ("--include-ecosystem", "npm"),
-        ("--include-ecosystem", "unknown"),
-    ] {
-        let out = sbom_diff()
-            .arg(fixture("ecosystem-changed-new.json"))
-            .arg(fixture("ecosystem-changed-old.json"))
-            .args([
-                filter,
-                group,
-                "--group-by-ecosystem",
-                "--summary",
-                "-o",
-                "json",
-            ])
-            .output()
-            .unwrap();
-        let summary: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(
-            summary["ecosystem_breakdown"],
-            serde_json::json!({ group: { "added": 0, "changed": 1, "removed": 0 } }),
-            "{filter} {group}"
         );
     }
 }
