@@ -12,7 +12,9 @@ use sbom_diff::{
     ComponentChange, Differ, EcosystemFilter, Field, FieldChange,
 };
 use sbom_model::versions::is_version_downgrade_for_ecosystem;
-use sbom_model::{changed_checksums, copyleft_obligations_added, is_hash_algorithm_downgrade};
+use sbom_model::{
+    changed_checksums, copyleft_obligations_added, is_hash_algorithm_downgrade, is_spdx_expression,
+};
 use sbom_model::{DependencyKind, LicenseRequirement, Licensing, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
@@ -394,6 +396,8 @@ impl fmt::Display for Violation {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    check_policy_entries("--deny-license", &args.deny_license)?;
+    check_policy_entries("--allow-license", &args.allow_license)?;
 
     let old_sbom = load_sbom(&args.old, args.format).context("failed to load old sbom")?;
     let new_sbom = load_sbom(&args.new, args.format).context("failed to load new sbom")?;
@@ -504,6 +508,28 @@ fn policy_spelling(entry: &str) -> String {
         Some(req) if reqs.len() == 1 => req.to_string().to_ascii_lowercase(),
         _ => entry.to_ascii_lowercase(),
     }
+}
+
+/// rejects a policy entry no license can match and warns about one only a license name can.
+fn check_policy_entries(flag: &str, entries: &[String]) -> anyhow::Result<()> {
+    for entry in entries {
+        let ids = BTreeSet::from([entry.clone()]);
+        let licensing = Licensing {
+            expression: Some(entry),
+            ids: &ids,
+        };
+        if licensing.requirements().len() > 1 {
+            anyhow::bail!(
+                "{flag} {entry:?} names more than one license and can never match; repeat {flag} once per license"
+            );
+        }
+        if !is_spdx_expression(entry) {
+            eprintln!(
+                "warning: {flag} {entry:?} is not an SPDX license id; it can only match a free-text license name"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// names the requirements that made a policy gate fire, for the diagnostic.
