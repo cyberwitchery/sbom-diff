@@ -153,7 +153,7 @@ impl ComponentId {
     /// SHA-256 hash is computed from the provided key-value properties.
     pub fn new(purl: Option<&str>, properties: &[(&str, &str)]) -> Self {
         if let Some(purl) = purl {
-            if let Ok(parsed) = PackageUrl::from_str(purl) {
+            if let Some(parsed) = parse_purl(purl) {
                 return ComponentId(parsed.to_string());
             }
             return ComponentId(purl.to_string());
@@ -169,6 +169,24 @@ impl ComponentId {
         }
         let hash = hex::encode(hasher.finalize());
         ComponentId(format!("h:{}", hash))
+    }
+
+    /// the id a reader gives a component with this purl, name, version and
+    /// supplier, as [`new`](Self::new) derives it.
+    pub fn from_parts(
+        purl: Option<&str>,
+        name: &str,
+        version: Option<&str>,
+        supplier: Option<&str>,
+    ) -> Self {
+        let mut properties = vec![("name", name)];
+        if let Some(version) = version {
+            properties.push(("version", version));
+        }
+        if let Some(supplier) = supplier {
+            properties.push(("supplier", supplier));
+        }
+        Self::new(purl, &properties)
     }
 
     /// returns the identifier as a string slice.
@@ -223,14 +241,11 @@ pub struct Component {
 impl Component {
     /// creates a new component with the given name and optional version.
     ///
-    /// the component ID is generated from a hash of the name and version.
+    /// the component ID is generated from a hash of the name and version; setting
+    /// `purl` or `supplier` afterwards does not update it, see [`ComponentId::from_parts`].
     /// use this for simple cases; for full control, construct the struct directly.
     pub fn new(name: String, version: Option<String>) -> Self {
-        let mut props = vec![("name", name.as_str())];
-        if let Some(v) = &version {
-            props.push(("version", v));
-        }
-        let id = ComponentId::new(None, &props);
+        let id = ComponentId::from_parts(None, &name, version.as_deref(), None);
 
         Self {
             id,
@@ -245,6 +260,11 @@ impl Component {
             hashes: BTreeMap::new(),
             source_ids: Vec::new(),
         }
+    }
+
+    /// the component's purl, parsed; `None` when it has none or it does not parse.
+    pub fn parsed_purl(&self) -> Option<PackageUrl<'static>> {
+        self.purl.as_deref().and_then(parse_purl)
     }
 
     /// returns the licensing this component declares, for policy evaluation.
@@ -506,7 +526,12 @@ impl Component {
 /// assert_eq!(ecosystem_from_purl("invalid"), None);
 /// ```
 pub fn ecosystem_from_purl(purl: &str) -> Option<String> {
-    PackageUrl::from_str(purl).ok().map(|p| p.ty().to_string())
+    parse_purl(purl).map(|p| p.ty().to_string())
+}
+
+/// parses a package URL; `None` when it does not parse.
+pub fn parse_purl(purl: &str) -> Option<PackageUrl<'static>> {
+    PackageUrl::from_str(purl).ok()
 }
 
 /// respells every SPDX license and exception identifier in an expression the
@@ -1878,6 +1903,40 @@ mod tests {
         );
         assert_eq!(ecosystem_from_purl("invalid-purl"), None);
         assert_eq!(ecosystem_from_purl(""), None);
+    }
+
+    #[test]
+    fn test_parsed_purl() {
+        for (purl, coordinates, canonical) in [
+            (None, None, None),
+            (Some("not-a-purl"), None, None),
+            (
+                Some("pkg:cargo/serde@1.0.0"),
+                Some(("cargo", None, "serde", Some("1.0.0"))),
+                Some("pkg:cargo/serde@1.0.0"),
+            ),
+            (
+                Some("pkg:npm/@angular/core@17.0.0"),
+                Some(("npm", Some("@angular"), "core", Some("17.0.0"))),
+                Some("pkg:npm/%40angular/core@17.0.0"),
+            ),
+            (
+                Some("pkg:maven/org.apache/commons@1.0?type=jar"),
+                Some(("maven", Some("org.apache"), "commons", Some("1.0"))),
+                Some("pkg:maven/org.apache/commons@1.0?type=jar"),
+            ),
+        ] {
+            let mut component = Component::new("x".into(), None);
+            component.purl = purl.map(str::to_string);
+            let parsed = component.parsed_purl();
+            assert_eq!(
+                parsed
+                    .as_ref()
+                    .map(|p| (p.ty(), p.namespace(), p.name(), p.version())),
+                coordinates
+            );
+            assert_eq!(parsed.map(|p| p.to_string()).as_deref(), canonical);
+        }
     }
 
     #[test]

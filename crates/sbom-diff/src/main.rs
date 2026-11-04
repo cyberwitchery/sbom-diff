@@ -3,7 +3,6 @@ mod format;
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use format::{load_sbom, Format};
-use packageurl::PackageUrl;
 use sbom_diff::{
     pair_ecosystem,
     renderer::{
@@ -18,7 +17,6 @@ use sbom_model::{DependencyKind, LicenseRequirement, Licensing, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::io;
-use std::str::FromStr;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -843,7 +841,7 @@ fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violati
 /// whether two purls differ in anything but their version; an unparseable purl compares as a string.
 fn purl_coordinates_changed(old: Option<&str>, new: Option<&str>) -> bool {
     let coordinates = |purl: &str| {
-        PackageUrl::from_str(purl).ok().map(|mut parsed| {
+        sbom_model::parse_purl(purl).map(|mut parsed| {
             parsed.without_version();
             parsed
         })

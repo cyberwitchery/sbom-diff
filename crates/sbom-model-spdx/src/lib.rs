@@ -1032,15 +1032,7 @@ impl SpdxReader {
             let name = pkg.package_name;
             let version = pkg.package_version;
 
-            let mut props = vec![("name", name.as_str())];
-            if let Some(ref v) = version {
-                props.push(("version", v.as_str()));
-            }
-
             let supplier = pkg.package_supplier.as_deref().and_then(supplier_name);
-            if let Some(ref s) = supplier {
-                props.push(("supplier", s.as_str()));
-            }
 
             let mut purl = None;
             for r in &pkg.external_reference {
@@ -1053,7 +1045,8 @@ impl SpdxReader {
 
             let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
-            let id = ComponentId::new(purl_str, &props);
+            let id =
+                ComponentId::from_parts(purl_str, &name, version.as_deref(), supplier.as_deref());
 
             let mut comp = Component {
                 id: id.clone(),

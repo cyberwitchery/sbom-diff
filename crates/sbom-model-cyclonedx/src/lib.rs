@@ -590,28 +590,19 @@ impl CycloneDxReader {
             let name = cdx_comp.name.to_string();
             let version = cdx_comp.version.as_ref().map(|v| v.to_string());
 
-            let mut props = vec![("name", name.as_str())];
-            let v_str = version.clone().unwrap_or_default();
-            if version.is_some() {
-                props.push(("version", v_str.as_str()));
-            }
-
             let supplier = cdx_comp
                 .supplier
                 .as_ref()
                 .and_then(|s| s.name.as_ref().map(|n| n.trim().to_string()))
                 .filter(|s| !s.is_empty());
-            let s_str = supplier.clone().unwrap_or_default();
-            if supplier.is_some() {
-                props.push(("supplier", s_str.as_str()));
-            }
 
             let purl = cdx_comp.purl.as_ref().map(|p| p.to_string());
             let purl_str = purl.as_deref();
 
             let ecosystem = purl_str.and_then(sbom_model::ecosystem_from_purl);
 
-            let id = ComponentId::new(purl_str, &props);
+            let id =
+                ComponentId::from_parts(purl_str, &name, version.as_deref(), supplier.as_deref());
 
             let mut comp = Component {
                 id: id.clone(),
