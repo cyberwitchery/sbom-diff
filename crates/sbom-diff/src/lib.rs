@@ -1,13 +1,11 @@
 #![doc = include_str!("../readme.md")]
 
-use packageurl::PackageUrl;
 use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
-use sbom_model::{licensings_equivalent, Component, ComponentId, DependencyKind, Sbom};
+use sbom_model::{licensings_equivalent, parse_purl, Component, ComponentId, DependencyKind, Sbom};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::str::FromStr;
 
 pub mod renderer;
 
@@ -436,9 +434,7 @@ type IdentityKey = (Option<String>, Option<String>);
 /// a purl without a namespace yields `Some("")`, unlike a missing or unparseable purl.
 fn identity_key(component: &Component) -> IdentityKey {
     let namespace = component
-        .purl
-        .as_deref()
-        .and_then(|purl| PackageUrl::from_str(purl).ok())
+        .parsed_purl()
         .map(|purl| purl.namespace().unwrap_or_default().to_string());
     (component.ecosystem.clone(), namespace)
 }
@@ -452,7 +448,7 @@ fn identity_keys_compatible(a: &IdentityKey, b: &IdentityKey) -> bool {
 type PurlIdentity = (String, Option<String>, String);
 
 fn purl_identity(component: &Component) -> Option<PurlIdentity> {
-    let purl = PackageUrl::from_str(component.purl.as_deref()?).ok()?;
+    let purl = component.parsed_purl()?;
     Some((
         purl.ty().to_string(),
         purl.namespace().map(str::to_string),
@@ -462,9 +458,8 @@ fn purl_identity(component: &Component) -> Option<PurlIdentity> {
 
 /// whether two purls are equal once parsed; an unparseable purl compares as a string.
 fn purls_equal(old: Option<&str>, new: Option<&str>) -> bool {
-    let parse = |purl: &str| PackageUrl::from_str(purl).ok();
     old == new
-        || match (old.map(parse), new.map(parse)) {
+        || match (old.map(parse_purl), new.map(parse_purl)) {
             (Some(Some(a)), Some(Some(b))) => a == b,
             _ => false,
         }
@@ -3662,6 +3657,56 @@ mod tests {
         assert!(diff.added.is_empty() && diff.removed.is_empty());
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn both_readers_and_component_new_derive_one_id() {
+        use serde_json::json;
+        for (purl, version, supplier, id) in [
+            (None, Some("1.0"), None, "h:b05b777af564"),
+            (None, None, None, "h:9338ead89be5"),
+            (None, Some("1.0"), Some("Acme"), "h:fd2ec7ee136f"),
+            (None, None, Some("Acme"), "h:492d22b63caa"),
+            (Some("pkg:npm/@s/a@1"), None, None, "pkg:npm/%40s/a@1"),
+            (Some("not-a-purl"), None, Some("Acme"), "not-a-purl"),
+        ] {
+            let mut component = json!({"type": "library", "name": "alpha"});
+            let mut package =
+                json!({"name": "alpha", "SPDXID": "SPDXRef-a", "downloadLocation": "NOASSERTION"});
+            if let Some(version) = version {
+                component["version"] = json!(version);
+                package["versionInfo"] = json!(version);
+            }
+            if let Some(supplier) = supplier {
+                component["supplier"] = json!({ "name": supplier });
+                package["supplier"] = json!(format!("Organization: {supplier}"));
+            }
+            if let Some(purl) = purl {
+                component["purl"] = json!(purl);
+                package["externalRefs"] = json!([{"referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "purl", "referenceLocator": purl}]);
+            }
+            let cyclonedx = json!({"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
+                "components": [component]});
+            let spdx = json!({"spdxVersion": "SPDX-2.3", "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT", "name": "x", "documentNamespace": "https://example.com/x",
+                "creationInfo": {"created": "2024-01-01T00:00:00Z", "creators": ["Tool: x"]},
+                "packages": [package]});
+            let cyclonedx =
+                sbom_model_cyclonedx::CycloneDxReader::read_json(cyclonedx.to_string().as_bytes())
+                    .unwrap();
+            let spdx = sbom_model_spdx::SpdxReader::read_json(spdx.to_string().as_bytes()).unwrap();
+
+            let expected = ComponentId::from_parts(purl, "alpha", version, supplier);
+            assert!(expected.as_str().starts_with(id), "{expected}");
+            for sbom in [&cyclonedx, &spdx] {
+                assert_eq!(sbom.components.keys().collect::<Vec<_>>(), [&expected]);
+            }
+            if purl.is_none() && supplier.is_none() {
+                let component = Component::new("alpha".to_string(), version.map(str::to_string));
+                assert_eq!(component.id, expected);
+            }
+        }
     }
 
     #[test]
