@@ -1,22 +1,15 @@
 //! the gates a diff is checked against: the `--fail-on` conditions and the license policy.
 
-use clap::ValueEnum;
-use sbom_diff::{
-    pair_ecosystem,
-    renderer::{format_option, format_set, Labels},
-    ComponentChange, FieldChange,
-};
-use sbom_model::versions::is_version_downgrade_for_ecosystem;
-use sbom_model::{
-    changed_checksums, copyleft_obligations_added, is_hash_algorithm_downgrade, is_spdx_expression,
-};
+use crate::renderer::{format_option, format_set, Labels};
+use crate::{ComponentChange, Diff, DiffOptions, Differ, FieldChange};
+use sbom_model::{changed_checksums, copyleft_obligations_added, is_spdx_expression};
 use sbom_model::{DependencyKind, LicenseRequirement, Licensing, Sbom};
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 /// conditions that trigger a non-zero exit code.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, ValueEnum, Debug)]
-pub(crate) enum FailOn {
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, clap::ValueEnum, Debug)]
+pub enum FailOn {
     /// fail if any added component lacks checksums or a changed component dropped all its checksums.
     MissingHashes,
     /// fail if any components were added.
@@ -49,9 +42,9 @@ pub(crate) enum FailOn {
     ChecksumChanged,
 }
 
-/// a single policy violation detected by `--fail-on`.
+/// a single policy violation, from a `--fail-on` gate or the license policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Violation {
+pub enum Violation {
     AddedComponent {
         name: String,
     },
@@ -137,6 +130,20 @@ pub(crate) enum Violation {
     MetadataTimestampChanged,
     MetadataToolsChanged,
     MetadataAuthorsChanged,
+    DependencyCycle {
+        path: Vec<String>,
+    },
+    LicenseDenied {
+        name: String,
+        licenses: Vec<String>,
+    },
+    LicenseNotAllowed {
+        name: String,
+        licenses: Vec<String>,
+    },
+    NoLicenseInfo {
+        name: String,
+    },
 }
 
 impl fmt::Display for Violation {
@@ -317,7 +324,168 @@ impl fmt::Display for Violation {
                     "document metadata authors changed (--fail-on metadata-changed)"
                 )
             }
+            Violation::DependencyCycle { path } => {
+                write!(
+                    f,
+                    "dependency cycle detected: {} (--fail-on cyclic-dependency)",
+                    path.join(" -> ")
+                )
+            }
+            Violation::LicenseDenied { name, licenses } => {
+                write!(
+                    f,
+                    "license {} is denied (component {})",
+                    licenses.join(", "),
+                    name
+                )
+            }
+            Violation::LicenseNotAllowed { name, licenses } => {
+                write!(
+                    f,
+                    "license {} is not allowed (component {})",
+                    licenses.join(", "),
+                    name
+                )
+            }
+            Violation::NoLicenseInfo { name } => {
+                write!(
+                    f,
+                    "component {} has no license information (--allow-license requires it)",
+                    name
+                )
+            }
         }
+    }
+}
+
+impl Violation {
+    /// whether `--deny-license` or `--allow-license` raised it, rather than a `--fail-on` gate.
+    pub fn is_license_policy(&self) -> bool {
+        matches!(
+            self,
+            Violation::LicenseDenied { .. }
+                | Violation::LicenseNotAllowed { .. }
+                | Violation::NoLicenseInfo { .. }
+        )
+    }
+
+    /// the component it is about, as reports name it: an edge's parent for a dependency change.
+    pub fn component(&self) -> Option<&str> {
+        match self {
+            Violation::AddedComponent { name }
+            | Violation::RemovedComponent { name }
+            | Violation::ChangedComponent { name }
+            | Violation::MissingHashesAdded { name }
+            | Violation::MissingHashesDropped { name }
+            | Violation::LicenseChanged { name, .. }
+            | Violation::LicenseExpressionChanged { name, .. }
+            | Violation::LicenseIntroduced { name, .. }
+            | Violation::CopyleftAdded { name, .. }
+            | Violation::VersionDowngrade { name, .. }
+            | Violation::SupplierChanged { name, .. }
+            | Violation::SupplierIntroduced { name, .. }
+            | Violation::PurlChanged { name, .. }
+            | Violation::EcosystemChanged { name, .. }
+            | Violation::HashAlgorithmDowngrade { name, .. }
+            | Violation::ChecksumChanged { name, .. }
+            | Violation::LicenseDenied { name, .. }
+            | Violation::LicenseNotAllowed { name, .. }
+            | Violation::NoLicenseInfo { name } => Some(name),
+            Violation::DepsAdded { parent, .. }
+            | Violation::DepsRemoved { parent, .. }
+            | Violation::DepsKindChanged { parent, .. } => Some(parent),
+            Violation::MetadataTimestampChanged
+            | Violation::MetadataToolsChanged
+            | Violation::MetadataAuthorsChanged
+            | Violation::DependencyCycle { .. } => None,
+        }
+    }
+}
+
+/// a `--deny-license` or `--allow-license` entry that cannot match as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyEntryIssue {
+    /// the entry names more than one license, so it can never match.
+    MultipleLicenses { flag: String, entry: String },
+    /// the entry is not an SPDX license id, so it can only match a free-text license name.
+    NotSpdx { flag: String, entry: String },
+}
+
+impl PolicyEntryIssue {
+    /// whether the entry is unusable, rather than only suspect.
+    pub fn is_error(&self) -> bool {
+        matches!(self, PolicyEntryIssue::MultipleLicenses { .. })
+    }
+}
+
+impl fmt::Display for PolicyEntryIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PolicyEntryIssue::MultipleLicenses { flag, entry } => write!(
+                f,
+                "{flag} {entry:?} names more than one license and can never match; repeat {flag} once per license"
+            ),
+            PolicyEntryIssue::NotSpdx { flag, entry } => write!(
+                f,
+                "{flag} {entry:?} is not an SPDX license id; it can only match a free-text license name"
+            ),
+        }
+    }
+}
+
+/// the gates to check a diff against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Policy {
+    /// the `--fail-on` conditions.
+    pub fail_on: Vec<FailOn>,
+    /// `--deny-license`: licenses no component may require.
+    pub deny_licenses: Vec<String>,
+    /// `--allow-license`: the only licenses components may require.
+    pub allow_licenses: Vec<String>,
+}
+
+impl Policy {
+    /// the problems with the deny entries, then with the allow entries, in the order given.
+    pub fn entry_issues(&self) -> Vec<PolicyEntryIssue> {
+        let mut issues = check_policy_entries("--deny-license", &self.deny_licenses);
+        issues.extend(check_policy_entries(
+            "--allow-license",
+            &self.allow_licenses,
+        ));
+        issues
+    }
+
+    /// diffs `old` against `new` under `options` and checks the result against the policy.
+    ///
+    /// the gates see every field whatever `options.only` leaves in the returned diff, and the
+    /// license and cycle gates read the components of `new` the diff covers. violations come
+    /// in order: license policy, dependency cycles, then the gates on the diff.
+    pub fn check(&self, old: Sbom, new: Sbom, options: &DiffOptions) -> (Diff, Vec<Violation>) {
+        let filter = &options.ecosystems;
+        let sbom_gates = |sbom: &Sbom| {
+            let mut violations = check_licenses(sbom, &self.deny_licenses, &self.allow_licenses);
+            violations.extend(check_cyclic_dependencies(sbom, &self.fail_on));
+            violations
+        };
+        let sbom_gates_active = !self.deny_licenses.is_empty()
+            || !self.allow_licenses.is_empty()
+            || self.fail_on.contains(&FailOn::CyclicDependency);
+        let (mut diff, mut violations) = if sbom_gates_active && !filter.is_empty() {
+            let (diff, scope) = Differ::diff_with_scope(old, new, filter);
+            (diff, sbom_gates(&scope))
+        } else {
+            let violations = sbom_gates(&new);
+            let unreduced = DiffOptions {
+                only: Vec::new(),
+                ecosystems: filter.clone(),
+            };
+            (Differ::diff(old, new, &unreduced), violations)
+        };
+        violations.extend(collect_violations(&diff, &self.fail_on));
+        if !options.only.is_empty() {
+            diff.retain_fields(&options.only);
+        }
+        (diff, violations)
     }
 }
 
@@ -350,60 +518,55 @@ fn policy_spelling(entry: &str) -> String {
     }
 }
 
-/// rejects a policy entry no license can match and warns about one only a license name can.
-pub(crate) fn check_policy_entries(flag: &str, entries: &[String]) -> anyhow::Result<()> {
+/// the entries of `flag` no license can match, and those only a license name can.
+pub fn check_policy_entries(flag: &str, entries: &[String]) -> Vec<PolicyEntryIssue> {
+    let mut issues = Vec::new();
     for entry in entries {
         let ids = BTreeSet::from([entry.clone()]);
         let licensing = Licensing {
             expression: Some(entry),
             ids: &ids,
         };
+        let (flag, entry) = (flag.to_owned(), entry.clone());
         if licensing.requirements().len() > 1 {
-            anyhow::bail!(
-                "{flag} {entry:?} names more than one license and can never match; repeat {flag} once per license"
-            );
-        }
-        if !is_spdx_expression(entry) {
-            eprintln!(
-                "warning: {flag} {entry:?} is not an SPDX license id; it can only match a free-text license name"
-            );
+            issues.push(PolicyEntryIssue::MultipleLicenses { flag, entry });
+        } else if !is_spdx_expression(&entry) {
+            issues.push(PolicyEntryIssue::NotSpdx { flag, entry });
         }
     }
-    Ok(())
+    issues
 }
 
 /// names the requirements that made a policy gate fire, for the diagnostic.
 fn offending_requirements(
     licensing: Licensing<'_>,
     keep: impl Fn(&LicenseRequirement) -> bool,
-) -> String {
+) -> Vec<String> {
     licensing
         .requirements()
         .iter()
         .filter(|req| keep(req))
         .map(|req| req.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect()
 }
 
-pub(crate) fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> bool {
+/// the components of `sbom` the `deny` and `allow` lists reject.
+pub fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> Vec<Violation> {
+    let mut violations = Vec::new();
     if deny.is_empty() && allow.is_empty() {
-        return false;
+        return violations;
     }
     let labels = Labels::for_sbom(sbom);
     // SPDX license IDs are case-insensitive per spec (Annex E / clause 10.1).
     let deny_lower: HashSet<String> = deny.iter().map(|s| policy_spelling(s)).collect();
     let allow_lower: HashSet<String> = allow.iter().map(|s| policy_spelling(s)).collect();
 
-    let mut violation = false;
     for comp in sbom.components.values() {
         // a component with no license information cannot satisfy an allow-list.
         if !allow.is_empty() && comp.licenses.is_empty() {
-            eprintln!(
-                "error: component {} has no license information (--allow-license requires it)",
-                labels.component(comp)
-            );
-            violation = true;
+            violations.push(Violation::NoLicenseInfo {
+                name: labels.component(comp).to_owned(),
+            });
             continue;
         }
 
@@ -412,47 +575,42 @@ pub(crate) fn check_licenses(sbom: &Sbom, deny: &[String], allow: &[String]) -> 
         if !deny_lower.is_empty()
             && !licensing.satisfiable(|req| !requirement_listed(req, &deny_lower))
         {
-            eprintln!(
-                "error: license {} is denied (component {})",
-                offending_requirements(licensing, |req| requirement_listed(req, &deny_lower)),
-                labels.component(comp)
-            );
-            violation = true;
+            violations.push(Violation::LicenseDenied {
+                name: labels.component(comp).to_owned(),
+                licenses: offending_requirements(licensing, |req| {
+                    requirement_listed(req, &deny_lower)
+                }),
+            });
         }
 
         if !allow_lower.is_empty()
             && !licensing.satisfiable(|req| requirement_listed(req, &allow_lower))
         {
-            eprintln!(
-                "error: license {} is not allowed (component {})",
-                offending_requirements(licensing, |req| !requirement_listed(req, &allow_lower)),
-                labels.component(comp)
-            );
-            violation = true;
+            violations.push(Violation::LicenseNotAllowed {
+                name: labels.component(comp).to_owned(),
+                licenses: offending_requirements(licensing, |req| {
+                    !requirement_listed(req, &allow_lower)
+                }),
+            });
         }
     }
-    violation
+    violations
 }
 
-pub(crate) fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> bool {
+/// the dependency cycles in `sbom`, when `fail_on` asks for them.
+pub fn check_cyclic_dependencies(sbom: &Sbom, fail_on: &[FailOn]) -> Vec<Violation> {
     if !fail_on.contains(&FailOn::CyclicDependency) {
-        return false;
+        return Vec::new();
     }
 
     let cycles = sbom.detect_cycles();
-    if cycles.is_empty() {
-        return false;
-    }
-
     let labels = Labels::for_sbom(sbom);
-    for cycle in &cycles {
-        let names: Vec<_> = cycle.iter().map(|id| labels.id(id)).collect();
-        eprintln!(
-            "error: dependency cycle detected: {} (--fail-on cyclic-dependency)",
-            names.join(" -> ")
-        );
-    }
-    true
+    cycles
+        .iter()
+        .map(|cycle| Violation::DependencyCycle {
+            path: cycle.iter().map(|id| labels.id(id).to_owned()).collect(),
+        })
+        .collect()
 }
 
 /// builds the `copyleft-added` violation for a changed component, if the new
@@ -476,7 +634,8 @@ fn copyleft_violation(change: &ComponentChange, name: &str, active: bool) -> Opt
 /// instead of iterating `diff.changed` once per condition, builds a set of
 /// active conditions and checks all of them in one traversal. returns
 /// structured violations the caller can inspect, format, or count.
-pub(crate) fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> Vec<Violation> {
+/// [`FailOn::CyclicDependency`] reads the sbom, see [`check_cyclic_dependencies`].
+pub fn collect_violations(diff: &Diff, fail_on: &[FailOn]) -> Vec<Violation> {
     let active: HashSet<FailOn> = fail_on.iter().copied().collect();
     if active.is_empty() {
         return Vec::new();
@@ -592,12 +751,7 @@ pub(crate) fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> 
                         violations.extend(copyleft_violation(change, name, check_copyleft_added));
                     }
                     FieldChange::Version(Some(old_ver), Some(new_ver))
-                        if check_version_downgrade
-                            && is_version_downgrade_for_ecosystem(
-                                pair_ecosystem(&change.old, &change.new),
-                                old_ver,
-                                new_ver,
-                            ) =>
+                        if check_version_downgrade && change.is_downgrade =>
                     {
                         violations.push(Violation::VersionDowngrade {
                             name: name.to_owned(),
@@ -635,9 +789,7 @@ pub(crate) fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> 
                     FieldChange::Hashes(old_hashes, new_hashes)
                         if check_hash_downgrade || check_checksum_changed =>
                     {
-                        if check_hash_downgrade
-                            && is_hash_algorithm_downgrade(old_hashes, new_hashes)
-                        {
+                        if check_hash_downgrade && change.is_hash_algorithm_downgrade {
                             violations.push(Violation::HashAlgorithmDowngrade {
                                 name: name.to_owned(),
                                 old_algos: old_hashes.keys().cloned().collect(),
@@ -700,7 +852,6 @@ pub(crate) fn collect_violations(diff: &sbom_diff::Diff, fail_on: &[FailOn]) -> 
         }
     }
 
-    // CyclicDependency is handled separately before diffing
     violations
 }
 
@@ -721,7 +872,7 @@ fn purl_coordinates_changed(old: Option<&str>, new: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sbom_diff::Differ;
+    use crate::{EcosystemFilter, Field};
     use sbom_model::{Component, ComponentId};
 
     #[test]
@@ -731,10 +882,10 @@ mod tests {
         c.licenses.insert("GPL-3.0-only".into());
         sbom.components.insert(c.id.clone(), c);
 
-        assert!(check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
-        assert!(!check_licenses(&sbom, &["MIT".into()], &[]));
-        assert!(check_licenses(&sbom, &[], &["MIT".into()]));
-        assert!(!check_licenses(&sbom, &[], &["GPL-3.0-only".into()]));
+        assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]).is_empty());
+        assert!(check_licenses(&sbom, &["MIT".into()], &[]).is_empty());
+        assert!(!check_licenses(&sbom, &[], &["MIT".into()]).is_empty());
+        assert!(check_licenses(&sbom, &[], &["GPL-3.0-only".into()]).is_empty());
     }
 
     #[test]
@@ -747,20 +898,16 @@ mod tests {
         sbom.components.insert(c.id.clone(), c);
 
         // either license triggers deny
-        assert!(check_licenses(&sbom, &["MIT".into()], &[]));
-        assert!(check_licenses(&sbom, &["Apache-2.0".into()], &[]));
+        assert!(!check_licenses(&sbom, &["MIT".into()], &[]).is_empty());
+        assert!(!check_licenses(&sbom, &["Apache-2.0".into()], &[]).is_empty());
         // both must be in allow list
-        assert!(check_licenses(&sbom, &[], &["MIT".into()])); // Apache-2.0 not allowed
-        assert!(!check_licenses(
-            &sbom,
-            &[],
-            &["MIT".into(), "Apache-2.0".into()]
-        ));
+        assert!(!check_licenses(&sbom, &[], &["MIT".into()]).is_empty()); // Apache-2.0 not allowed
+        assert!(check_licenses(&sbom, &[], &["MIT".into(), "Apache-2.0".into()]).is_empty());
     }
 
     #[test]
     fn test_collect_violations_deps_with_removed_edges() {
-        use sbom_diff::{Diff, EdgeDiff};
+        use crate::{Diff, EdgeDiff};
         use sbom_model::{ComponentId, DependencyKind};
         use std::collections::BTreeMap;
 
@@ -789,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_multiple_conditions() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let diff = Diff {
             added: vec![Component::new("new".into(), Some("1".into()))],
@@ -818,13 +965,13 @@ mod tests {
         sbom.components.insert(c.id.clone(), c);
 
         // no allow-list: unlicensed component is not a violation
-        assert!(!check_licenses(&sbom, &[], &[]));
+        assert!(check_licenses(&sbom, &[], &[]).is_empty());
 
         // with allow-list: unlicensed component cannot satisfy it → violation
-        assert!(check_licenses(&sbom, &[], &["MIT".into()]));
+        assert!(!check_licenses(&sbom, &[], &["MIT".into()]).is_empty());
 
         // with deny-list only: unlicensed component is not a violation (nothing to deny)
-        assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]));
+        assert!(check_licenses(&sbom, &["GPL-3.0-only".into()], &[]).is_empty());
     }
 
     #[test]
@@ -835,20 +982,20 @@ mod tests {
         sbom.components.insert(c.id.clone(), c);
 
         // deny: different casing still matches
-        assert!(check_licenses(&sbom, &["gpl-3.0-only".into()], &[]));
-        assert!(check_licenses(&sbom, &["Gpl-3.0-Only".into()], &[]));
+        assert!(!check_licenses(&sbom, &["gpl-3.0-only".into()], &[]).is_empty());
+        assert!(!check_licenses(&sbom, &["Gpl-3.0-Only".into()], &[]).is_empty());
 
         // allow: different casing is still accepted
-        assert!(!check_licenses(&sbom, &[], &["gpl-3.0-only".into()]));
-        assert!(!check_licenses(&sbom, &[], &["GPL-3.0-ONLY".into()]));
+        assert!(check_licenses(&sbom, &[], &["gpl-3.0-only".into()]).is_empty());
+        assert!(check_licenses(&sbom, &[], &["GPL-3.0-ONLY".into()]).is_empty());
 
         // allow: wrong license is still rejected regardless of case
-        assert!(check_licenses(&sbom, &[], &["mit".into()]));
+        assert!(!check_licenses(&sbom, &[], &["mit".into()]).is_empty());
     }
 
     #[test]
     fn test_collect_violations_added_components() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let mut diff = Diff {
             added: vec![],
@@ -867,7 +1014,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_missing_hashes() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let mut diff = Diff {
             added: vec![],
@@ -889,7 +1036,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_missing_hashes_changed_component_dropped() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeMap;
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
@@ -907,6 +1054,7 @@ mod tests {
                     FieldChange::Hashes(old.hashes.clone(), BTreeMap::new()),
                 ],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -916,7 +1064,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_missing_hashes_changed_component_kept() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
         old.hashes.insert("sha256".into(), "abc".into());
@@ -934,6 +1082,7 @@ mod tests {
                     FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()),
                 ],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -943,7 +1092,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_missing_hashes_changed_component_both_empty() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0".into()));
         let new = Component::new("pkg".into(), Some("1.1".into()));
@@ -956,6 +1105,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Version(Some("1.0".into()), Some("1.1".into()))],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -965,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_deps() {
-        use sbom_diff::{Diff, EdgeDiff};
+        use crate::{Diff, EdgeDiff};
         use sbom_model::{ComponentId, DependencyKind};
         use std::collections::BTreeMap;
 
@@ -993,7 +1143,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_removed_components() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let mut diff = Diff {
             added: vec![],
@@ -1012,7 +1162,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_changed_components() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut diff = Diff {
             added: vec![],
@@ -1032,13 +1182,14 @@ mod tests {
             new,
             changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         });
         assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
     }
 
     #[test]
     fn test_description_only_changes_do_not_trigger_gates() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0".into()));
         let mut new = old.clone();
@@ -1056,6 +1207,7 @@ mod tests {
                     Some("updated description".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             edge_diffs: vec![],
             ..Diff::default()
@@ -1078,7 +1230,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_license_changed_on_changed_component() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
@@ -1096,6 +1248,7 @@ mod tests {
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1105,7 +1258,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_license_changed_no_license_change() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0".into()));
         let new = Component::new("pkg".into(), Some("2.0".into()));
@@ -1117,6 +1270,7 @@ mod tests {
                 new,
                 changes: vec![FieldChange::Version(Some("1.0".into()), Some("2.0".into()))],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1126,7 +1280,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_license_changed_added_component_with_license() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let mut added = Component::new("new-pkg".into(), Some("1.0".into()));
         added.licenses.insert("AGPL-3.0-only".into());
@@ -1141,7 +1295,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_license_changed_added_component_without_license() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let added = Component::new("new-pkg".into(), Some("1.0".into()));
 
@@ -1155,7 +1309,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_license_changed_license_dropped() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
@@ -1172,6 +1326,7 @@ mod tests {
                     BTreeSet::new(),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1181,7 +1336,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_copyleft_added_changed_component() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
@@ -1199,6 +1354,7 @@ mod tests {
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1212,7 +1368,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_copyleft_added_permissive_change_no_violation() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         // a genuine license change that stays permissive must not fire
@@ -1231,6 +1387,7 @@ mod tests {
                     BTreeSet::from(["Apache-2.0".into()]),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1240,7 +1397,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_copyleft_added_carried_over_no_violation() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         // copyleft license present on both sides is not a new introduction
@@ -1260,6 +1417,7 @@ mod tests {
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1269,7 +1427,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_copyleft_added_on_added_component() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let mut permissive = Component::new("perm-pkg".into(), Some("1.0".into()));
         permissive.licenses.insert("MIT".into());
@@ -1293,7 +1451,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_copyleft_added_and_license_changed_both_fire() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         // both gates read FieldChange::License; with both active, each must fire
@@ -1312,6 +1470,7 @@ mod tests {
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1327,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_copyleft_added_does_not_trigger_other_gates() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeSet;
 
         let mut old = Component::new("pkg".into(), Some("1.0".into()));
@@ -1345,6 +1504,7 @@ mod tests {
                     BTreeSet::from(["GPL-3.0-only".into()]),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1360,7 +1520,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_metadata_changed() {
-        use sbom_diff::{Diff, MetadataChange};
+        use crate::{Diff, MetadataChange};
 
         let diff = Diff {
             metadata_changed: Some(MetadataChange {
@@ -1376,7 +1536,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_metadata_changed_tools_only() {
-        use sbom_diff::{Diff, MetadataChange};
+        use crate::{Diff, MetadataChange};
 
         let diff = Diff {
             metadata_changed: Some(MetadataChange {
@@ -1392,7 +1552,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_metadata_changed_does_not_trigger_other_gates() {
-        use sbom_diff::{Diff, MetadataChange};
+        use crate::{Diff, MetadataChange};
 
         let diff = Diff {
             metadata_changed: Some(MetadataChange {
@@ -1415,7 +1575,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_version_downgrade() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("2.0.0".into()));
         let new = Component::new("pkg".into(), Some("1.5.0".into()));
@@ -1429,7 +1589,8 @@ mod tests {
                     Some("2.0.0".into()),
                     Some("1.5.0".into()),
                 )],
-                is_downgrade: false,
+                is_downgrade: true,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1439,7 +1600,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_version_downgrade_upgrade_no_violation() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
         let new = Component::new("pkg".into(), Some("2.0.0".into()));
@@ -1454,6 +1615,7 @@ mod tests {
                     Some("2.0.0".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1463,7 +1625,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_version_downgrade_no_version_change() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         // only license changed, no version change
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1479,6 +1641,7 @@ mod tests {
                     Some("New Corp".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1488,7 +1651,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_version_downgrade_version_added() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         // version went from None to Some — not a downgrade
         let old = Component::new("pkg".into(), None);
@@ -1501,6 +1664,7 @@ mod tests {
                 new,
                 changes: vec![FieldChange::Version(None, Some("1.0.0".into()))],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1510,7 +1674,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_version_downgrade_does_not_trigger_other_gates() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("2.0.0".into()));
         let new = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1524,7 +1688,8 @@ mod tests {
                     Some("2.0.0".into()),
                     Some("1.0.0".into()),
                 )],
-                is_downgrade: false,
+                is_downgrade: true,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1543,7 +1708,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.supplier = Some("Acme Corp".into());
@@ -1560,6 +1725,7 @@ mod tests {
                     Some("Evil Corp".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1569,7 +1735,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed_no_change() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
         let new = Component::new("pkg".into(), Some("2.0.0".into()));
@@ -1584,6 +1750,7 @@ mod tests {
                     Some("2.0.0".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1593,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed_supplier_added() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
         let mut new = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1606,6 +1773,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Supplier(None, Some("New Corp".into()))],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1615,7 +1783,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed_supplier_removed() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.supplier = Some("Old Corp".into());
@@ -1628,6 +1796,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Supplier(Some("Old Corp".into()), None)],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1637,7 +1806,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed_added_component_with_supplier() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let mut added = Component::new("new-pkg".into(), Some("1.0.0".into()));
         added.supplier = Some("Some Corp".into());
@@ -1652,7 +1821,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed_added_component_without_supplier() {
-        use sbom_diff::Diff;
+        use crate::Diff;
 
         let added = Component::new("new-pkg".into(), Some("1.0.0".into()));
 
@@ -1666,7 +1835,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_supplier_changed_does_not_trigger_other_gates() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.supplier = Some("Acme Corp".into());
@@ -1683,6 +1852,7 @@ mod tests {
                     Some("Evil Corp".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1702,7 +1872,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_purl_changed() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.purl = Some("pkg:npm/pkg@1.0.0".into());
@@ -1719,6 +1889,7 @@ mod tests {
                     Some("pkg:npm/pkg-typo@1.0.0".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1740,7 +1911,7 @@ mod tests {
             sbom.components.insert(comp.id.clone(), comp);
         }
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.changed[0]
             .changes
             .iter()
@@ -1750,7 +1921,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_purl_changed_on_qualifier_change() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let old_purl = "pkg:maven/org.example/lib@1.0.0?repository_url=https://repo.example.com";
         let new_purl = "pkg:maven/org.example/lib@1.0.0?repository_url=https://evil.example.com";
@@ -1769,6 +1940,7 @@ mod tests {
                     Some(new_purl.into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1857,7 +2029,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_ecosystem_changed() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.ecosystem = Some("npm".into());
@@ -1874,6 +2046,7 @@ mod tests {
                     Some("cargo".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1885,7 +2058,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_ecosystem_changed_no_change() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         // only the version changed — the ecosystem gate must not fire
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1901,6 +2074,7 @@ mod tests {
                     Some("2.0.0".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1910,7 +2084,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-256".into(), "abc".into());
@@ -1924,6 +2098,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: true,
             }],
             ..Diff::default()
         };
@@ -1933,7 +2108,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade_upgrade_no_violation() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-1".into(), "abc".into());
@@ -1947,6 +2122,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1956,7 +2132,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade_same_algorithm() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-256".into(), "abc".into());
@@ -1970,6 +2146,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -1979,7 +2156,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade_no_hash_change() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         // only version changed, no hash change
         let old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -1995,6 +2172,7 @@ mod tests {
                     Some("2.0.0".into()),
                 )],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -2004,7 +2182,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade_dropped_strongest() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         // old has SHA-256 + MD5, new has only MD5
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
@@ -2020,6 +2198,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: true,
             }],
             ..Diff::default()
         };
@@ -2029,7 +2208,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade_hashes_dropped_entirely() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
         use std::collections::BTreeMap;
 
         // old has SHA-256, new has no hashes — should NOT trigger
@@ -2045,6 +2224,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), BTreeMap::new())],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: false,
             }],
             ..Diff::default()
         };
@@ -2054,7 +2234,7 @@ mod tests {
 
     #[test]
     fn test_collect_violations_hash_algorithm_downgrade_does_not_trigger_other_gates() {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some("1.0.0".into()));
         old.hashes.insert("sha-256".into(), "abc".into());
@@ -2068,6 +2248,7 @@ mod tests {
                 new: new.clone(),
                 changes: vec![FieldChange::Hashes(old.hashes.clone(), new.hashes.clone())],
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: true,
             }],
             ..Diff::default()
         };
@@ -2092,8 +2273,8 @@ mod tests {
         new_version: &str,
         old_hashes: &[(&str, &str)],
         new_hashes: &[(&str, &str)],
-    ) -> sbom_diff::Diff {
-        use sbom_diff::{ComponentChange, Diff, FieldChange};
+    ) -> crate::Diff {
+        use crate::{ComponentChange, Diff, FieldChange};
 
         let mut old = Component::new("pkg".into(), Some(old_version.into()));
         old.hashes = old_hashes
@@ -2114,6 +2295,7 @@ mod tests {
             ));
         }
         changes.push(FieldChange::Hashes(old.hashes.clone(), new.hashes.clone()));
+        let hash_downgrade = sbom_model::is_hash_algorithm_downgrade(&old.hashes, &new.hashes);
 
         Diff {
             changed: vec![ComponentChange {
@@ -2122,6 +2304,7 @@ mod tests {
                 new,
                 changes,
                 is_downgrade: false,
+                is_hash_algorithm_downgrade: hash_downgrade,
             }],
             ..Diff::default()
         }
@@ -2205,6 +2388,60 @@ mod tests {
     }
 
     #[test]
+    fn policy_check_gates_the_whole_diff_of_the_filtered_ecosystems() {
+        let component = |name: &str, version: &str, ecosystem: &str, license: &str| {
+            let mut c = Component::new(name.into(), Some(version.into()));
+            c.ecosystem = Some(ecosystem.into());
+            c.licenses.insert(license.into());
+            c
+        };
+        let sbom = |components: Vec<Component>| {
+            let mut sbom = Sbom::default();
+            for c in components {
+                sbom.components.insert(c.id.clone(), c);
+            }
+            sbom
+        };
+        let old = sbom(vec![
+            component("a", "2.0.0", "npm", "MIT"),
+            component("b", "1.0.0", "cargo", "GPL-3.0-only"),
+        ]);
+        let new = sbom(vec![
+            component("a", "1.0.0", "npm", "MIT"),
+            component("b", "1.0.0", "cargo", "GPL-3.0-only"),
+        ]);
+        let policy = Policy {
+            fail_on: vec![FailOn::VersionDowngrade],
+            deny_licenses: vec!["GPL-3.0-only".into()],
+            ..Policy::default()
+        };
+        let downgrade = Violation::VersionDowngrade {
+            name: "a@1.0.0".into(),
+            old: "2.0.0".into(),
+            new: "1.0.0".into(),
+        };
+        let denied = Violation::LicenseDenied {
+            name: "b@1.0.0".into(),
+            licenses: vec!["GPL-3.0-only".into()],
+        };
+
+        let only_license = DiffOptions {
+            only: vec![Field::License],
+            ..DiffOptions::default()
+        };
+        let (diff, violations) = policy.check(old.clone(), new.clone(), &only_license);
+        assert!(diff.changed.is_empty());
+        assert_eq!(violations, vec![denied, downgrade.clone()]);
+
+        let npm = DiffOptions {
+            ecosystems: EcosystemFilter::new(["npm"], []),
+            ..only_license
+        };
+        let (_, violations) = policy.check(old, new, &npm);
+        assert_eq!(violations, vec![downgrade]);
+    }
+
+    #[test]
     fn test_check_cyclic_dependencies_with_cycle() {
         use sbom_model::DependencyKind;
 
@@ -2226,10 +2463,7 @@ mod tests {
             .or_default()
             .insert(id1.clone(), DependencyKind::Runtime);
 
-        assert!(check_cyclic_dependencies(
-            &sbom,
-            &[FailOn::CyclicDependency]
-        ));
+        assert!(!check_cyclic_dependencies(&sbom, &[FailOn::CyclicDependency]).is_empty());
     }
 
     #[test]
@@ -2250,10 +2484,7 @@ mod tests {
             .or_default()
             .insert(id2.clone(), DependencyKind::Runtime);
 
-        assert!(!check_cyclic_dependencies(
-            &sbom,
-            &[FailOn::CyclicDependency]
-        ));
+        assert!(check_cyclic_dependencies(&sbom, &[FailOn::CyclicDependency]).is_empty());
     }
 
     #[test]
@@ -2279,9 +2510,6 @@ mod tests {
             .insert(id1.clone(), DependencyKind::Runtime);
 
         // not in fail_on list — should return false
-        assert!(!check_cyclic_dependencies(
-            &sbom,
-            &[FailOn::AddedComponents]
-        ));
+        assert!(check_cyclic_dependencies(&sbom, &[FailOn::AddedComponents]).is_empty());
     }
 }

@@ -1,20 +1,16 @@
 mod format;
-mod policy;
 
 use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use format::{load_sbom, Format};
-use policy::{
-    check_cyclic_dependencies, check_licenses, check_policy_entries, collect_violations, FailOn,
-};
 use sbom_diff::{
+    policy::{FailOn, Policy, Violation},
     renderer::{
         CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SarifRenderer,
         SummaryRenderer, TextRenderer,
     },
-    Differ, EcosystemFilter, Field,
+    DiffOptions, EcosystemFilter, Field,
 };
-use sbom_model::Sbom;
 use std::io;
 
 #[derive(Parser, Debug)]
@@ -86,8 +82,17 @@ enum Output {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    check_policy_entries("--deny-license", &args.deny_license)?;
-    check_policy_entries("--allow-license", &args.allow_license)?;
+    let policy = Policy {
+        fail_on: args.fail_on.clone(),
+        deny_licenses: args.deny_license.clone(),
+        allow_licenses: args.allow_license.clone(),
+    };
+    for issue in policy.entry_issues() {
+        if issue.is_error() {
+            anyhow::bail!("{issue}");
+        }
+        eprintln!("warning: {issue}");
+    }
 
     let old_sbom = load_sbom(&args.old, args.format).context("failed to load old sbom")?;
     let new_sbom = load_sbom(&args.new, args.format).context("failed to load new sbom")?;
@@ -97,43 +102,23 @@ fn main() -> anyhow::Result<()> {
     }
 
     // the differ consumes both sboms, so copy the warnings out first.
-    let render_opts = RenderOptions {
+    let mut render_opts = RenderOptions {
         group_by_ecosystem: args.group_by_ecosystem,
         show_warnings: args.show_warnings,
         old_warnings: old_sbom.warnings.clone(),
         new_warnings: new_sbom.warnings.clone(),
+        violations: Vec::new(),
     };
 
-    let filter = EcosystemFilter::new(&args.include_ecosystem, &args.exclude_ecosystem);
-    let sbom_gates = |sbom: &Sbom| {
-        (
-            check_licenses(sbom, &args.deny_license, &args.allow_license),
-            check_cyclic_dependencies(sbom, &args.fail_on),
-        )
+    let options = DiffOptions {
+        only: args.only.clone(),
+        ecosystems: EcosystemFilter::new(&args.include_ecosystem, &args.exclude_ecosystem),
     };
-    let sbom_gates_active = !args.deny_license.is_empty()
-        || !args.allow_license.is_empty()
-        || args.fail_on.contains(&FailOn::CyclicDependency);
-    // under a filter, the license and cycle gates read the new sbom cut down to
-    // the components the diff covers, which the differ works out; otherwise
-    // they read it whole, before the differ consumes it.
-    let (mut diff, (license_violation, cycle_violation)) =
-        if sbom_gates_active && !filter.is_empty() {
-            let (diff, scope) = Differ::diff_filtered_with_scope(old_sbom, new_sbom, &filter);
-            (diff, sbom_gates(&scope))
-        } else {
-            let verdicts = sbom_gates(&new_sbom);
-            (Differ::diff_filtered(old_sbom, new_sbom, &filter), verdicts)
-        };
-
-    let violations = collect_violations(&diff, &args.fail_on);
+    let (diff, violations) = policy.check(old_sbom, new_sbom, &options);
     for v in &violations {
         eprintln!("error: {v}");
     }
-
-    if !args.only.is_empty() {
-        diff.retain_fields(&args.only);
-    }
+    render_opts.violations = violations;
 
     if !args.quiet {
         let stdout = io::stdout();
@@ -160,11 +145,15 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    if license_violation {
+    if render_opts
+        .violations
+        .iter()
+        .any(Violation::is_license_policy)
+    {
         std::process::exit(2);
     }
 
-    if !violations.is_empty() || cycle_violation {
+    if !render_opts.violations.is_empty() {
         std::process::exit(3);
     }
 

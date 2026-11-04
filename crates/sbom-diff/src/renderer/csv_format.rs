@@ -1,8 +1,7 @@
 use super::{
     format_option, format_set, format_vec_or_none, Labels, RenderOptions, Renderer, SummaryRenderer,
 };
-use crate::{Diff, FieldChange};
-use sbom_model::is_hash_algorithm_downgrade;
+use crate::{ComponentChange, Diff, FieldChange};
 use std::borrow::Cow;
 use std::io::Write;
 
@@ -99,7 +98,7 @@ impl Renderer for CsvRenderer {
             let display = labels.component(&change.new);
             let eco = change.new.ecosystem.as_deref().unwrap_or("");
             for fc in &change.changes {
-                let (field, old, new) = csv_field_change(fc, change.is_downgrade);
+                let (field, old, new) = csv_field_change(fc, change);
                 wtr.write_record(["changed", display, eco, field, &old, &new])?;
             }
         }
@@ -241,10 +240,10 @@ impl SummaryRenderer for CsvRenderer {
 }
 
 /// converts a [`FieldChange`] into `(field_name, old_value, new_value)` for CSV output.
-fn csv_field_change(fc: &FieldChange, is_downgrade: bool) -> (&'static str, String, String) {
+fn csv_field_change(fc: &FieldChange, change: &ComponentChange) -> (&'static str, String, String) {
     match fc {
         FieldChange::Version(old, new) => (
-            if is_downgrade {
+            if change.is_downgrade {
                 "version-downgrade"
             } else {
                 "version"
@@ -284,7 +283,7 @@ fn csv_field_change(fc: &FieldChange, is_downgrade: bool) -> (&'static str, Stri
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect::<Vec<_>>()
                 .join("; ");
-            let field = if is_hash_algorithm_downgrade(old, new) {
+            let field = if change.is_hash_algorithm_downgrade {
                 "hashes-downgrade"
             } else {
                 "hashes"

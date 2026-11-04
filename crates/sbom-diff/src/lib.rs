@@ -1,12 +1,16 @@
 #![doc = include_str!("../readme.md")]
 
 use sbom_model::versions::{is_version_downgrade_for_ecosystem, Version};
-use sbom_model::{licensings_equivalent, parse_purl, Component, ComponentId, DependencyKind, Sbom};
+use sbom_model::{
+    is_hash_algorithm_downgrade, licensings_equivalent, parse_purl, Component, ComponentId,
+    DependencyKind, Sbom,
+};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+pub mod policy;
 pub mod renderer;
 
 /// structured tracking of document metadata changes between two SBOMs.
@@ -71,7 +75,7 @@ pub struct Diff {
     /// diff output is readable without cross-referencing the full component list.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub component_names: BTreeMap<ComponentId, String>,
-    /// the ecosystems the diff was taken over, as [`Differ::diff_filtered`] sets
+    /// the ecosystems the diff was taken over, as [`DiffOptions::ecosystems`] sets
     /// it; empty for a diff of every ecosystem.
     ///
     /// grouping by ecosystem files a changed component under its new ecosystem,
@@ -164,13 +168,13 @@ impl Diff {
     ///
     /// `filtered_old_total` and `filtered_new_total` are the pre-counted
     /// number of components in each SBOM that pass the predicate. these must
-    /// be computed before [`Differ::diff_owned`] consumes the SBOMs.
+    /// be computed before [`Differ::diff`] consumes the SBOMs.
     ///
     /// `component_ecosystems` maps component IDs to their ecosystem, built
     /// from both SBOMs before they are consumed. this is used to filter
     /// edge diffs by the parent component's ecosystem.
     #[deprecated(
-        note = "use `Differ::diff_filtered`, which also keeps a change by its old ecosystem and an edge change by both ends"
+        note = "use `Differ::diff` with `DiffOptions::ecosystems`, which also keeps a change by its old ecosystem and an edge change by both ends"
     )]
     pub fn filter_by_ecosystem<F: Fn(Option<&str>) -> bool>(
         &mut self,
@@ -226,6 +230,7 @@ impl Diff {
         self.changed.retain_mut(|change| {
             change.changes.retain(|fc| only.contains(&fc.field()));
             change.is_downgrade &= only.contains(&Field::Version);
+            change.is_hash_algorithm_downgrade &= only.contains(&Field::Hashes);
             !change.changes.is_empty()
         });
         self.unchanged += changed - self.changed.len();
@@ -332,6 +337,9 @@ pub struct ComponentChange {
     /// true when the version change is a downgrade (higher to lower).
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_downgrade: bool,
+    /// true when the strongest hash algorithm got weaker; not serialized.
+    #[serde(skip)]
+    pub is_hash_algorithm_downgrade: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -402,7 +410,7 @@ impl FieldChange {
 
 /// fields that can be compared and filtered.
 ///
-/// use with [`Differ::diff`] to limit comparison to specific fields.
+/// use with [`DiffOptions::only`] to limit comparison to specific fields.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum Field {
     /// package version.
@@ -567,42 +575,55 @@ fn keep_edges_between_components(
 /// namespace and name, then by identity (name, ecosystem and purl namespace).
 pub struct Differ;
 
+/// what [`Differ::diff`] compares and reports.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiffOptions {
+    /// the fields to report; every field when empty.
+    pub only: Vec<Field>,
+    /// the ecosystems to compare.
+    pub ecosystems: EcosystemFilter,
+}
+
 impl Differ {
     /// compares two SBOMs and returns the differences.
     ///
-    /// both SBOMs are normalized before comparison to ignore irrelevant differences
-    /// like ordering or metadata timestamps. this method clones both SBOMs
-    /// internally; use [`diff_owned`](Self::diff_owned) to avoid cloning when
-    /// you already own the SBOMs.
+    /// both SBOMs are normalized in place before comparison to ignore irrelevant
+    /// differences like ordering or metadata timestamps.
     ///
-    /// # Arguments
-    ///
-    /// * `old` - The baseline SBOM
-    /// * `new` - The SBOM to compare against the baseline
-    /// * `only` - Optional filter to limit comparison to specific fields
+    /// added and removed components are kept by their own ecosystem and a changed
+    /// component when either side's is kept; a kept change counts in both totals.
+    /// an edge change is kept when its parent is kept on either side and its child
+    /// on the side the edge is on: the new side for an added dependency, the old
+    /// side for a removed one, and either side for a changed kind.
     ///
     /// # Example
     ///
     /// ```
-    /// use sbom_diff::{Differ, Field};
+    /// use sbom_diff::{DiffOptions, Differ, EcosystemFilter, Field};
     /// use sbom_model::Sbom;
     ///
     /// let old = Sbom::default();
     /// let new = Sbom::default();
     ///
-    /// // Compare all fields
-    /// let diff = Differ::diff(&old, &new, None);
+    /// // compare all fields
+    /// let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
     ///
-    /// // compare only version and license changes
-    /// let diff = Differ::diff(&old, &new, Some(&[Field::Version, Field::License]));
+    /// // compare only version and license changes of npm packages
+    /// let options = DiffOptions {
+    ///     only: vec![Field::Version, Field::License],
+    ///     ecosystems: EcosystemFilter::new(["npm"], []),
+    /// };
+    /// let diff = Differ::diff(old, new, &options);
     /// ```
-    pub fn diff(old: &Sbom, new: &Sbom, only: Option<&[Field]>) -> Diff {
-        Self::diff_owned(old.clone(), new.clone(), only)
+    pub fn diff(old: Sbom, new: Sbom, options: &DiffOptions) -> Diff {
+        let mut diff = Self::diff_filtered(old, new, &options.ecosystems);
+        if !options.only.is_empty() {
+            diff.retain_fields(&options.only);
+        }
+        diff
     }
 
-    /// consuming variant of [`diff`](Self::diff) that normalizes in place,
-    /// avoiding two full SBOM clones.
-    pub fn diff_owned(mut old: Sbom, mut new: Sbom, only: Option<&[Field]>) -> Diff {
+    fn diff_all(mut old: Sbom, mut new: Sbom) -> Diff {
         // compare metadata before normalize() strips volatile fields
         let metadata_changed = {
             let mut mc = MetadataChange {
@@ -814,12 +835,19 @@ impl Differ {
                 }
                 _ => false,
             });
+            let hash_downgrade = fields.iter().any(|f| match f {
+                FieldChange::Hashes(old_hashes, new_hashes) => {
+                    is_hash_algorithm_downgrade(old_hashes, new_hashes)
+                }
+                _ => false,
+            });
             changed.push(ComponentChange {
                 id: new_comp.id.clone(),
                 old: old_comp,
                 new: new_comp,
                 changes: fields,
                 is_downgrade: downgrade,
+                is_hash_algorithm_downgrade: hash_downgrade,
             });
         }
 
@@ -833,7 +861,7 @@ impl Differ {
         let added: Vec<Component> = new.components.into_values().collect();
         let removed: Vec<Component> = old.components.into_values().collect();
 
-        let mut diff = Diff {
+        Diff {
             added,
             removed,
             changed,
@@ -844,23 +872,12 @@ impl Differ {
             unchanged,
             component_names,
             ecosystem_filter: EcosystemFilter::default(),
-        };
-        if let Some(only) = only {
-            diff.retain_fields(only);
         }
-        diff
     }
 
-    /// [`diff_owned`](Self::diff_owned) over the ecosystems `filter` keeps.
-    ///
-    /// added and removed components are kept by their own ecosystem and a changed
-    /// component when either side's is kept; a kept change counts in both totals.
-    /// an edge change is kept when its parent is kept on either side and its child
-    /// on the side the edge is on: the new side for an added dependency, the old
-    /// side for a removed one, and either side for a changed kind.
-    pub fn diff_filtered(old: Sbom, new: Sbom, filter: &EcosystemFilter) -> Diff {
+    fn diff_filtered(old: Sbom, new: Sbom, filter: &EcosystemFilter) -> Diff {
         if filter.is_empty() {
-            return Self::diff_owned(old, new, None);
+            return Self::diff_all(old, new);
         }
         let ecosystems = |sbom: &Sbom| -> BTreeMap<ComponentId, Option<String>> {
             sbom.components
@@ -871,7 +888,7 @@ impl Differ {
         let (mut old_ecosystems, new_ecosystems) = (ecosystems(&old), ecosystems(&new));
         let new_kept_total = new.components.values().filter(|c| filter.keeps(c)).count();
 
-        let mut diff = Self::diff_owned(old, new, None);
+        let mut diff = Self::diff_all(old, new);
         // edge diffs name a matched component by its new id
         old_ecosystems.extend(
             diff.changed
@@ -922,14 +939,10 @@ impl Differ {
     /// [`EcosystemFilter::restrict`], plus the new side of each change kept only
     /// by its old ecosystem, so a gate on the new sbom sees what the diff gates see.
     /// with an empty filter, the scope is a copy of `new`.
-    pub fn diff_filtered_with_scope(
-        old: Sbom,
-        new: Sbom,
-        filter: &EcosystemFilter,
-    ) -> (Diff, Sbom) {
+    pub(crate) fn diff_with_scope(old: Sbom, new: Sbom, filter: &EcosystemFilter) -> (Diff, Sbom) {
         let mut scope = filter.restrict(&new).into_owned();
         if filter.is_empty() {
-            return (Self::diff_owned(old, new, None), scope);
+            return (Self::diff_all(old, new), scope);
         }
         let dependencies = new.dependencies.clone();
 
@@ -1273,7 +1286,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.added.len(), 1);
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.changed.len(), 0);
@@ -1291,7 +1304,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.added.len(), 0);
         assert_eq!(diff.removed.len(), 0);
         assert_eq!(diff.changed.len(), 1);
@@ -1358,7 +1371,7 @@ mod tests {
             old.components.insert(old_c.id.clone(), old_c);
             new.components.insert(new_c.id.clone(), new_c);
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), 1, "{expected:?}");
             assert_eq!(diff.changed[0].changes, vec![expected]);
         }
@@ -1379,7 +1392,14 @@ mod tests {
         new.components.insert(c2.id.clone(), c2);
 
         // only description: should see description change but not version
-        let diff = Differ::diff(&old, &new, Some(&[Field::Description]));
+        let diff = Differ::diff(
+            old.clone(),
+            new.clone(),
+            &DiffOptions {
+                only: vec![Field::Description],
+                ..Default::default()
+            },
+        );
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
         assert!(matches!(
@@ -1388,7 +1408,14 @@ mod tests {
         ));
 
         // only version: should see version change but not description
-        let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
+        let diff = Differ::diff(
+            old.clone(),
+            new.clone(),
+            &DiffOptions {
+                only: vec![Field::Version],
+                ..Default::default()
+            },
+        );
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
         assert!(matches!(
@@ -1410,7 +1437,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
         assert!(matches!(
@@ -1436,7 +1463,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
         assert!(matches!(
@@ -1460,7 +1487,14 @@ mod tests {
         new.components.insert(c2.id.clone(), c2);
 
         // only ecosystem: should see ecosystem change but not version
-        let diff = Differ::diff(&old, &new, Some(&[Field::Ecosystem]));
+        let diff = Differ::diff(
+            old.clone(),
+            new.clone(),
+            &DiffOptions {
+                only: vec![Field::Ecosystem],
+                ..Default::default()
+            },
+        );
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
         assert!(matches!(
@@ -1469,7 +1503,14 @@ mod tests {
         ));
 
         // only version: should see version change but not ecosystem
-        let diff = Differ::diff(&old, &new, Some(&[Field::Version]));
+        let diff = Differ::diff(
+            old.clone(),
+            new.clone(),
+            &DiffOptions {
+                only: vec![Field::Version],
+                ..Default::default()
+            },
+        );
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 1);
         assert!(matches!(
@@ -1497,7 +1538,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(diff.changed[0].changes.len(), 4);
     }
@@ -1511,7 +1552,7 @@ mod tests {
         old.components.insert(c.id.clone(), c.clone());
         new.components.insert(c.id.clone(), c);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.added.is_empty());
         assert!(diff.removed.is_empty());
         assert!(diff.changed.is_empty());
@@ -1526,7 +1567,7 @@ mod tests {
         old.metadata.timestamp = Some("2024-01-01".into());
         new.metadata.timestamp = Some("2024-01-02".into());
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         let mc = diff.metadata_changed.as_ref().unwrap();
         assert_eq!(
             mc.timestamp,
@@ -1545,7 +1586,7 @@ mod tests {
         old.metadata.tools = vec!["syft".into()];
         new.metadata.tools = vec!["trivy".into()];
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         let mc = diff.metadata_changed.as_ref().unwrap();
         assert!(mc.timestamp.is_none());
         assert_eq!(mc.tools, Some((vec!["syft".into()], vec!["trivy".into()])));
@@ -1560,7 +1601,7 @@ mod tests {
         old.metadata.authors = vec!["alice".into()];
         new.metadata.authors = vec!["bob".into()];
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         let mc = diff.metadata_changed.as_ref().unwrap();
         assert!(mc.timestamp.is_none());
         assert!(mc.tools.is_none());
@@ -1577,7 +1618,7 @@ mod tests {
         old.metadata.tools = vec!["syft".into()];
         new.metadata.tools = vec!["syft".into()];
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.metadata_changed.is_none());
     }
 
@@ -1593,7 +1634,7 @@ mod tests {
         old.metadata.authors = vec!["alice".into()];
         new.metadata.authors = vec!["bob".into()];
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             diff.metadata_changed,
             Some(MetadataChange {
@@ -1626,7 +1667,7 @@ mod tests {
         old.components.insert(c_old.id.clone(), c_old);
         new.components.insert(c_new.id.clone(), c_new);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         assert_eq!(diff.added.len(), 0, "Should not have added components");
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
@@ -1662,7 +1703,7 @@ mod tests {
         old.components.insert(c_old.id.clone(), c_old);
         new.components.insert(c_new.id.clone(), c_new);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         assert_eq!(diff.added.len(), 0, "Should not have added components");
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
@@ -1694,7 +1735,7 @@ mod tests {
         old.components.insert(c_old.id.clone(), c_old);
         new.components.insert(c_new.id.clone(), c_new);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         assert_eq!(diff.added.len(), 0, "Should not have added components");
         assert_eq!(diff.removed.len(), 0, "Should not have removed components");
@@ -1726,7 +1767,7 @@ mod tests {
         old.components.insert(c_old.id.clone(), c_old);
         new.components.insert(c_new.id.clone(), c_new);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         assert_eq!(diff.added.len(), 1, "pypi/utils should be added");
         assert_eq!(diff.removed.len(), 1, "npm/utils should be removed");
@@ -1753,7 +1794,7 @@ mod tests {
         old.components.insert(c_old.id.clone(), c_old);
         new.components.insert(c_new.id.clone(), c_new);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         assert_eq!(diff.added.len(), 0);
         assert_eq!(diff.removed.len(), 0);
@@ -1798,7 +1839,7 @@ mod tests {
             .or_default()
             .insert(child_b_id.clone(), DependencyKind::Runtime);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         assert_eq!(diff.edge_diffs.len(), 1);
         assert_eq!(diff.edge_diffs[0].parent, parent_id);
@@ -1848,7 +1889,7 @@ mod tests {
             .or_default()
             .insert(child.id.clone(), DependencyKind::Runtime);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         // components should be matched by identity, so no spurious edge changes
         // (the edge parent->child exists in both, just under different parent IDs)
@@ -1884,15 +1925,29 @@ mod tests {
             .insert(child_id, DependencyKind::Runtime);
 
         // without filtering - should have edge diff
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.edge_diffs.len(), 1);
 
         // with filtering to only Version - should NOT have edge diff
-        let diff_filtered = Differ::diff(&old, &new, Some(&[Field::Version]));
+        let diff_filtered = Differ::diff(
+            old.clone(),
+            new.clone(),
+            &DiffOptions {
+                only: vec![Field::Version],
+                ..Default::default()
+            },
+        );
         assert_eq!(diff_filtered.edge_diffs.len(), 0);
 
         // with filtering to include Deps - should have edge diff
-        let diff_with_deps = Differ::diff(&old, &new, Some(&[Field::Deps]));
+        let diff_with_deps = Differ::diff(
+            old.clone(),
+            new.clone(),
+            &DiffOptions {
+                only: vec![Field::Deps],
+                ..Default::default()
+            },
+        );
         assert_eq!(diff_with_deps.edge_diffs.len(), 1);
     }
 
@@ -1913,7 +1968,7 @@ mod tests {
             .or_default()
             .insert(b.id.clone(), DependencyKind::Runtime);
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         diff.retain_fields(&[Field::Description]);
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(
@@ -1928,7 +1983,7 @@ mod tests {
         assert!(diff.edge_diffs.is_empty());
         assert!(diff.component_names.is_empty());
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         diff.retain_fields(&[Field::License, Field::Deps]);
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(
@@ -1948,7 +2003,7 @@ mod tests {
         let old = Sbom::default();
         let new = Sbom::default();
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.is_empty());
         assert!(diff.ecosystem_breakdown().is_empty());
     }
@@ -1958,7 +2013,7 @@ mod tests {
         let old = Sbom::default();
         let new = Sbom::default();
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         let grouped = diff.group_by_ecosystem();
         assert!(grouped.by_ecosystem.is_empty());
         assert!(grouped.edge_diffs.is_empty());
@@ -1998,7 +2053,7 @@ mod tests {
         let c5 = Component::new("mystery".into(), Some("1.0".into()));
         new.components.insert(c5.id.clone(), c5);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         let grouped = diff.group_by_ecosystem();
 
         let npm = grouped.by_ecosystem.get("npm").unwrap();
@@ -2047,7 +2102,7 @@ mod tests {
         new.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.old_total, 2);
         assert_eq!(diff.new_total, 2);
         assert_eq!(diff.unchanged, 2);
@@ -2072,7 +2127,7 @@ mod tests {
         new.components.insert(c2.id.clone(), c2);
         new.components.insert(c4.id.clone(), c4);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.old_total, 3);
         assert_eq!(diff.new_total, 3);
         assert_eq!(diff.added.len(), 1); // c4
@@ -2106,7 +2161,7 @@ mod tests {
             BTreeMap::from([(child_b.id.clone(), DependencyKind::Runtime)]),
         );
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         // all IDs in edge diffs should be hash-based (no purls)
         assert!(diff.edge_diffs[0].parent.as_str().starts_with("h:"));
@@ -2152,7 +2207,7 @@ mod tests {
             BTreeMap::from([(child_b.id.clone(), DependencyKind::Runtime)]),
         );
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         // component_names should be empty — all IDs are purl-based
         assert!(diff.component_names.is_empty());
@@ -2194,7 +2249,7 @@ mod tests {
         // new has npm1 + npm2 + pypi1 (3 components)
         // npm2 is unchanged, npm1 is added (npm), cargo1 is removed, pypi1 is added (pypi)
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         // pre-filtered totals for npm: old has 1 npm (npm2), new has 2 npm (npm1, npm2)
         diff.filter_by_ecosystem(
@@ -2231,7 +2286,7 @@ mod tests {
         new.components.insert(cargo2.id.clone(), cargo2);
 
         // exclude npm: should only see cargo changes
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         diff.filter_by_ecosystem(
             &|eco| eco != Some("npm"),
             1, // old non-npm count
@@ -2259,7 +2314,7 @@ mod tests {
         new.components.insert(no_eco.id.clone(), no_eco);
         new.components.insert(npm.id.clone(), npm);
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
         // include "unknown" - should keep only the component without ecosystem
         diff.filter_by_ecosystem(
@@ -2290,7 +2345,7 @@ mod tests {
         old.components.insert(c_old.id.clone(), c_old);
         new.components.insert(c_new.id.clone(), c_new);
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
 
         // filter to npm: should keep the changed component (new ecosystem is npm)
@@ -2311,7 +2366,7 @@ mod tests {
             s.components.insert(c.id.clone(), c);
             s
         };
-        let mut diff = Differ::diff(&old2, &new2, None);
+        let mut diff = Differ::diff(old2.clone(), new2.clone(), &DiffOptions::default());
         diff.filter_by_ecosystem(&|eco| eco == Some("cargo"), 0, 0, &BTreeMap::new());
         assert_eq!(diff.changed.len(), 0);
     }
@@ -2338,7 +2393,7 @@ mod tests {
         new.components.insert(n1.id.clone(), n1);
         new.components.insert(n2.id.clone(), n2);
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.old_total, 3);
         assert_eq!(diff.new_total, 2);
 
@@ -2380,7 +2435,7 @@ mod tests {
         new.components.insert(mig_new.id.clone(), mig_new);
         new.components.insert(lp.id.clone(), lp);
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1); // migrator (ecosystem npm -> None)
         assert_eq!(diff.unchanged, 1); // left-pad
 
@@ -2425,7 +2480,7 @@ mod tests {
         new.components.insert(mig_new.id.clone(), mig_new);
         new.components.insert(lp.id.clone(), lp);
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
 
         // both old and new npm totals are 2 (nothing crosses the boundary).
@@ -2491,7 +2546,7 @@ mod tests {
             eco_map.insert(id.clone(), comp.ecosystem.clone());
         }
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         // before filtering: should have edge diffs for both ecosystems
         assert!(diff.edge_diffs.len() >= 2);
 
@@ -2547,7 +2602,7 @@ mod tests {
             eco_map.insert(id.clone(), comp.ecosystem.clone());
         }
 
-        let mut diff = Differ::diff(&old, &new, None);
+        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         let names_before = diff.component_names.len();
         assert!(names_before > 0, "should have component names for hash IDs");
 
@@ -2712,7 +2767,14 @@ mod tests {
                 ],
             ),
         ] {
-            let diff = Differ::diff_filtered(old.clone(), new.clone(), &filter);
+            let diff = Differ::diff(
+                old.clone(),
+                new.clone(),
+                &DiffOptions {
+                    ecosystems: filter.clone(),
+                    ..Default::default()
+                },
+            );
             let mut edges: Vec<_> = diff
                 .edge_diffs
                 .iter()
@@ -2759,7 +2821,14 @@ mod tests {
             (EcosystemFilter::new(["unknown"], []), "unknown"),
             (EcosystemFilter::default(), "unknown"),
         ] {
-            let diff = Differ::diff_filtered(old.clone(), new.clone(), &filter);
+            let diff = Differ::diff(
+                old.clone(),
+                new.clone(),
+                &DiffOptions {
+                    ecosystems: filter.clone(),
+                    ..Default::default()
+                },
+            );
             let groups: Vec<_> = diff.ecosystem_breakdown().into_keys().collect();
             assert_eq!(groups, [group], "{filter:?}");
             let groups: Vec<_> = diff
@@ -2811,7 +2880,7 @@ mod tests {
             .insert(dep_b.id.clone(), DependencyKind::Dev);
 
         let copy = sbom.clone();
-        let diff = Differ::diff_owned(sbom, copy, None);
+        let diff = Differ::diff(sbom, copy, &DiffOptions::default());
 
         assert_eq!(
             diff.added.len(),
@@ -2854,9 +2923,68 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_downgrade);
+    }
+
+    #[test]
+    fn diff_flags_a_hash_algorithm_downgrade_in_the_fields_it_keeps() {
+        for (old_algo, new_algo, only, flagged) in [
+            ("sha-256", "md5", vec![], true),
+            ("md5", "sha-256", vec![], false),
+            ("sha-256", "md5", vec![Field::Hashes], true),
+            ("sha-256", "md5", vec![Field::Version], false),
+        ] {
+            let mut c1 = Component::new("pkg-a".into(), Some("1.0.0".into()));
+            c1.hashes.insert(old_algo.into(), "aa".into());
+            let mut c2 = Component::new("pkg-a".into(), Some("1.1.0".into()));
+            c2.hashes.insert(new_algo.into(), "bb".into());
+
+            let options = DiffOptions {
+                only,
+                ..DiffOptions::default()
+            };
+            let diff = Differ::diff(sbom_of(vec![c1]), sbom_of(vec![c2]), &options);
+            assert_eq!(
+                diff.changed[0].is_hash_algorithm_downgrade, flagged,
+                "{old_algo} -> {new_algo} under {:?}",
+                options.only
+            );
+        }
+    }
+
+    #[test]
+    fn diff_options_apply_the_field_and_the_ecosystem_filter() {
+        let component = |name: &str, version: &str, ecosystem: &str| {
+            let mut c = Component::new(name.into(), Some(version.into()));
+            c.ecosystem = Some(ecosystem.into());
+            c.description = Some(version.into());
+            c
+        };
+        let old = sbom_of(vec![
+            component("a", "1.0.0", "npm"),
+            component("b", "1.0.0", "cargo"),
+        ]);
+        let new = sbom_of(vec![
+            component("a", "2.0.0", "npm"),
+            component("b", "2.0.0", "cargo"),
+        ]);
+        let options = DiffOptions {
+            only: vec![Field::Version],
+            ecosystems: EcosystemFilter::new(["npm"], []),
+        };
+
+        let diff = Differ::diff(old, new, &options);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].new.name, "a");
+        assert_eq!(
+            diff.changed[0].changes,
+            vec![FieldChange::Version(
+                Some("1.0.0".into()),
+                Some("2.0.0".into())
+            )]
+        );
     }
 
     #[test]
@@ -2871,7 +2999,7 @@ mod tests {
         old.components.insert(c1.id.clone(), c1);
         new.components.insert(c2.id.clone(), c2);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert!(!diff.changed[0].is_downgrade);
     }
@@ -2888,7 +3016,7 @@ mod tests {
             let old = sbom_of(vec![deb_component("libfoo", old_ver)]);
             let new = sbom_of(vec![deb_component("libfoo", new_ver)]);
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), 1, "{old_ver} -> {new_ver}");
             assert!(
                 !diff.changed[0].is_downgrade,
@@ -2907,7 +3035,7 @@ mod tests {
             let old = sbom_of(vec![deb_component("libfoo", old_ver)]);
             let new = sbom_of(vec![deb_component("libfoo", new_ver)]);
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), 1, "{old_ver} -> {new_ver}");
             assert!(
                 diff.changed[0].is_downgrade,
@@ -2921,7 +3049,7 @@ mod tests {
         let old = sbom_of(vec![npm_component("libfoo", "1.0.0")]);
         let new = sbom_of(vec![npm_component("libfoo", "1.0.0-alpha.1")]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_downgrade);
     }
@@ -2933,7 +3061,7 @@ mod tests {
         let old = versions(["1.2.3-1ubuntu2", "2.0.0-1"]);
         let new = versions(["1.2.3-2", "2.0.1-1"]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[("1.2.3-1ubuntu2", "1.2.3-2"), ("2.0.0-1", "2.0.1-1")])
@@ -2961,7 +3089,11 @@ mod tests {
         old.id = ComponentId::new(None, &[("name", "libfoo")]);
         new.id = old.id.clone();
 
-        let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+        let diff = Differ::diff(
+            sbom_of(vec![old]),
+            sbom_of(vec![new]),
+            &DiffOptions::default(),
+        );
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_downgrade);
     }
@@ -3062,7 +3194,7 @@ mod tests {
                     .collect(),
             );
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(version_pairs(&diff), expect_pairs(&expected));
             assert_eq!(diff.added.len(), 0);
             assert_eq!(diff.removed.len(), 0);
@@ -3086,7 +3218,7 @@ mod tests {
         let old = versions(["1.0.0", "2.0.0", "3.0.0"]);
         let new = versions(["1.0.1", "2.0.1", "3.0.1"]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[("1.0.0", "1.0.1"), ("2.0.0", "2.0.1"), ("3.0.0", "3.0.1")])
@@ -3105,7 +3237,7 @@ mod tests {
             );
             let new = sbom_of(vec![npm_component("libfoo", survivor)]);
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(version_pairs(&diff), expect_pairs(&[expected]));
             assert_eq!(diff.removed.len(), 2);
             assert_eq!(diff.added.len(), 0);
@@ -3122,7 +3254,7 @@ mod tests {
             let old = sbom_of(vec![npm_component("libfoo", survivor)]);
             let new = sbom_of(others.iter().map(|v| npm_component("libfoo", v)).collect());
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(version_pairs(&diff), expect_pairs(&[expected]));
             assert_eq!(diff.added.len(), 2);
             assert_eq!(diff.removed.len(), 0);
@@ -3141,7 +3273,7 @@ mod tests {
             npm_component("libfoo", "nightly-beta"),
         ]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[
@@ -3189,7 +3321,7 @@ mod tests {
             let old = sbom_of(build(false));
             let new = sbom_of(build(true));
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), 14);
             assert_eq!(diff.added.len(), 0);
             assert_eq!(diff.removed.len(), 0);
@@ -3217,7 +3349,7 @@ mod tests {
                     .collect(),
             );
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), groups);
             assert_eq!(diff.added.len(), 0);
             assert_eq!(diff.removed.len(), groups);
@@ -3235,7 +3367,7 @@ mod tests {
             npm_component("libfoo", "10.0.1-rc.1"),
         ]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[("9.0.0.0", "9.0.1-rc.1"), ("10.0.0.0", "10.0.1-rc.1")])
@@ -3262,7 +3394,7 @@ mod tests {
                     .collect(),
             );
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), groups);
             assert_eq!(diff.added.len(), 0);
             assert_eq!(diff.removed.len(), groups);
@@ -3288,7 +3420,7 @@ mod tests {
                     .collect(),
             );
 
-            let diff = Differ::diff(&old, &new, None);
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
             assert_eq!(diff.changed.len(), groups);
             assert_eq!(diff.added.len(), 0);
             assert_eq!(diff.removed.len(), groups);
@@ -3299,26 +3431,26 @@ mod tests {
     fn test_identity_reconciliation_ignores_insertion_order() {
         for versions in [["9.0.0", "10.0.0"], ["nightly-zeta", "nightly-alpha"]] {
             let forward = Differ::diff(
-                &sbom_of(vec![
+                sbom_of(vec![
                     npm_component("libfoo", versions[0]),
                     npm_component("libfoo", versions[1]),
                 ]),
-                &sbom_of(vec![
+                sbom_of(vec![
                     npm_component("libfoo", "4.0.0"),
                     npm_component("libfoo", "5.0.0"),
                 ]),
-                None,
+                &DiffOptions::default(),
             );
             let reversed = Differ::diff(
-                &sbom_of(vec![
+                sbom_of(vec![
                     npm_component("libfoo", versions[1]),
                     npm_component("libfoo", versions[0]),
                 ]),
-                &sbom_of(vec![
+                sbom_of(vec![
                     npm_component("libfoo", "5.0.0"),
                     npm_component("libfoo", "4.0.0"),
                 ]),
-                None,
+                &DiffOptions::default(),
             );
             assert_eq!(version_pairs(&forward), version_pairs(&reversed));
         }
@@ -3346,7 +3478,11 @@ mod tests {
             sbom
         };
 
-        let diff = Differ::diff(&build(["1.0.0", "2.0.0"]), &build(["1.0.1", "2.0.1"]), None);
+        let diff = Differ::diff(
+            build(["1.0.0", "2.0.0"]),
+            build(["1.0.1", "2.0.1"]),
+            &DiffOptions::default(),
+        );
         assert_eq!(
             diff.edge_diffs.len(),
             0,
@@ -3381,7 +3517,11 @@ mod tests {
                 ],
             ),
         ] {
-            let diff = Differ::diff(&sbom_of(old_comps), &sbom_of(new_comps), None);
+            let diff = Differ::diff(
+                sbom_of(old_comps),
+                sbom_of(new_comps),
+                &DiffOptions::default(),
+            );
             assert_eq!(
                 version_pairs(&diff),
                 expect_pairs(&[("1.0.0", "1.0.0"), ("2.0.0", "2.0.0")])
@@ -3404,7 +3544,7 @@ mod tests {
         ]);
         let new = sbom_of(vec![plain_component("libfoo", "1.0.1")]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(version_pairs(&diff), expect_pairs(&[("1.0.0", "1.0.1")]));
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.added.len(), 0);
@@ -3421,7 +3561,7 @@ mod tests {
         );
         let new = sbom_of(vec![plain_component("libfoo", "1.0.1")]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 1);
         assert_eq!(
             diff.changed[0].old.id.as_str(),
@@ -3440,7 +3580,7 @@ mod tests {
         ]);
         let new = sbom_of(vec![npm_component("libfoo", "2.0.1")]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(version_pairs(&diff), expect_pairs(&[("1.0.0", "2.0.1")]));
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.added.len(), 0);
@@ -3461,7 +3601,7 @@ mod tests {
             "3.0.1",
         )]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.changed.is_empty(), "got {:?}", version_pairs(&diff));
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.added.len(), 1);
@@ -3478,7 +3618,7 @@ mod tests {
             namespaced_component("npm", "@types", "react", "18.3.12"),
         ]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[("18.2.0", "19.0.0"), ("18.2.79", "18.3.12")])
@@ -3490,7 +3630,7 @@ mod tests {
         let new = sbom_of(vec![namespaced_component(
             "npm", "@types", "react", "18.3.12",
         )]);
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.changed.is_empty(), "got {:?}", version_pairs(&diff));
         assert_eq!(diff.removed.len(), 1);
         assert_eq!(diff.added.len(), 1);
@@ -3509,7 +3649,7 @@ mod tests {
             namespaced_component("npm", "@angular", "core", "17.0.0"),
         ]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[("7.0.0", "8.0.0"), ("7.24.0", "7.25.0")])
@@ -3535,7 +3675,11 @@ mod tests {
             (namespaced(), purl_less_maven()),
             (purl_less_maven(), namespaced()),
         ] {
-            let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+            let diff = Differ::diff(
+                sbom_of(vec![old]),
+                sbom_of(vec![new]),
+                &DiffOptions::default(),
+            );
             assert_eq!(diff.changed.len(), 1);
             assert!(diff.added.is_empty());
             assert!(diff.removed.is_empty());
@@ -3553,7 +3697,7 @@ mod tests {
             namespaced_component("npm", "@types", "react", "18.3.12"),
         ]);
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert_eq!(
             version_pairs(&diff),
             expect_pairs(&[("13.0", "24.0.0"), ("18.2.79", "18.3.12")])
@@ -3584,7 +3728,7 @@ mod tests {
             }
         }
 
-        let diff = Differ::diff(&sbom_of(old), &sbom_of(new), None);
+        let diff = Differ::diff(sbom_of(old), sbom_of(new), &DiffOptions::default());
         assert_eq!(diff.changed.len(), 16);
         for list in [&diff.added, &diff.removed] {
             let ids: Vec<&ComponentId> = list.iter().map(|c| &c.id).collect();
@@ -3621,7 +3765,11 @@ mod tests {
                 ),
             ),
         ] {
-            let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+            let diff = Differ::diff(
+                sbom_of(vec![old]),
+                sbom_of(vec![new]),
+                &DiffOptions::default(),
+            );
             assert!(diff.added.is_empty() && diff.removed.is_empty());
             assert_eq!(diff.changed.len(), 1);
             assert!(diff.changed[0].is_downgrade);
@@ -3633,7 +3781,11 @@ mod tests {
         let old = component_with_purl("core", "17.0.0", "pkg:npm/%40angular/core@17.0.0");
         let new = component_with_purl("@angular/core", "16.0.0", "pkg:npm/%40angular/core@16.0.0");
 
-        let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+        let diff = Differ::diff(
+            sbom_of(vec![old]),
+            sbom_of(vec![new]),
+            &DiffOptions::default(),
+        );
         assert!(diff.added.is_empty() && diff.removed.is_empty());
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_downgrade);
@@ -3653,7 +3805,7 @@ mod tests {
         let old = sbom_model_cyclonedx::CycloneDxReader::read_json(cyclonedx.as_bytes()).unwrap();
         let new = sbom_model_spdx::SpdxReader::read_json(spdx.as_bytes()).unwrap();
 
-        let diff = Differ::diff(&old, &new, None);
+        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         assert!(diff.added.is_empty() && diff.removed.is_empty());
         assert_eq!(diff.changed.len(), 1);
         assert!(diff.changed[0].is_downgrade);
@@ -3721,7 +3873,11 @@ mod tests {
                 component_with_purl("core", "1.0.0", "pkg:npm/@angular/core@1.0.0"),
             ),
         ] {
-            let diff = Differ::diff(&sbom_of(vec![old]), &sbom_of(vec![new]), None);
+            let diff = Differ::diff(
+                sbom_of(vec![old]),
+                sbom_of(vec![new]),
+                &DiffOptions::default(),
+            );
             assert!(diff.changed.is_empty(), "{:?}", diff.changed[0].changes);
             assert_eq!(diff.unchanged, 1);
         }

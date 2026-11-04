@@ -197,11 +197,11 @@ use the library crates directly if you want to build custom tooling:
 ```rust
 use sbom_model_cyclonedx::CycloneDxReader;
 use sbom_model_spdx::SpdxReader;
-use sbom_diff::Differ;
+use sbom_diff::{DiffOptions, Differ};
 
 let old = CycloneDxReader::read_json(old_bytes)?;
 let new = SpdxReader::read_json(new_bytes)?;  // formats can differ!
-let diff = Differ::diff(&old, &new, None);
+let diff = Differ::diff(old, new, &DiffOptions::default());
 ```
 
 <hr/>

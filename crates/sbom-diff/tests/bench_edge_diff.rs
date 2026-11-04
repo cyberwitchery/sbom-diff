@@ -1,7 +1,7 @@
 //! micro-benchmark for edge diff reverse lookup performance.
 //! run with: cargo test -p sbom-diff --test bench_edge_diff -- --nocapture --ignored
 
-use sbom_diff::Differ;
+use sbom_diff::{DiffOptions, Differ};
 use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -60,13 +60,13 @@ fn bench_diff(label: &str, n: usize, warmup: usize, iters: usize) {
     let (old, new) = make_sboms(n);
 
     for _ in 0..warmup {
-        let _ = Differ::diff(&old, &new, None);
+        let _ = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
     }
 
     let mut times = Vec::with_capacity(iters);
     for _ in 0..iters {
         let start = Instant::now();
-        let _ = Differ::diff(&old, &new, None);
+        let _ = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
         times.push(start.elapsed());
     }
 

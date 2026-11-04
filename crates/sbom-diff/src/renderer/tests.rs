@@ -17,6 +17,7 @@ fn mock_diff() -> Diff {
             new: c2,
             changes: vec![FieldChange::Version(Some("1.0".into()), Some("1.1".into()))],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         }],
         edge_diffs: vec![],
         ..Diff::default()
@@ -59,6 +60,7 @@ fn mock_diff_all_field_changes() -> Diff {
                 FieldChange::Ecosystem(Some("npm".into()), Some("cargo".into())),
             ],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         }],
         edge_diffs: vec![crate::EdgeDiff {
             parent: ComponentId::new(None, &[("name", "parent")]),
@@ -209,6 +211,7 @@ fn mock_diff_with_ecosystems() -> Diff {
                 Some("18.0.0".into()),
             )],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         }],
         edge_diffs: vec![],
         ..Diff::default()
@@ -520,6 +523,7 @@ fn mock_diff_purl_less() -> Diff {
                 Some("3.24.3".into()),
             )],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         }],
         edge_diffs: vec![crate::EdgeDiff {
             parent: new.id,
@@ -975,6 +979,7 @@ fn mock_diff_hash_change(old: BTreeMap<String, String>, new: BTreeMap<String, St
     c1.hashes = old.clone();
     let mut c2 = c1.clone();
     c2.hashes = new.clone();
+    let hash_downgrade = sbom_model::is_hash_algorithm_downgrade(&old, &new);
 
     Diff {
         changed: vec![ComponentChange {
@@ -983,6 +988,7 @@ fn mock_diff_hash_change(old: BTreeMap<String, String>, new: BTreeMap<String, St
             new: c2,
             changes: vec![FieldChange::Hashes(old, new)],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: hash_downgrade,
         }],
         ..Diff::default()
     }
@@ -1019,6 +1025,49 @@ fn test_sarif_renderer_hash_detail() {
     assert!(msg.contains("added md5=fresh"));
     // strongest algorithm unchanged (SHA-256 -> SHA-256), so not a downgrade.
     assert_eq!(changed["level"], "warning");
+}
+
+#[test]
+fn test_sarif_renderer_reports_each_violation_as_an_error() {
+    use crate::policy::Violation;
+    let violations = vec![
+        Violation::LicenseDenied {
+            name: "pkg:npm/a@1.0.0".into(),
+            licenses: vec!["GPL-3.0-only".into()],
+        },
+        Violation::DependencyCycle {
+            path: vec!["a".into(), "b".into(), "a".into()],
+        },
+    ];
+    let opts = RenderOptions {
+        violations: violations.clone(),
+        ..RenderOptions::default()
+    };
+    let mut buf = Vec::new();
+    SarifRenderer
+        .render(&mock_diff_empty(), &opts, &mut buf)
+        .unwrap();
+    let val = sarif_parse(&buf);
+
+    let rules = val["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    let rule_ids: Vec<&str> = rules.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(rule_ids[6..], ["license-policy", "fail-on"]);
+
+    let results = val["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for (result, (violation, rule)) in results.iter().zip(violations.iter().zip([6, 7])) {
+        assert_eq!(result["level"], "error");
+        assert_eq!(result["ruleIndex"], rule);
+        assert_eq!(result["ruleId"], rule_ids[rule]);
+        assert_eq!(result["message"]["text"], violation.to_string());
+    }
+    assert_eq!(
+        results[0]["locations"][0]["logicalLocations"][0]["fullyQualifiedName"],
+        "pkg:npm/a@1.0.0"
+    );
+    assert_eq!(results[1]["locations"], serde_json::json!([]));
 }
 
 #[test]
@@ -1753,6 +1802,7 @@ fn mock_diff_with_downgrade() -> Diff {
                 Some("1.0.0".into()),
             )],
             is_downgrade: true,
+            is_hash_algorithm_downgrade: false,
         }],
         ..Diff::default()
     }
@@ -1912,6 +1962,7 @@ fn mock_diff_field_change(change: FieldChange) -> Diff {
             new: c,
             changes: vec![change],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         }],
         ..Diff::default()
     }
@@ -2076,6 +2127,7 @@ fn mock_diff_every_value(v: &str) -> (Diff, RenderOptions) {
                 ),
             ],
             is_downgrade: false,
+            is_hash_algorithm_downgrade: false,
         }],
         edge_diffs: vec![crate::EdgeDiff {
             parent: id("p"),
@@ -2102,6 +2154,7 @@ fn mock_diff_every_value(v: &str) -> (Diff, RenderOptions) {
         show_warnings: true,
         old_warnings: vec![v.into()],
         new_warnings: vec![v.into()],
+        violations: Vec::new(),
     };
     (diff, opts)
 }

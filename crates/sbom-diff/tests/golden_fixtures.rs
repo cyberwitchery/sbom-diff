@@ -1,6 +1,6 @@
 use sbom_diff::{
     renderer::{MarkdownRenderer, RenderOptions, Renderer, TextRenderer},
-    Differ,
+    DiffOptions, Differ,
 };
 use sbom_model::Sbom;
 use sbom_model_cyclonedx::CycloneDxReader;
@@ -36,7 +36,7 @@ fn fixture_missing_hashes_detects_added_component_without_hashes() {
     let old = load_cyclonedx_fixture("missing-hashes-old.json");
     let new = load_cyclonedx_fixture("missing-hashes-new.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     assert_eq!(diff.added.len(), 1);
     assert!(diff.added[0].hashes.is_empty());
@@ -47,7 +47,7 @@ fn fixture_purl_less_components_reconcile_as_change() {
     let old = load_cyclonedx_fixture("purl-less-old.json");
     let new = load_cyclonedx_fixture("purl-less-new.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     assert_eq!(diff.added.len(), 0);
     assert_eq!(diff.removed.len(), 0);
@@ -59,7 +59,7 @@ fn fixture_license_order_variation_is_noop() {
     let old = load_cyclonedx_fixture("license-order-old.json");
     let new = load_cyclonedx_fixture("license-order-new.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     assert!(diff.added.is_empty());
     assert!(diff.removed.is_empty());
@@ -72,7 +72,7 @@ fn fixture_dependency_edge_changes_are_detected() {
     let old = load_cyclonedx_fixture("edge-change-old.json");
     let new = load_cyclonedx_fixture("edge-change-new.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     assert_eq!(diff.edge_diffs.len(), 1);
     assert_eq!(diff.edge_diffs[0].added.len(), 1);
@@ -84,7 +84,7 @@ fn text_renderer_golden_output_matches_fixture() {
     let old = load_cyclonedx_fixture("golden-old.json");
     let new = load_cyclonedx_fixture("golden-new.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     TextRenderer
@@ -103,7 +103,7 @@ fn markdown_renderer_golden_output_matches_fixture() {
     let old = load_cyclonedx_fixture("golden-old.json");
     let new = load_cyclonedx_fixture("golden-new.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     MarkdownRenderer
@@ -128,8 +128,8 @@ fn spdx_fixture_diff_matches_cyclonedx_diff() {
     let cdx_old = load_cyclonedx_fixture("golden-old.json");
     let cdx_new = load_cyclonedx_fixture("golden-new.json");
 
-    let spdx_diff = Differ::diff(&spdx_old, &spdx_new, None);
-    let cdx_diff = Differ::diff(&cdx_old, &cdx_new, None);
+    let spdx_diff = Differ::diff(spdx_old.clone(), spdx_new.clone(), &DiffOptions::default());
+    let cdx_diff = Differ::diff(cdx_old.clone(), cdx_new.clone(), &DiffOptions::default());
 
     // source_ids carry the format's own element ids (SPDXRef-*, bom-ref), so
     // they differ by design. ComponentChange and EdgeDiff have no PartialEq,
@@ -181,7 +181,7 @@ fn spdx_text_renderer_golden_output_matches_fixture() {
     let old = load_spdx_fixture("golden-old.spdx.json");
     let new = load_spdx_fixture("golden-new.spdx.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     TextRenderer
@@ -200,7 +200,7 @@ fn spdx_markdown_renderer_golden_output_matches_fixture() {
     let old = load_spdx_fixture("golden-old.spdx.json");
     let new = load_spdx_fixture("golden-new.spdx.json");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     MarkdownRenderer
@@ -219,7 +219,7 @@ fn cyclonedx_xml_text_renderer_golden_output_matches_fixture() {
     let old = load_cyclonedx_xml_fixture("golden-old.cdx.xml");
     let new = load_cyclonedx_xml_fixture("golden-new.cdx.xml");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     TextRenderer
@@ -238,7 +238,7 @@ fn cyclonedx_xml_markdown_renderer_golden_output_matches_fixture() {
     let old = load_cyclonedx_xml_fixture("golden-old.cdx.xml");
     let new = load_cyclonedx_xml_fixture("golden-new.cdx.xml");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     MarkdownRenderer
@@ -262,7 +262,7 @@ fn spdx_tv_text_renderer_golden_output_matches_fixture() {
     let old = load_spdx_tv_fixture("golden-old.spdx");
     let new = load_spdx_tv_fixture("golden-new.spdx");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     TextRenderer
@@ -281,7 +281,7 @@ fn spdx_tv_markdown_renderer_golden_output_matches_fixture() {
     let old = load_spdx_tv_fixture("golden-old.spdx");
     let new = load_spdx_tv_fixture("golden-new.spdx");
 
-    let diff = Differ::diff(&old, &new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     let mut out = Vec::new();
     MarkdownRenderer
@@ -366,7 +366,7 @@ fn cross_format_identical_hashes_produce_no_diff() {
     );
 
     // diffing SPDX-old against CycloneDX-new should yield no changes
-    let diff = Differ::diff(&spdx_sbom, &cdx_sbom, None);
+    let diff = Differ::diff(spdx_sbom.clone(), cdx_sbom.clone(), &DiffOptions::default());
     assert!(
         diff.changed.is_empty(),
         "identical components from SPDX and CycloneDX should produce no diff, but got {} changed",
