@@ -337,8 +337,8 @@ pub struct ComponentChange {
     /// true when the version change is a downgrade (higher to lower).
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_downgrade: bool,
-    /// true when the strongest hash algorithm got weaker; not serialized.
-    #[serde(skip)]
+    /// true when the strongest hash algorithm got weaker.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub is_hash_algorithm_downgrade: bool,
 }
 
@@ -2929,7 +2929,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_flags_a_hash_algorithm_downgrade_in_the_fields_it_keeps() {
+    fn diff_flags_a_hash_algorithm_downgrade_in_the_fields_it_keeps_and_in_json() {
         for (old_algo, new_algo, only, flagged) in [
             ("sha-256", "md5", vec![], true),
             ("md5", "sha-256", vec![], false),
@@ -2950,6 +2950,17 @@ mod tests {
                 diff.changed[0].is_hash_algorithm_downgrade, flagged,
                 "{old_algo} -> {new_algo} under {:?}",
                 options.only
+            );
+            let json = serde_json::to_string(&diff).unwrap();
+            assert_eq!(
+                json.contains("is_hash_algorithm_downgrade"),
+                flagged,
+                "{json}"
+            );
+            let read_back: Diff = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                read_back.changed[0].is_hash_algorithm_downgrade, flagged,
+                "{json}"
             );
         }
     }

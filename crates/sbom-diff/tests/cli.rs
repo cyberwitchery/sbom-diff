@@ -447,6 +447,57 @@ fn license_violation_takes_precedence_over_fail_on() {
 }
 
 #[test]
+fn sarif_reports_each_violation_the_run_prints() {
+    for (old, new, args, rule, code) in [
+        (
+            "cli-license.json",
+            "cli-license.json",
+            ["--deny-license", "MIT"],
+            "license-policy",
+            2,
+        ),
+        (
+            "purl-less-gates-empty-name.json",
+            "purl-less-gates-empty-name.json",
+            ["--allow-license", "MIT"],
+            "license-policy",
+            2,
+        ),
+        (
+            "golden-old.json",
+            "golden-new.json",
+            ["--fail-on", "added-components"],
+            "fail-on",
+            3,
+        ),
+    ] {
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .args(args)
+            .args(["--output", "sarif"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(code), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let errors: Vec<&str> = stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix("error: "))
+            .collect();
+        let sarif: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let messages: Vec<&str> = sarif["runs"][0]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["ruleId"] == rule && r["level"] == "error")
+            .map(|r| r["message"]["text"].as_str().unwrap())
+            .collect();
+        assert!(!errors.is_empty(), "{args:?}");
+        assert_eq!(messages, errors, "{args:?}");
+    }
+}
+
+#[test]
 fn quiet_suppresses_stdout() {
     let out = sbom_diff()
         .arg(fixture("golden-old.json"))

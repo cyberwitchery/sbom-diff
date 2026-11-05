@@ -457,6 +457,9 @@ impl Policy {
 
     /// diffs `old` against `new` under `options` and checks the result against the policy.
     ///
+    /// call [`Policy::entry_issues`] first and don't check while any issue
+    /// [`is_error`](PolicyEntryIssue::is_error): such an entry never matches a license.
+    ///
     /// the gates see every field whatever `options.only` leaves in the returned diff, and the
     /// license and cycle gates read the components of `new` the diff covers. violations come
     /// in order: license policy, dependency cycles, then the gates on the diff.

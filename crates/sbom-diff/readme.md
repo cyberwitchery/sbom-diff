@@ -94,6 +94,13 @@ fn gate(old: Sbom, new: Sbom) -> bool {
         deny_licenses: vec!["GPL-3.0-only".into()],
         ..Policy::default()
     };
+    for issue in policy.entry_issues() {
+        if issue.is_error() {
+            eprintln!("error: {issue}");
+            return false;
+        }
+        eprintln!("warning: {issue}");
+    }
     let (_diff, violations) = policy.check(old, new, &DiffOptions::default());
     for violation in &violations {
         eprintln!("error: {violation}");
