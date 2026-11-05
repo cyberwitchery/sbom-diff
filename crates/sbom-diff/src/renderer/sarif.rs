@@ -2,8 +2,7 @@ use super::{
     format_option, format_set, format_vec_or_none, kind_suffix, Labels, RenderOptions, Renderer,
     SummaryRenderer,
 };
-use crate::{Diff, FieldChange};
-use sbom_model::is_hash_algorithm_downgrade;
+use crate::{ComponentChange, Diff, FieldChange};
 use serde::Serialize;
 use std::io::Write;
 
@@ -17,6 +16,8 @@ const RULE_COMPONENT_CHANGED: usize = 2;
 const RULE_DEPENDENCY_CHANGED: usize = 3;
 const RULE_METADATA_CHANGED: usize = 4;
 const RULE_PARSER_WARNING: usize = 5;
+const RULE_LICENSE_POLICY: usize = 6;
+const RULE_FAIL_ON: usize = 7;
 
 #[derive(Clone, Copy)]
 struct RuleInfo {
@@ -62,6 +63,18 @@ const SARIF_RULES: &[RuleInfo] = &[
         short_desc: "Parser warning",
         full_desc: "The SBOM parser emitted a warning about the input document",
         level: "note",
+    },
+    RuleInfo {
+        id: "license-policy",
+        short_desc: "License policy violated",
+        full_desc: "A component's license is denied by --deny-license, or not allowed or missing under --allow-license",
+        level: "error",
+    },
+    RuleInfo {
+        id: "fail-on",
+        short_desc: "Gate failed",
+        full_desc: "A condition named by --fail-on holds",
+        level: "error",
     },
 ];
 
@@ -148,8 +161,13 @@ struct SarifLogicalLocation {
 pub struct SarifRenderer;
 
 impl SarifRenderer {
-    fn build_rules() -> Vec<SarifRuleDescriptor> {
-        SARIF_RULES
+    fn build_rules(opts: &RenderOptions) -> Vec<SarifRuleDescriptor> {
+        let rules = if opts.violations.is_empty() {
+            &SARIF_RULES[..RULE_LICENSE_POLICY]
+        } else {
+            SARIF_RULES
+        };
+        rules
             .iter()
             .map(|r| SarifRuleDescriptor {
                 id: r.id,
@@ -169,10 +187,10 @@ impl SarifRenderer {
         }]
     }
 
-    fn format_field_change(fc: &FieldChange, is_downgrade: bool) -> String {
+    fn format_field_change(fc: &FieldChange, change: &ComponentChange) -> String {
         match fc {
             FieldChange::Version(old, new) => {
-                if is_downgrade {
+                if change.is_downgrade {
                     format!(
                         "version (downgrade): {} -> {}",
                         format_option(old),
@@ -219,7 +237,7 @@ impl SarifRenderer {
                         parts.push(format!("added {}={}", algo, digest));
                     }
                 }
-                let label = if is_hash_algorithm_downgrade(old, new) {
+                let label = if change.is_hash_algorithm_downgrade {
                     "hashes (algorithm downgrade)"
                 } else {
                     "hashes"
@@ -303,19 +321,13 @@ impl SarifRenderer {
 
         for change in &diff.changed {
             let display = labels.component(&change.new);
-            let is_downgrade = change.is_downgrade;
             let field_changes: Vec<String> = change
                 .changes
                 .iter()
-                .map(|fc| Self::format_field_change(fc, is_downgrade))
+                .map(|fc| Self::format_field_change(fc, change))
                 .collect();
 
-            let hash_downgrade = change.changes.iter().any(|fc| match fc {
-                FieldChange::Hashes(old, new) => is_hash_algorithm_downgrade(old, new),
-                _ => false,
-            });
-
-            let level = if is_downgrade || hash_downgrade {
+            let level = if change.is_downgrade || change.is_hash_algorithm_downgrade {
                 "error"
             } else {
                 SARIF_RULES[RULE_COMPONENT_CHANGED].level
@@ -425,6 +437,26 @@ impl SarifRenderer {
             }
         }
 
+        for violation in &opts.violations {
+            let rule = if violation.is_license_policy() {
+                RULE_LICENSE_POLICY
+            } else {
+                RULE_FAIL_ON
+            };
+            results.push(SarifResultEntry {
+                rule_id: SARIF_RULES[rule].id,
+                rule_index: rule,
+                level: SARIF_RULES[rule].level,
+                message: SarifTextMessage {
+                    text: violation.to_string(),
+                },
+                locations: violation
+                    .component()
+                    .map(Self::component_location)
+                    .unwrap_or_default(),
+            });
+        }
+
         results
     }
 }
@@ -445,7 +477,7 @@ impl Renderer for SarifRenderer {
                         name: "sbom-diff",
                         version: env!("CARGO_PKG_VERSION"),
                         information_uri: "https://github.com/cyberwitchery/sbom-diff",
-                        rules: Self::build_rules(),
+                        rules: Self::build_rules(opts),
                     },
                 },
                 results: Self::build_results(diff, opts),

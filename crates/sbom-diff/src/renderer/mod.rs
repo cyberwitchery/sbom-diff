@@ -20,8 +20,9 @@ pub use markdown::MarkdownRenderer;
 pub use sarif::SarifRenderer;
 pub use text::TextRenderer;
 
+use crate::policy::Violation;
 use crate::{component_label, ComponentChange, Diff, EcosystemCounts, EdgeDiff, FieldChange};
-use sbom_model::{is_hash_algorithm_downgrade, Component, ComponentId, DependencyKind, Sbom};
+use sbom_model::{Component, ComponentId, DependencyKind, Sbom};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -37,6 +38,8 @@ pub struct RenderOptions {
     pub old_warnings: Vec<String>,
     /// parser warnings from the new SBOM.
     pub new_warnings: Vec<String>,
+    /// the gate violations of the run, which SARIF reports as errors.
+    pub violations: Vec<Violation>,
 }
 
 impl RenderOptions {
@@ -198,13 +201,12 @@ pub(super) trait FieldChangeFormatter {
 pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
     fmt: &F,
     writer: &mut W,
-    changes: &[FieldChange],
-    is_downgrade: bool,
+    component: &ComponentChange,
 ) -> std::io::Result<()> {
-    for change in changes {
+    for change in &component.changes {
         match change {
             FieldChange::Version(old, new) => {
-                let label = if is_downgrade {
+                let label = if component.is_downgrade {
                     "Version (downgrade)"
                 } else {
                     "Version"
@@ -237,7 +239,7 @@ pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
                 )?;
             }
             FieldChange::Hashes(old, new) => {
-                fmt.hash_header(writer, is_hash_algorithm_downgrade(old, new))?;
+                fmt.hash_header(writer, component.is_hash_algorithm_downgrade)?;
                 for (algo, digest) in old {
                     if !new.contains_key(algo) {
                         fmt.hash_removed(writer, algo, digest)?;
@@ -267,7 +269,7 @@ pub(super) fn write_changed<F: FieldChangeFormatter, W: Write>(
 ) -> std::io::Result<()> {
     for c in changes {
         fmt.component_header(writer, labels.component(&c.new))?;
-        write_field_changes(fmt, writer, &c.changes, c.is_downgrade)?;
+        write_field_changes(fmt, writer, c)?;
     }
     Ok(())
 }

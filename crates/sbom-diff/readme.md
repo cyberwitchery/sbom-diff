@@ -42,15 +42,19 @@ see the [project readme](https://github.com/cyberwitchery/sbom-diff) for full cl
 use the `Differ` struct directly to integrate into your own tools:
 
 ```rust
-use sbom_diff::{Differ, Diff, FieldChange, Field};
+use sbom_diff::{Differ, Diff, DiffOptions, FieldChange, Field};
 use sbom_model::Sbom;
 
-fn compare(old: &Sbom, new: &Sbom) -> Diff {
+fn compare(old: Sbom, new: Sbom) -> Diff {
     // compare all fields
-    let diff = Differ::diff(old, new, None);
+    let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
 
     // or filter to specific fields
-    let diff = Differ::diff(old, new, Some(&[Field::Version, Field::License]));
+    let options = DiffOptions {
+        only: vec![Field::Version, Field::License],
+        ..DiffOptions::default()
+    };
+    let diff = Differ::diff(old, new, &options);
 
     println!("added: {}", diff.added.len());
     println!("removed: {}", diff.removed.len());
@@ -74,6 +78,34 @@ fn compare(old: &Sbom, new: &Sbom) -> Diff {
     }
 
     diff
+}
+```
+
+check a diff against the cli's gates with a `Policy`:
+
+```rust
+use sbom_diff::policy::{FailOn, Policy};
+use sbom_diff::DiffOptions;
+use sbom_model::Sbom;
+
+fn gate(old: Sbom, new: Sbom) -> bool {
+    let policy = Policy {
+        fail_on: vec![FailOn::VersionDowngrade],
+        deny_licenses: vec!["GPL-3.0-only".into()],
+        ..Policy::default()
+    };
+    for issue in policy.entry_issues() {
+        if issue.is_error() {
+            eprintln!("error: {issue}");
+            return false;
+        }
+        eprintln!("warning: {issue}");
+    }
+    let (_diff, violations) = policy.check(old, new, &DiffOptions::default());
+    for violation in &violations {
+        eprintln!("error: {violation}");
+    }
+    violations.is_empty()
 }
 ```
 
