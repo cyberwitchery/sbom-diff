@@ -9,9 +9,9 @@ use sbom_diff::{
         CsvRenderer, JsonRenderer, MarkdownRenderer, RenderOptions, Renderer, SarifRenderer,
         SummaryRenderer, TextRenderer,
     },
-    DiffOptions, EcosystemFilter, Field,
+    Diff, DiffOptions, EcosystemFilter, Field,
 };
-use std::io;
+use std::io::{self, Write};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -121,26 +121,16 @@ fn main() -> anyhow::Result<()> {
     render_opts.violations = violations;
 
     if !args.quiet {
-        let stdout = io::stdout();
-        let mut handle = stdout.lock();
-
-        if args.summary {
-            match args.output {
-                Output::Text => TextRenderer.render_summary(&diff, &render_opts, &mut handle)?,
-                Output::Markdown => {
-                    MarkdownRenderer.render_summary(&diff, &render_opts, &mut handle)?
-                }
-                Output::Json => JsonRenderer.render_summary(&diff, &render_opts, &mut handle)?,
-                Output::Sarif => SarifRenderer.render_summary(&diff, &render_opts, &mut handle)?,
-                Output::Csv => CsvRenderer.render_summary(&diff, &render_opts, &mut handle)?,
-            }
-        } else {
-            match args.output {
-                Output::Text => TextRenderer.render(&diff, &render_opts, &mut handle)?,
-                Output::Markdown => MarkdownRenderer.render(&diff, &render_opts, &mut handle)?,
-                Output::Json => JsonRenderer.render(&diff, &render_opts, &mut handle)?,
-                Output::Sarif => SarifRenderer.render(&diff, &render_opts, &mut handle)?,
-                Output::Csv => CsvRenderer.render(&diff, &render_opts, &mut handle)?,
+        let written = write_report(
+            args.output,
+            args.summary,
+            &diff,
+            &render_opts,
+            &mut io::stdout().lock(),
+        );
+        if let Err(err) = written {
+            if !is_broken_pipe(&err) {
+                return Err(err);
             }
         }
     }
@@ -158,6 +148,54 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn write_report<W: Write>(
+    output: Output,
+    summary: bool,
+    diff: &Diff,
+    opts: &RenderOptions,
+    out: &mut W,
+) -> anyhow::Result<()> {
+    if summary {
+        match output {
+            Output::Text => TextRenderer.render_summary(diff, opts, out)?,
+            Output::Markdown => MarkdownRenderer.render_summary(diff, opts, out)?,
+            Output::Json => JsonRenderer.render_summary(diff, opts, out)?,
+            Output::Sarif => SarifRenderer.render_summary(diff, opts, out)?,
+            Output::Csv => CsvRenderer.render_summary(diff, opts, out)?,
+        }
+    } else {
+        match output {
+            Output::Text => TextRenderer.render(diff, opts, out)?,
+            Output::Markdown => MarkdownRenderer.render(diff, opts, out)?,
+            Output::Json => JsonRenderer.render(diff, opts, out)?,
+            Output::Sarif => SarifRenderer.render(diff, opts, out)?,
+            Output::Csv => CsvRenderer.render(diff, opts, out)?,
+        }
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| io_error_kind(cause) == Some(io::ErrorKind::BrokenPipe))
+}
+
+// serde_json's and csv's errors keep their io error out of `source()`.
+fn io_error_kind(err: &(dyn std::error::Error + 'static)) -> Option<io::ErrorKind> {
+    if let Some(e) = err.downcast_ref::<io::Error>() {
+        Some(e.kind())
+    } else if let Some(e) = err.downcast_ref::<serde_json::Error>() {
+        e.io_error_kind()
+    } else if let Some(csv::ErrorKind::Io(e)) =
+        err.downcast_ref::<csv::Error>().map(csv::Error::kind)
+    {
+        Some(e.kind())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +543,52 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&buf).unwrap();
 
         assert!(val.get("warnings").is_none());
+    }
+
+    #[test]
+    fn every_renderer_reports_a_closed_pipe_as_a_broken_pipe() {
+        struct Pipe {
+            kind: io::ErrorKind,
+            writes: bool,
+        }
+        impl Write for Pipe {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if self.writes {
+                    Ok(buf.len())
+                } else {
+                    Err(self.kind.into())
+                }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(self.kind.into())
+            }
+        }
+
+        // enough rows to overflow csv's write buffer before its flush
+        let diff = Diff {
+            added: (0..1000)
+                .map(|i| Component::new(format!("c{i}"), Some("1".into())))
+                .collect(),
+            ..Diff::default()
+        };
+        for (kind, writes, broken) in [
+            (io::ErrorKind::BrokenPipe, false, true),
+            (io::ErrorKind::BrokenPipe, true, true),
+            (io::ErrorKind::StorageFull, false, false),
+        ] {
+            for &output in Output::value_variants() {
+                for summary in [false, true] {
+                    let mut pipe = Pipe { kind, writes };
+                    let err =
+                        write_report(output, summary, &diff, &RenderOptions::default(), &mut pipe)
+                            .unwrap_err();
+                    assert_eq!(
+                        is_broken_pipe(&err),
+                        broken,
+                        "{output:?} summary={summary} writes={writes}: {err:?}"
+                    );
+                }
+            }
+        }
     }
 }
