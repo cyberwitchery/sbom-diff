@@ -3025,3 +3025,41 @@ fn output_is_identical_across_runs() {
         }
     }
 }
+
+#[test]
+fn a_closed_stdout_pipe_keeps_the_gate_exit_code() {
+    for (old, new, args, code) in [
+        (
+            "golden-old.json",
+            "golden-new.json",
+            &["--fail-on", "added-components"][..],
+            3,
+        ),
+        (
+            "cli-license.json",
+            "cli-license.json",
+            &["--deny-license", "MIT", "--output", "json", "--summary"],
+            2,
+        ),
+        (
+            "golden-old.json",
+            "golden-new.json",
+            &["--output", "json"],
+            0,
+        ),
+    ] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = sbom_diff()
+            .arg(fixture(old))
+            .arg(fixture(new))
+            .args(args)
+            .stdout(writer)
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(code), "{args:?}: {stderr}");
+        assert!(!stderr.contains("Broken pipe"), "{args:?}: {stderr}");
+    }
+}

@@ -105,7 +105,7 @@ impl SummaryRenderer for JsonRenderer {
             }
         }
 
-        serde_json::to_writer_pretty(writer, &summary)
-            .map_err(|e| anyhow::anyhow!("json summary: {}", e))
+        serde_json::to_writer_pretty(writer, &summary)?;
+        Ok(())
     }
 }
