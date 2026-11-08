@@ -31,9 +31,10 @@ sbom-diff old.json new.json --allow-license MIT --allow-license Apache-2.0
 
 | code | meaning |
 |------|---------|
-| 0 | success (diff computed, no license violations) |
-| 1 | error (parse failure, file not found, etc.) |
-| 2 | license violation (when using `--deny-license` or `--allow-license`) |
+| 0 | success |
+| 1 | error (invalid input, parse failure, bad command line) |
+| 2 | license violation (`--deny-license` or `--allow-license`) |
+| 3 | fail-on condition triggered (`--fail-on`) |
 
 see the [project readme](https://github.com/cyberwitchery/sbom-diff) for full cli documentation.
 

@@ -458,7 +458,11 @@ fn usage_errors_exit_1() {
         (vec![old, new, "--no-such-flag"], "'--no-such-flag'"),
         (vec![old], "<NEW>"),
     ] {
-        let out = sbom_diff().args(&args).output().unwrap();
+        let out = sbom_diff()
+            .args(&args)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {stderr}");
         assert!(
@@ -478,7 +482,7 @@ fn help_and_version_exit_0() {
             concat!("sbom-diff ", env!("CARGO_PKG_VERSION")),
         ),
     ] {
-        let out = sbom_diff().arg(flag).output().unwrap();
+        let out = sbom_diff().arg(flag).env("NO_COLOR", "1").output().unwrap();
         assert_eq!(out.status.code(), Some(0), "{flag}");
         assert!(
             String::from_utf8_lossy(&out.stdout).contains(expected),
