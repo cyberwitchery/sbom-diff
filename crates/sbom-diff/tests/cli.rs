@@ -447,6 +447,48 @@ fn license_violation_takes_precedence_over_fail_on() {
 }
 
 #[test]
+fn usage_errors_exit_1() {
+    let (old, new) = (fixture("golden-old.json"), fixture("golden-new.json"));
+    let (old, new) = (old.to_str().unwrap(), new.to_str().unwrap());
+    for (args, named) in [
+        (
+            vec![old, new, "--fail-on", "added-component"],
+            "'added-component'",
+        ),
+        (vec![old, new, "--no-such-flag"], "'--no-such-flag'"),
+        (vec![old], "<NEW>"),
+    ] {
+        let out = sbom_diff().args(&args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {stderr}");
+        assert!(
+            stderr.starts_with("error: ") && stderr.contains(named),
+            "{args:?}: {stderr}"
+        );
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn help_and_version_exit_0() {
+    for (flag, expected) in [
+        ("--help", "Usage: sbom-diff [OPTIONS] <OLD> <NEW>"),
+        (
+            "--version",
+            concat!("sbom-diff ", env!("CARGO_PKG_VERSION")),
+        ),
+    ] {
+        let out = sbom_diff().arg(flag).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{flag}");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(expected),
+            "{flag}"
+        );
+        assert!(out.stderr.is_empty(), "{flag}");
+    }
+}
+
+#[test]
 fn sarif_reports_each_violation_the_run_prints() {
     for (old, new, args, rule, code) in [
         (
