@@ -161,9 +161,12 @@ release re-published under the same version, or a moved tag.
 | code | meaning |
 |------|---------|
 | 0 | success |
-| 1 | error (invalid input, parse failure) |
+| 1 | error (invalid input, parse failure, bad command line) |
 | 2 | license violation (`--deny-license` or `--allow-license`) |
 | 3 | fail-on condition triggered (`--fail-on`) |
+
+a run with both a license violation and a fail-on condition exits 2 and prints
+both on stderr.
 
 ## limitations
 

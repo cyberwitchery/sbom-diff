@@ -81,7 +81,13 @@ enum Output {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let args = Args::try_parse().unwrap_or_else(|err| {
+        if err.use_stderr() {
+            let _ = err.print();
+            std::process::exit(1);
+        }
+        err.exit()
+    });
     let policy = Policy {
         fail_on: args.fail_on.clone(),
         deny_licenses: args.deny_license.clone(),
