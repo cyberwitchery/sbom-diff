@@ -50,7 +50,7 @@ both adapters produce:
 
 ## spdx -> model
 
-- parser: `sbom-model-spdx` using `spdx-rs` + `serde_json`
+- parser: `sbom-model-spdx`; json and xml are read with `serde_json` into the reader's own types, tag-value with `spdx-rs`
 - input formats: json, xml, and tag-value (2.x; 2.3 field names)
 - tag-value handling: the underlying parser stops at the first line it cannot read and throws away everything below it, so those lines are removed before parsing and listed in the parser warnings:
   - a line that is not a `Tag: value` pair, or whose tag is not one the parser recognizes
@@ -61,10 +61,7 @@ both adapters produce:
 - tag-value inputs that still abort the process rather than produce a diagnostic. all are `spdx-rs` panics on input this reader cannot recognize line by line, and all are the same on `main`:
   - a *non-empty* license expression the SPDX expression parser rejects (`MIT AND`, `(MIT`) on one of the five tags above. only an empty value is caught; a non-empty one needs an expression-level parse this reader does not do
   - a `<text>` block used as the value of one of the enum-valued tags above (`FileType: <text>NOTATYPE</text>`). a `<text>` value can run past its own line, so its content is not judged, and an unrecognized one reaches the parser's crash
-- json handling: a few spellings and properties the SPDX 2.3 schema allows are ones the underlying parser refuses. they are rewritten before parsing, which loses nothing the reader maps, so no warning is emitted:
-  - `primaryPackagePurpose` `OPERATING-SYSTEM`, which every trivy container-image SBOM carries, is read as `OPERATING_SYSTEM`
-  - `referenceCategory` `PERSISTENT-ID` is read as `PERSISTENT_ID`
-  - the top-level `$schema` and the deprecated `revieweds` are dropped; a top-level property the schema does not define is still an error
+- json handling: only the properties the reader maps are read, so any other property, an unknown one included, is not checked. a missing `spdxVersion`, `SPDXID`, `creationInfo` or package `name` or `SPDXID`, a relationship type or package checksum algorithm the SPDX 2.3 schema does not list, a package license expression the SPDX expression parser rejects, and a `created` that is not a date and time are errors
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`
   - repeated sibling elements become a json array; a field the schema types as an array becomes a one-element array even when it occurs once
