@@ -4862,9 +4862,6 @@ SnippetByteRange: 1:10
                 d.remove("dataLicense");
                 d.remove("name");
             }),
-            ("an unknown document property", |d| {
-                d.insert("pakages".into(), serde_json::json!([]));
-            }),
             ("a snippet pointer without offset or lineNumber", |d| {
                 let pointer = serde_json::json!({"reference": "SPDXRef-file"});
                 d.insert(
@@ -4903,10 +4900,8 @@ SnippetByteRange: 1:10
                     .unwrap()
                     .remove("downloadLocation");
             }),
-            ("an unknown package property and purpose", |d| {
-                let package = d["packages"][0].as_object_mut().unwrap();
-                package.insert("vendorField".into(), serde_json::json!(1));
-                package.insert("primaryPackagePurpose".into(), "PLUGIN".into());
+            ("an unknown primaryPackagePurpose", |d| {
+                d["packages"][0]["primaryPackagePurpose"] = "PLUGIN".into();
             }),
             ("an unknown referenceCategory", |d| {
                 d["packages"][0]["externalRefs"][0]["referenceCategory"] = "PACKAGE".into();
@@ -4977,5 +4972,44 @@ SnippetByteRange: 1:10
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown variant `SHA-256`"), "{err}");
+    }
+
+    #[test]
+    fn test_json_misspelt_or_repeated_property_is_an_error() {
+        let document = one_package_document(serde_json::json!({})).to_string();
+        for (from, to, error) in [
+            (
+                r#""downloadLocation":"NONE""#,
+                r#""downloadLocation":"NONE","licenceConcluded":"MIT OR Apache-2.0""#,
+                "unknown field `licenceConcluded`",
+            ),
+            (
+                r#""dataLicense":"CC0-1.0""#,
+                r#""dataLicense":"CC0-1.0","dataLicense":"CC0-1.0""#,
+                "duplicate field `dataLicense`",
+            ),
+            (
+                r#""downloadLocation":"NONE""#,
+                r#""downloadLocation":"NONE","downloadLocation":"NONE""#,
+                "duplicate field `downloadLocation`",
+            ),
+        ] {
+            assert!(document.contains(from), "{document}");
+            let err = SpdxReader::read_json(document.replace(from, to).as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(error), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_unknown_document_property_is_still_an_error() {
+        let document = one_package_document(serde_json::json!({
+            "pakages": [{"name": "pkg-b", "SPDXID": "SPDXRef-pkg-b", "downloadLocation": "NONE"}]
+        }));
+        let err = SpdxReader::read_json(document.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pakages"), "{err}");
     }
 }

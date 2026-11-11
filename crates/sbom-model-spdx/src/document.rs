@@ -1,7 +1,7 @@
 //! the part of an SPDX 2.x document the reader maps, named as in the SPDX JSON schema.
 
 use chrono::{DateTime, Utc};
-use serde::de::{Deserializer, Error as _};
+use serde::de::{Deserializer, Error as _, IgnoredAny};
 use serde::Deserialize;
 use spdx_expression::SpdxExpression;
 
@@ -76,7 +76,7 @@ pub(crate) const CHECKSUM_ALGORITHMS: &[&str] = &[
 ];
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Document {
     #[serde(rename = "spdxVersion")]
     _spdx_version: String,
@@ -93,6 +93,24 @@ pub(crate) struct Document {
     pub snippets: Vec<Element>,
     #[serde(default)]
     pub relationships: Vec<Relationship>,
+    #[serde(flatten)]
+    _unread: UnreadDocumentProperties,
+}
+
+/// the document properties the reader does not read, declared so that an unknown one is still an error.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnreadDocumentProperties {
+    #[serde(rename = "$schema")]
+    _schema: Option<IgnoredAny>,
+    _annotations: Option<IgnoredAny>,
+    _comment: Option<IgnoredAny>,
+    _data_license: Option<IgnoredAny>,
+    _document_describes: Option<IgnoredAny>,
+    _document_namespace: Option<IgnoredAny>,
+    _has_extracted_licensing_infos: Option<IgnoredAny>,
+    _name: Option<IgnoredAny>,
+    _revieweds: Option<IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,7 +126,7 @@ pub(crate) struct ExternalDocumentRef {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Package {
     pub name: String,
     #[serde(rename = "SPDXID")]
@@ -123,6 +141,32 @@ pub(crate) struct Package {
     pub description: Option<String>,
     #[serde(default)]
     pub external_refs: Vec<ExternalRef>,
+    #[serde(flatten)]
+    _unread: UnreadPackageProperties,
+}
+
+/// the package properties the reader does not read, declared so that an unknown one is still an error.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnreadPackageProperties {
+    _annotations: Option<IgnoredAny>,
+    _attribution_texts: Option<IgnoredAny>,
+    _built_date: Option<IgnoredAny>,
+    _comment: Option<IgnoredAny>,
+    _copyright_text: Option<IgnoredAny>,
+    _download_location: Option<IgnoredAny>,
+    _files_analyzed: Option<IgnoredAny>,
+    _has_files: Option<IgnoredAny>,
+    _homepage: Option<IgnoredAny>,
+    _license_comments: Option<IgnoredAny>,
+    _license_info_from_files: Option<IgnoredAny>,
+    _originator: Option<IgnoredAny>,
+    _package_file_name: Option<IgnoredAny>,
+    _package_verification_code: Option<IgnoredAny>,
+    _primary_package_purpose: Option<IgnoredAny>,
+    _release_date: Option<IgnoredAny>,
+    _source_info: Option<IgnoredAny>,
+    _valid_until_date: Option<IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +274,7 @@ impl From<spdx_rs::models::SPDX> for Document {
                             reference_locator: reference.reference_locator,
                         })
                         .collect(),
+                    _unread: Default::default(),
                 })
                 .collect(),
             files: spdx
@@ -255,6 +300,7 @@ impl From<spdx_rs::models::SPDX> for Document {
                     relationship_type: spdx_rs_name(&relationship.relationship_type),
                 })
                 .collect(),
+            _unread: Default::default(),
         }
     }
 }
