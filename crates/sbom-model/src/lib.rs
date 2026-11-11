@@ -26,6 +26,7 @@ use std::sync::OnceLock;
 /// sbom.components.insert(component.id.clone(), component);
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "fields::Sbom")]
 pub struct Sbom {
     /// document-level metadata (creation time, tools, authors).
     pub metadata: Metadata,
@@ -33,15 +34,40 @@ pub struct Sbom {
     pub components: IndexMap<ComponentId, Component>,
     /// dependency graph as adjacency list: parent -> (child -> kind).
     pub dependencies: BTreeMap<ComponentId, BTreeMap<ComponentId, DependencyKind>>,
-    /// reverse dependency index: child -> set of parents.
-    ///
-    /// derived from `dependencies`; call [`rebuild_reverse_deps`](Sbom::rebuild_reverse_deps)
-    /// after modifying `dependencies` to keep it in sync.
+    /// reverse dependency index: child -> set of parents, derived from `dependencies`.
     #[serde(skip)]
-    pub reverse_deps: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
+    reverse_deps: BTreeMap<ComponentId, BTreeSet<ComponentId>>,
     /// non-fatal warnings produced during parsing (e.g. orphaned dependency refs).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+/// what deserializing an `Sbom` reads, named `Sbom` for serde's error messages.
+mod fields {
+    use super::*;
+
+    #[derive(Deserialize)]
+    pub(super) struct Sbom {
+        pub(super) metadata: Metadata,
+        pub(super) components: IndexMap<ComponentId, Component>,
+        pub(super) dependencies: BTreeMap<ComponentId, BTreeMap<ComponentId, DependencyKind>>,
+        #[serde(default)]
+        pub(super) warnings: Vec<String>,
+    }
+}
+
+impl From<fields::Sbom> for Sbom {
+    fn from(fields: fields::Sbom) -> Self {
+        let mut sbom = Self {
+            metadata: fields.metadata,
+            components: fields.components,
+            dependencies: fields.dependencies,
+            reverse_deps: BTreeMap::new(),
+            warnings: fields.warnings,
+        };
+        sbom.rebuild_reverse_deps();
+        sbom
+    }
 }
 
 impl PartialEq for Sbom {
@@ -303,11 +329,11 @@ impl Sbom {
         self.rebuild_reverse_deps();
     }
 
-    /// rebuilds the reverse dependency index from the forward `dependencies` map.
+    /// rebuilds the reverse dependency index that [`roots`](Self::roots) and
+    /// [`rdeps`](Self::rdeps) read from the `dependencies` map.
     ///
-    /// must be called after modifying `dependencies` for `rdeps()` and `roots()`
-    /// to return correct results. Parsers call this automatically; call it
-    /// explicitly when constructing an `Sbom` by hand.
+    /// [`insert_dependency`](Self::insert_dependency) and deserializing keep the
+    /// index up to date; call this after changing `dependencies` directly.
     pub fn rebuild_reverse_deps(&mut self) {
         self.reverse_deps.clear();
         for (parent, children) in &self.dependencies {
@@ -336,17 +362,21 @@ impl Sbom {
         self.components.insert(component.id.clone(), component)
     }
 
-    /// adds a `parent -> child` dependency edge.
+    /// adds a `parent -> child` dependency edge, which [`roots`](Self::roots) and
+    /// [`rdeps`](Self::rdeps) see right away.
     ///
     /// an edge added twice with different kinds keeps the kind declared first
-    /// in [`DependencyKind`], so `Runtime` wins over every other kind. call
-    /// [`rebuild_reverse_deps`](Self::rebuild_reverse_deps) afterwards.
+    /// in [`DependencyKind`], so `Runtime` wins over every other kind.
     pub fn insert_dependency(
         &mut self,
         parent: ComponentId,
         child: ComponentId,
         kind: DependencyKind,
     ) {
+        self.reverse_deps
+            .entry(child.clone())
+            .or_default()
+            .insert(parent.clone());
         self.dependencies
             .entry(parent)
             .or_default()
@@ -1764,15 +1794,8 @@ mod tests {
         sbom.components.insert(id3.clone(), c3);
 
         // id1 -> id2 -> id3
-        sbom.dependencies
-            .entry(id1.clone())
-            .or_default()
-            .insert(id2.clone(), DependencyKind::Runtime);
-        sbom.dependencies
-            .entry(id2.clone())
-            .or_default()
-            .insert(id3.clone(), DependencyKind::Runtime);
-        sbom.rebuild_reverse_deps();
+        sbom.insert_dependency(id1.clone(), id2.clone(), DependencyKind::Runtime);
+        sbom.insert_dependency(id2.clone(), id3.clone(), DependencyKind::Runtime);
 
         assert_eq!(sbom.roots(), vec![id1.clone()]);
         assert_eq!(sbom.deps(&id1), vec![id2.clone()]);
@@ -1784,6 +1807,11 @@ mod tests {
         assert_eq!(transitive.len(), 2);
 
         assert_eq!(sbom.missing_hashes().len(), 3);
+
+        let json = serde_json::to_string(&sbom).unwrap();
+        let sbom: Sbom = serde_json::from_str(&json).unwrap();
+        assert_eq!(sbom.roots(), vec![id1.clone()]);
+        assert_eq!(sbom.rdeps(&id2), vec![id1.clone()]);
     }
 
     #[test]
