@@ -532,18 +532,15 @@ impl EcosystemFilter {
         if self.is_empty() {
             return Cow::Borrowed(sbom);
         }
-        let mut restricted = Sbom {
-            metadata: sbom.metadata.clone(),
-            components: sbom
-                .components
-                .iter()
-                .filter(|(_, c)| self.keeps(c))
-                .map(|(id, c)| (id.clone(), c.clone()))
-                .collect(),
-            dependencies: BTreeMap::new(),
-            reverse_deps: BTreeMap::new(),
-            warnings: sbom.warnings.clone(),
-        };
+        let mut restricted = Sbom::default();
+        restricted.metadata = sbom.metadata.clone();
+        restricted.components = sbom
+            .components
+            .iter()
+            .filter(|(_, c)| self.keeps(c))
+            .map(|(id, c)| (id.clone(), c.clone()))
+            .collect();
+        restricted.warnings = sbom.warnings.clone();
         keep_edges_between_components(&mut restricted, &sbom.dependencies);
         Cow::Owned(restricted)
     }

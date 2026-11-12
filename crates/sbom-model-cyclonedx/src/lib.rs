@@ -553,7 +553,6 @@ impl CycloneDxReader {
             }
         }
 
-        sbom.rebuild_reverse_deps();
         Ok(sbom)
     }
 

@@ -1088,7 +1088,6 @@ impl SpdxReader {
             }
         }
 
-        sbom.rebuild_reverse_deps();
         sbom
     }
 
