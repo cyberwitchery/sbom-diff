@@ -685,6 +685,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spdx",
+ "spdx-expression",
  "spdx-rs",
  "thiserror 2.0.21",
  "xml-rs 1.0.0",

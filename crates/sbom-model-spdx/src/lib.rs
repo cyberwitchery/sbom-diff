@@ -1,16 +1,18 @@
 #![doc = include_str!("../readme.md")]
 
 use chrono::SecondsFormat;
+use document::Document;
 use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
     Sbom,
 };
-use spdx_rs::models::{RelationshipType, SpdxExpression};
+use spdx_expression::SpdxExpression;
 use spdx_rs::parsers::spdx_from_tag_value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
+mod document;
 mod xml;
 
 /// errors that can occur when parsing SPDX documents.
@@ -50,44 +52,28 @@ enum Direction {
 /// returns `Some((Direction, DependencyKind))` for relationship types that
 /// represent dependency edges, or `None` for non-dependency relationships
 /// (e.g. BUILD_TOOL_OF, GENERATED_FROM).
-fn dependency_direction(rel_type: &RelationshipType) -> Option<(Direction, DependencyKind)> {
+fn dependency_direction(rel_type: &str) -> Option<(Direction, DependencyKind)> {
     match rel_type {
         // forward: A {verb} B means A depends on / contains B.
-        RelationshipType::DependsOn
-        | RelationshipType::Contains
-        | RelationshipType::Describes
-        | RelationshipType::HasPrerequisite => Some((Direction::Forward, DependencyKind::Runtime)),
+        "DEPENDS_ON" | "CONTAINS" | "DESCRIBES" | "HAS_PREREQUISITE" => {
+            Some((Direction::Forward, DependencyKind::Runtime))
+        }
 
         // inverse: A {verb} B means B depends on / contains A.
-        RelationshipType::DependencyOf
-        | RelationshipType::ContainedBy
-        | RelationshipType::DescribedBy
-        | RelationshipType::PrerequisiteFor => Some((Direction::Inverse, DependencyKind::Runtime)),
-
-        // scoped inverse types — carry their dependency kind.
-        RelationshipType::RuntimeDependencyOf => {
+        "DEPENDENCY_OF" | "CONTAINED_BY" | "DESCRIBED_BY" | "PREREQUISITE_FOR" => {
             Some((Direction::Inverse, DependencyKind::Runtime))
         }
-        RelationshipType::DevDependencyOf => Some((Direction::Inverse, DependencyKind::Dev)),
-        RelationshipType::BuildDependencyOf => Some((Direction::Inverse, DependencyKind::Build)),
-        RelationshipType::TestDependencyOf => Some((Direction::Inverse, DependencyKind::Test)),
-        RelationshipType::OptionalDependencyOf => {
-            Some((Direction::Inverse, DependencyKind::Optional))
-        }
-        RelationshipType::ProvidedDependencyOf => {
-            Some((Direction::Inverse, DependencyKind::Provided))
-        }
+
+        // scoped inverse types — carry their dependency kind.
+        "RUNTIME_DEPENDENCY_OF" => Some((Direction::Inverse, DependencyKind::Runtime)),
+        "DEV_DEPENDENCY_OF" => Some((Direction::Inverse, DependencyKind::Dev)),
+        "BUILD_DEPENDENCY_OF" => Some((Direction::Inverse, DependencyKind::Build)),
+        "TEST_DEPENDENCY_OF" => Some((Direction::Inverse, DependencyKind::Test)),
+        "OPTIONAL_DEPENDENCY_OF" => Some((Direction::Inverse, DependencyKind::Optional)),
+        "PROVIDED_DEPENDENCY_OF" => Some((Direction::Inverse, DependencyKind::Provided)),
 
         // not a dependency relationship — ignore.
         _ => None,
-    }
-}
-
-/// the relationship type as the document spells it, e.g. `DEPENDS_ON`.
-fn relationship_name(rel_type: &RelationshipType) -> String {
-    match serde_json::to_value(rel_type) {
-        Ok(serde_json::Value::String(name)) => name,
-        _ => format!("{rel_type:?}"),
     }
 }
 
@@ -694,69 +680,6 @@ fn joined(reasons: &[String]) -> String {
     out
 }
 
-/// `primaryPackagePurpose` values the SPDX schema spells differently from
-/// spdx-rs 0.5, as (schema spelling, spdx-rs spelling).
-const PACKAGE_PURPOSE_SPELLINGS: &[(&str, &str)] = &[("OPERATING-SYSTEM", "OPERATING_SYSTEM")];
-
-/// `referenceCategory` values the SPDX schema spells differently from
-/// spdx-rs 0.5, as (schema spelling, spdx-rs spelling).
-const REFERENCE_CATEGORY_SPELLINGS: &[(&str, &str)] = &[("PERSISTENT-ID", "PERSISTENT_ID")];
-
-/// document properties of the SPDX 2.3 schema that spdx-rs 0.5 refuses and
-/// the reader never maps.
-const UNMAPPED_DOCUMENT_PROPERTIES: &[&str] = &["$schema", "revieweds"];
-
-/// rewrites what the SPDX schema allows but spdx-rs 0.5 rejects in a JSON
-/// document, returning whether anything changed.
-fn rewrite_for_spdx_rs(document: &mut serde_json::Value) -> bool {
-    let Some(document) = document.as_object_mut() else {
-        return false;
-    };
-    let mut changed = false;
-    for property in UNMAPPED_DOCUMENT_PROPERTIES {
-        changed |= document.remove(*property).is_some();
-    }
-    let packages = document
-        .get_mut("packages")
-        .and_then(serde_json::Value::as_array_mut)
-        .into_iter()
-        .flatten();
-    for package in packages {
-        changed |= respell(
-            package.get_mut("primaryPackagePurpose"),
-            PACKAGE_PURPOSE_SPELLINGS,
-        );
-        let references = package
-            .get_mut("externalRefs")
-            .and_then(serde_json::Value::as_array_mut)
-            .into_iter()
-            .flatten();
-        for reference in references {
-            changed |= respell(
-                reference.get_mut("referenceCategory"),
-                REFERENCE_CATEGORY_SPELLINGS,
-            );
-        }
-    }
-    changed
-}
-
-/// replaces a schema spelling with the one spdx-rs 0.5 reads, returning
-/// whether it did.
-fn respell(value: Option<&mut serde_json::Value>, spellings: &[(&str, &str)]) -> bool {
-    let Some(serde_json::Value::String(value)) = value else {
-        return false;
-    };
-    let Some((_, readable)) = spellings
-        .iter()
-        .find(|(schema, _)| *schema == value.as_str())
-    else {
-        return false;
-    };
-    *value = readable.to_string();
-    true
-}
-
 /// parser for SPDX documents.
 ///
 /// converts SPDX 2.x JSON, XML, and tag-value input into the format-agnostic
@@ -787,20 +710,9 @@ impl SpdxReader {
 
         Self::check_spdx_version(buf)?;
 
-        // a rewrite costs the error its line and column, so retry only when one applies.
-        let spdx_doc: spdx_rs::models::SPDX = match serde_json::from_slice(buf) {
-            Ok(doc) => doc,
-            Err(err) if err.is_data() => {
-                let mut value: serde_json::Value = serde_json::from_slice(buf)?;
-                if !rewrite_for_spdx_rs(&mut value) {
-                    return Err(err.into());
-                }
-                serde_json::from_value(value)?
-            }
-            Err(err) => return Err(err.into()),
-        };
+        let document: Document = serde_json::from_slice(buf)?;
 
-        Ok(Self::spdx_to_sbom(spdx_doc))
+        Ok(Self::spdx_to_sbom(document))
     }
 
     /// parses an SPDX XML document from a reader.
@@ -822,13 +734,12 @@ impl SpdxReader {
 
         let buf = buf.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&buf);
 
-        let mut value = xml::xml_to_json(buf)?;
+        let value = xml::xml_to_json(buf)?;
         Self::check_version(value.get("spdxVersion").and_then(|v| v.as_str()))?;
-        rewrite_for_spdx_rs(&mut value);
 
-        let spdx_doc: spdx_rs::models::SPDX = serde_json::from_value(value)?;
+        let document: Document = serde_json::from_value(value)?;
 
-        Ok(Self::spdx_to_sbom(spdx_doc))
+        Ok(Self::spdx_to_sbom(document))
     }
 
     /// parses an SPDX tag-value document from a reader.
@@ -975,7 +886,7 @@ impl SpdxReader {
             .creation_info
             .creators = actual_creators.clone();
 
-        let mut sbom = Self::spdx_to_sbom(spdx_doc);
+        let mut sbom = Self::spdx_to_sbom(spdx_doc.into());
 
         // emit diagnostics for workarounds that fired.
         if !unreadable.is_empty() {
@@ -1013,12 +924,12 @@ impl SpdxReader {
         Ok(sbom)
     }
 
-    /// converts a parsed `spdx_rs::models::SPDX` document into the
-    /// format-agnostic [`Sbom`] type. Shared by JSON and tag-value readers.
-    fn spdx_to_sbom(spdx_doc: spdx_rs::models::SPDX) -> Sbom {
+    /// converts a parsed SPDX document into the format-agnostic [`Sbom`]
+    /// type. Shared by the JSON, XML and tag-value readers.
+    fn spdx_to_sbom(document: Document) -> Sbom {
         let mut sbom = Sbom::default();
 
-        let ci = spdx_doc.document_creation_information.creation_info;
+        let ci = document.creation_info;
         sbom.metadata.timestamp = Some(ci.created.to_rfc3339_opts(SecondsFormat::AutoSi, true));
         for creator in ci.creators {
             if let Some(stripped) = creator.strip_prefix("Tool: ") {
@@ -1028,14 +939,14 @@ impl SpdxReader {
             }
         }
 
-        for pkg in spdx_doc.package_information {
-            let name = pkg.package_name;
-            let version = pkg.package_version;
+        for pkg in document.packages {
+            let name = pkg.name;
+            let version = pkg.version_info;
 
-            let supplier = pkg.package_supplier.as_deref().and_then(supplier_name);
+            let supplier = pkg.supplier.as_deref().and_then(supplier_name);
 
             let mut purl = None;
-            for r in &pkg.external_reference {
+            for r in &pkg.external_refs {
                 if r.reference_type == "purl" {
                     purl = Some(r.reference_locator.clone());
                     break;
@@ -1054,28 +965,25 @@ impl SpdxReader {
                 version,
                 ecosystem,
                 supplier,
-                description: pkg
-                    .package_detailed_description
-                    .clone()
-                    .or_else(|| pkg.package_summary_description.clone()),
+                description: pkg.description.clone().or_else(|| pkg.summary.clone()),
                 purl,
                 licenses: BTreeSet::new(),
                 license_expression: None,
                 hashes: BTreeMap::new(),
-                source_ids: vec![pkg.package_spdx_identifier.clone()],
+                source_ids: vec![pkg.spdx_id.clone()],
             };
 
             // licenses: prefer concludedLicense, fall back to declaredLicense
             // when concluded is absent or NOASSERTION/NONE (common in
             // automated tooling output from syft, trivy, etc.).
             let license_expr = pkg
-                .concluded_license
+                .license_concluded
                 .as_ref()
                 .filter(|l| {
                     let s = l.to_string();
                     s != "NOASSERTION" && s != "NONE"
                 })
-                .or(pkg.declared_license.as_ref().filter(|l| {
+                .or(pkg.license_declared.as_ref().filter(|l| {
                     let s = l.to_string();
                     s != "NOASSERTION" && s != "NONE"
                 }));
@@ -1085,10 +993,10 @@ impl SpdxReader {
                 comp.license_expression = Some(l);
             }
 
-            for checksum in pkg.package_checksum {
+            for checksum in pkg.checksums {
                 comp.hashes.insert(
-                    canonical_algorithm_name(&format!("{:?}", checksum.algorithm)),
-                    checksum.value,
+                    canonical_algorithm_name(&checksum.algorithm),
+                    checksum.checksum_value,
                 );
             }
 
@@ -1110,35 +1018,26 @@ impl SpdxReader {
             }
         }
 
-        let doc_spdx_id = spdx_doc
-            .document_creation_information
-            .spdx_identifier
-            .clone();
+        let doc_spdx_id = document.spdx_id;
 
-        let non_packages: BTreeSet<String> = spdx_doc
-            .file_information
-            .iter()
-            .map(|file| file.file_spdx_identifier.clone())
-            .chain(
-                spdx_doc
-                    .snippet_information
-                    .iter()
-                    .map(|snippet| snippet.snippet_spdx_identifier.clone()),
-            )
+        let non_packages: BTreeSet<String> = document
+            .files
+            .into_iter()
+            .chain(document.snippets)
+            .map(|element| element.spdx_id)
             .collect();
         // spdx-rs keeps the `DocumentRef-` prefix from JSON but strips it from tag-value.
-        let external_documents: BTreeSet<String> = spdx_doc
-            .document_creation_information
-            .external_document_references
+        let external_documents: BTreeSet<String> = document
+            .external_document_refs
             .iter()
             .map(|reference| {
-                let id = &reference.id_string;
+                let id = &reference.external_document_id;
                 let id = id.strip_prefix("DocumentRef-").unwrap_or(id);
                 format!("DocumentRef-{id}")
             })
             .collect();
 
-        for rel in spdx_doc.relationships {
+        for rel in document.relationships {
             let left_spdx = rel.spdx_element_id;
             let right_spdx = rel.related_spdx_element;
             let rel_type = rel.relationship_type;
@@ -1183,8 +1082,7 @@ impl SpdxReader {
                     undeclared_element(element, related, &non_packages, &external_documents)
                 {
                     sbom.warnings.push(format!(
-                        "SPDX: {field} '{element}' of relationship '{left_spdx} {} {right_spdx}' {problem}",
-                        relationship_name(&rel_type),
+                        "SPDX: {field} '{element}' of relationship '{left_spdx} {rel_type} {right_spdx}' {problem}",
                     ));
                 }
             }
@@ -4940,16 +4838,167 @@ SnippetByteRange: 1:10
     }
 
     #[test]
-    fn test_json_error_keeps_its_position_when_nothing_was_rewritten() {
+    fn test_json_error_names_a_missing_field_the_reader_needs() {
         let document = one_package_document(serde_json::json!({
-            "packages": [{"name": "pkg-a", "SPDXID": "SPDXRef-pkg-a"}]
+            "packages": [{"name": "pkg-a", "downloadLocation": "NONE"}]
         }));
         let json = serde_json::to_string_pretty(&document).unwrap();
         let err = SpdxReader::read_json(json.as_bytes())
             .unwrap_err()
             .to_string();
-        assert!(err.contains("downloadLocation"), "{err}");
+        assert!(err.contains("missing field `SPDXID`"), "{err}");
         assert!(err.contains(" at line "), "{err}");
+    }
+
+    #[test]
+    fn test_json_spdx_rs_refused_over_a_field_the_reader_does_not_map_is_read() {
+        type Edit = fn(&mut serde_json::Map<String, serde_json::Value>);
+        let rows: &[(&str, Edit)] = &[
+            ("no documentNamespace", |d| {
+                d.remove("documentNamespace");
+            }),
+            ("no dataLicense or name", |d| {
+                d.remove("dataLicense");
+                d.remove("name");
+            }),
+            ("a snippet pointer without offset or lineNumber", |d| {
+                let pointer = serde_json::json!({"reference": "SPDXRef-file"});
+                d.insert(
+                    "snippets".into(),
+                    serde_json::json!([{
+                        "SPDXID": "SPDXRef-snippet", "name": "s", "snippetFromFile": "SPDXRef-file",
+                        "ranges": [{"startPointer": pointer, "endPointer": pointer}]
+                    }]),
+                );
+            }),
+            (
+                "a malformed file license and an unknown file checksum",
+                |d| {
+                    d.insert(
+                        "files".into(),
+                        serde_json::json!([{
+                            "SPDXID": "SPDXRef-file", "fileName": "./a",
+                            "checksums": [{"algorithm": "CRC32", "checksumValue": "00"}],
+                            "licenseConcluded": "MIT AND"
+                        }]),
+                    );
+                },
+            ),
+            ("an annotation date that is not a date", |d| {
+                d.insert(
+                    "annotations".into(),
+                    serde_json::json!([{
+                        "annotationDate": "yesterday", "annotationType": "REVIEW",
+                        "annotator": "Person: a", "comment": "c"
+                    }]),
+                );
+            }),
+            ("a package without downloadLocation", |d| {
+                d["packages"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("downloadLocation");
+            }),
+            ("an unknown primaryPackagePurpose", |d| {
+                d["packages"][0]["primaryPackagePurpose"] = "PLUGIN".into();
+            }),
+            ("an unknown referenceCategory", |d| {
+                d["packages"][0]["externalRefs"][0]["referenceCategory"] = "PACKAGE".into();
+            }),
+        ];
+        for (row, edit) in rows {
+            let mut document = one_package_document(serde_json::json!({}));
+            let map = document.as_object_mut().unwrap();
+            map["packages"][0]["externalRefs"] = serde_json::json!([{
+                "referenceCategory": "PACKAGE-MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": "pkg:npm/pkg-a@1.0.0"
+            }]);
+            map["packages"][0]["licenseConcluded"] = "MIT".into();
+            edit(map);
+            let sbom = SpdxReader::read_json(document.to_string().as_bytes())
+                .unwrap_or_else(|e| panic!("{row}: {e}"));
+            let component = &sbom.components[0];
+            assert_eq!(
+                component.purl.as_deref(),
+                Some("pkg:npm/pkg-a@1.0.0"),
+                "{row}"
+            );
+            assert_eq!(
+                component.license_expression.as_deref(),
+                Some("MIT"),
+                "{row}"
+            );
+            assert!(sbom.warnings.is_empty(), "{row}: {:?}", sbom.warnings);
+        }
+    }
+
+    #[test]
+    fn test_checksum_algorithms_keep_the_names_spdx_rs_gave_them() {
+        for algorithm in document::CHECKSUM_ALGORITHMS {
+            let spdx_rs: spdx_rs::models::Algorithm =
+                serde_json::from_value(serde_json::json!(algorithm)).unwrap();
+            let expected = canonical_algorithm_name(&format!("{spdx_rs:?}"));
+
+            let json = one_package_document(serde_json::json!({
+                "packages": [{
+                    "name": "pkg-a", "SPDXID": "SPDXRef-pkg-a", "downloadLocation": "NONE",
+                    "checksums": [{"algorithm": algorithm, "checksumValue": "abc"}]
+                }]
+            }));
+            let tv = format!("{TV_HEADER}PackageChecksum: {algorithm}: abc\n");
+            for (format, read) in [
+                ("json", SpdxReader::read_json(json.to_string().as_bytes())),
+                ("tag-value", SpdxReader::read_tag_value(tv.as_bytes())),
+            ] {
+                let sbom = read.unwrap_or_else(|e| panic!("{algorithm} ({format}): {e}"));
+                let hashes = &sbom.components[0].hashes;
+                assert_eq!(
+                    hashes.keys().collect::<Vec<_>>(),
+                    [&expected],
+                    "{algorithm} ({format})"
+                );
+            }
+        }
+
+        let json = one_package_document(serde_json::json!({
+            "packages": [{
+                "name": "pkg-a", "SPDXID": "SPDXRef-pkg-a", "downloadLocation": "NONE",
+                "checksums": [{"algorithm": "SHA-256", "checksumValue": "abc"}]
+            }]
+        }));
+        let err = SpdxReader::read_json(json.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown variant `SHA-256`"), "{err}");
+    }
+
+    #[test]
+    fn test_json_misspelt_or_repeated_property_is_an_error() {
+        let document = one_package_document(serde_json::json!({})).to_string();
+        for (from, to, error) in [
+            (
+                r#""downloadLocation":"NONE""#,
+                r#""downloadLocation":"NONE","licenceConcluded":"MIT OR Apache-2.0""#,
+                "unknown field `licenceConcluded`",
+            ),
+            (
+                r#""dataLicense":"CC0-1.0""#,
+                r#""dataLicense":"CC0-1.0","dataLicense":"CC0-1.0""#,
+                "duplicate field `dataLicense`",
+            ),
+            (
+                r#""downloadLocation":"NONE""#,
+                r#""downloadLocation":"NONE","downloadLocation":"NONE""#,
+                "duplicate field `downloadLocation`",
+            ),
+        ] {
+            assert!(document.contains(from), "{document}");
+            let err = SpdxReader::read_json(document.replace(from, to).as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(error), "{err}");
+        }
     }
 
     #[test]
