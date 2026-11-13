@@ -1,6 +1,6 @@
 # changelog
 
-## Unreleased
+## [0.11.0] - 2026-11-13
 
 - fix SPDX JSON and XML documents that are valid under the SPDX 2.3 schema failing to load, the whole document over a field sbom-diff never reads: a document with no `documentNamespace`, which the schema makes optional; a file or snippet license expression the SPDX expression parser rejects; a snippet range pointer with neither `offset` nor `lineNumber`; and an annotation date that is not a date. both formats are now read into the reader's own types instead of spdx-rs's, and those hold only what sbom-diff maps, so a document with an unknown `referenceCategory` or `primaryPackagePurpose`, or a package without `downloadLocation`, loads as well. what is read from a document that loaded before is unchanged
 - fix an `Sbom` deserialized with serde, such as one read back from JSON with `serde_json`, reporting every component as a root and none as a reverse dependency: `roots()` returned all its components and `rdeps()` an empty list. both now follow its `dependencies`, as they do on an `Sbom` a reader returns. `insert_dependency` now keeps them up to date on its own, with no `rebuild_reverse_deps` call after it, and `reverse_deps` is no longer a public field, so an `Sbom` is built from `Sbom::default()` rather than a struct literal; call `rebuild_reverse_deps` after changing `dependencies` directly
