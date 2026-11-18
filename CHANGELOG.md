@@ -1,5 +1,9 @@
 # changelog
 
+## Unreleased
+
+- `sbom-model` adds `normalize_timestamp`, which the cyclonedx and spdx readers use for `Metadata::timestamp` in place of chrono; chrono is unmaintained (RUSTSEC-2026-0543) and now only reaches sbom-diff through spdx-rs. timestamps read as before
+
 ## [0.11.0] - 2026-11-13
 
 - fix SPDX JSON and XML documents that are valid under the SPDX 2.3 schema failing to load, the whole document over a field sbom-diff never reads: a document with no `documentNamespace`, which the schema makes optional; a file or snippet license expression the SPDX expression parser rejects; a snippet range pointer with neither `offset` nor `lineNumber`; and an annotation date that is not a date. both formats are now read into the reader's own types instead of spdx-rs's, and those hold only what sbom-diff maps, so a document with an unknown `referenceCategory` or `primaryPackagePurpose`, or a package without `downloadLocation`, loads as well. what is read from a document that loaded before is unchanged

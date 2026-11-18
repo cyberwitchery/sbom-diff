@@ -1,6 +1,5 @@
 #![doc = include_str!("../readme.md")]
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use sbom_model::{
     canonical_algorithm_name, canonical_license_case, parse_license_expression, Component,
     ComponentId, DependencyKind, Sbom,
@@ -439,12 +438,8 @@ impl CycloneDxReader {
         if let Some(meta) = bom.metadata {
             if let Some(timestamp) = meta.timestamp {
                 sbom.metadata.timestamp = Some(
-                    DateTime::parse_from_rfc3339(timestamp.as_ref())
-                        .map(|t| {
-                            t.with_timezone(&Utc)
-                                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
-                        })
-                        .unwrap_or_else(|_| timestamp.to_string()),
+                    sbom_model::normalize_timestamp(timestamp.as_ref())
+                        .unwrap_or_else(|| timestamp.to_string()),
                 );
             }
             if let Some(tools) = meta.tools {

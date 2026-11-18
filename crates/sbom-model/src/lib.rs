@@ -1,6 +1,9 @@
 #![doc = include_str!("../readme.md")]
 
+mod timestamp;
 pub mod versions;
+
+pub use timestamp::normalize_timestamp;
 
 use indexmap::IndexMap;
 use packageurl::PackageUrl;

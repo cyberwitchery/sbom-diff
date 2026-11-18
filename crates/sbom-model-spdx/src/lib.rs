@@ -1,6 +1,5 @@
 #![doc = include_str!("../readme.md")]
 
-use chrono::SecondsFormat;
 use document::Document;
 use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
@@ -930,7 +929,7 @@ impl SpdxReader {
         let mut sbom = Sbom::default();
 
         let ci = document.creation_info;
-        sbom.metadata.timestamp = Some(ci.created.to_rfc3339_opts(SecondsFormat::AutoSi, true));
+        sbom.metadata.timestamp = Some(ci.created);
         for creator in ci.creators {
             if let Some(stripped) = creator.strip_prefix("Tool: ") {
                 sbom.metadata.tools.push(stripped.to_string());

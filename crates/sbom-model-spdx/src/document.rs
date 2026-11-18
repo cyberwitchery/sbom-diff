@@ -1,6 +1,5 @@
 //! the part of an SPDX 2.x document the reader maps, named as in the SPDX JSON schema.
 
-use chrono::{DateTime, Utc};
 use serde::de::{Deserializer, Error as _, IgnoredAny};
 use serde::Deserialize;
 use spdx_expression::SpdxExpression;
@@ -116,7 +115,19 @@ struct UnreadDocumentProperties {
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreationInfo {
     pub creators: Vec<String>,
-    pub created: DateTime<Utc>,
+    /// normalized by [`sbom_model::normalize_timestamp`]; a document whose
+    /// `created` is not a timestamp fails to load.
+    #[serde(deserialize_with = "deserialize_created")]
+    pub created: String,
+}
+
+fn deserialize_created<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let s = String::deserialize(deserializer)?;
+    sbom_model::normalize_timestamp(&s).ok_or_else(|| {
+        serde::de::Error::custom(format!("created is not an rfc 3339 timestamp: {s}"))
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,7 +255,10 @@ impl From<spdx_rs::models::SPDX> for Document {
                 .collect(),
             creation_info: CreationInfo {
                 creators: info.creation_info.creators,
-                created: info.creation_info.created,
+                created: {
+                    let created = info.creation_info.created.to_rfc3339();
+                    sbom_model::normalize_timestamp(&created).unwrap_or(created)
+                },
             },
             packages: spdx
                 .package_information
