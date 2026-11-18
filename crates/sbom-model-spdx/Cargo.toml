@@ -19,4 +19,3 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 packageurl = { workspace = true }
 xml-rs = { workspace = true }
-chrono = { workspace = true, features = ["serde"] }
