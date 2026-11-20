@@ -899,10 +899,10 @@ impl Differ {
         new: &Sbom,
     ) -> Vec<(ComponentId, ComponentId)> {
         let by_id = || -> Vec<(ComponentId, ComponentId)> {
-            new_ids
+            old_ids
                 .iter()
-                .zip(old_ids.iter().rev())
-                .map(|(new_id, old_id)| (old_id.clone(), new_id.clone()))
+                .cloned()
+                .zip(new_ids.iter().cloned())
                 .collect()
         };
 
@@ -2866,16 +2866,23 @@ mod tests {
             npm_component("libfoo", "nightly-beta"),
         ]);
 
-        let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        assert_eq!(
-            version_pairs(&diff),
-            expect_pairs(&[
-                ("nightly-zeta", "nightly-beta"),
-                ("nightly-alpha", "nightly-omega"),
-            ])
-        );
-        assert_eq!(diff.added.len(), 0);
-        assert_eq!(diff.removed.len(), 0);
+        // opaque versions have no order, so the candidates pair in id order
+        let versions = |sbom: &Sbom| -> Vec<String> {
+            sbom.components
+                .values()
+                .map(|c| c.version.clone().unwrap_or_default())
+                .collect()
+        };
+        let mut expected: Vec<(String, String)> =
+            versions(&old).into_iter().zip(versions(&new)).collect();
+        expected.sort();
+
+        for _ in 0..3 {
+            let diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
+            assert_eq!(version_pairs(&diff), expected);
+            assert_eq!(diff.added.len(), 0);
+            assert_eq!(diff.removed.len(), 0);
+        }
     }
 
     /// the bucket must be big enough for std's sort to check its comparator; a

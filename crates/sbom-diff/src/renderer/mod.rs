@@ -265,16 +265,15 @@ pub(super) fn write_field_changes<F: FieldChangeFormatter, W: Write>(
             }
             FieldChange::Hashes(old, new) => {
                 fmt.hash_header(writer, component.is_hash_algorithm_downgrade)?;
-                for (algo, digest) in old {
-                    if !new.contains_key(algo) {
-                        fmt.hash_removed(writer, algo, digest)?;
-                    } else if new[algo] != *digest {
-                        fmt.hash_changed(writer, algo, digest, &new[algo])?;
-                    }
-                }
-                for (algo, digest) in new {
-                    if !old.contains_key(algo) {
-                        fmt.hash_added(writer, algo, digest)?;
+                for delta in hash_deltas(old, new) {
+                    match delta {
+                        HashDelta::Removed(algo, digest) => {
+                            fmt.hash_removed(writer, algo, digest)?
+                        }
+                        HashDelta::Changed(algo, old, new) => {
+                            fmt.hash_changed(writer, algo, old, new)?
+                        }
+                        HashDelta::Added(algo, digest) => fmt.hash_added(writer, algo, digest)?,
                     }
                 }
             }
@@ -497,6 +496,31 @@ fn write_full_sections<F: FullFormatter, W: Write>(
         fmt.section_close(writer)?;
     }
     Ok(())
+}
+
+/// one algorithm's difference between two sets of hashes.
+pub(super) enum HashDelta<'a> {
+    Removed(&'a str, &'a str),
+    Changed(&'a str, &'a str, &'a str),
+    Added(&'a str, &'a str),
+}
+
+/// the differences between `old` and `new`: removed and changed algorithms in
+/// `old`'s order, then added ones in `new`'s.
+pub(super) fn hash_deltas<'a>(
+    old: &'a BTreeMap<String, String>,
+    new: &'a BTreeMap<String, String>,
+) -> impl Iterator<Item = HashDelta<'a>> {
+    let removed_or_changed = old.iter().filter_map(|(algo, digest)| match new.get(algo) {
+        None => Some(HashDelta::Removed(algo, digest)),
+        Some(other) if other != digest => Some(HashDelta::Changed(algo, digest, other)),
+        Some(_) => None,
+    });
+    let added = new
+        .iter()
+        .filter(|(algo, _)| !old.contains_key(*algo))
+        .map(|(algo, digest)| HashDelta::Added(algo, digest));
+    removed_or_changed.chain(added)
 }
 
 pub(super) fn format_vec_or_none(v: &[String]) -> String {

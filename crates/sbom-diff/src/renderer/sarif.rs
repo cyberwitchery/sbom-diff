@@ -1,6 +1,6 @@
 use super::{
-    format_option, format_set, format_vec_or_none, kind_suffix, Labels, RenderOptions, Renderer,
-    SummaryRenderer,
+    format_option, format_set, format_vec_or_none, hash_deltas, kind_suffix, HashDelta, Labels,
+    RenderOptions, Renderer, SummaryRenderer,
 };
 use crate::{ComponentChange, Diff, FieldChange};
 use serde::Serialize;
@@ -224,19 +224,15 @@ impl SarifRenderer {
                 )
             }
             FieldChange::Hashes(old, new) => {
-                let mut parts = Vec::new();
-                for (algo, digest) in old {
-                    if !new.contains_key(algo) {
-                        parts.push(format!("removed {}={}", algo, digest));
-                    } else if new[algo] != *digest {
-                        parts.push(format!("changed {}: {} -> {}", algo, digest, new[algo]));
-                    }
-                }
-                for (algo, digest) in new {
-                    if !old.contains_key(algo) {
-                        parts.push(format!("added {}={}", algo, digest));
-                    }
-                }
+                let parts: Vec<String> = hash_deltas(old, new)
+                    .map(|delta| match delta {
+                        HashDelta::Removed(algo, digest) => format!("removed {algo}={digest}"),
+                        HashDelta::Changed(algo, old, new) => {
+                            format!("changed {algo}: {old} -> {new}")
+                        }
+                        HashDelta::Added(algo, digest) => format!("added {algo}={digest}"),
+                    })
+                    .collect();
                 let label = if change.is_hash_algorithm_downgrade {
                     "hashes (algorithm downgrade)"
                 } else {

@@ -879,6 +879,11 @@ mod tests {
     use crate::{EcosystemFilter, Field};
     use sbom_model::{Component, ComponentId};
 
+    /// the messages the cli prints for `violations`.
+    fn messages(violations: &[Violation]) -> Vec<String> {
+        violations.iter().map(ToString::to_string).collect()
+    }
+
     #[test]
     fn test_check_licenses() {
         let mut sbom = Sbom::default();
@@ -886,9 +891,15 @@ mod tests {
         c.licenses.insert("GPL-3.0-only".into());
         sbom.components.insert(c.id.clone(), c);
 
-        assert!(!check_licenses(&sbom, &["GPL-3.0-only".into()], &[]).is_empty());
+        assert_eq!(
+            messages(&check_licenses(&sbom, &["GPL-3.0-only".into()], &[])),
+            ["license GPL-3.0-only is denied (component a@1)"]
+        );
         assert!(check_licenses(&sbom, &["MIT".into()], &[]).is_empty());
-        assert!(!check_licenses(&sbom, &[], &["MIT".into()]).is_empty());
+        assert_eq!(
+            messages(&check_licenses(&sbom, &[], &["MIT".into()])),
+            ["license GPL-3.0-only is not allowed (component a@1)"]
+        );
         assert!(check_licenses(&sbom, &[], &["GPL-3.0-only".into()]).is_empty());
     }
 
@@ -902,10 +913,19 @@ mod tests {
         sbom.components.insert(c.id.clone(), c);
 
         // either license triggers deny
-        assert!(!check_licenses(&sbom, &["MIT".into()], &[]).is_empty());
-        assert!(!check_licenses(&sbom, &["Apache-2.0".into()], &[]).is_empty());
+        assert_eq!(
+            messages(&check_licenses(&sbom, &["MIT".into()], &[])),
+            ["license MIT is denied (component a@1)"]
+        );
+        assert_eq!(
+            messages(&check_licenses(&sbom, &["Apache-2.0".into()], &[])),
+            ["license Apache-2.0 is denied (component a@1)"]
+        );
         // both must be in allow list
-        assert!(!check_licenses(&sbom, &[], &["MIT".into()]).is_empty()); // Apache-2.0 not allowed
+        assert_eq!(
+            messages(&check_licenses(&sbom, &[], &["MIT".into()])),
+            ["license Apache-2.0 is not allowed (component a@1)"]
+        ); // Apache-2.0 not allowed
         assert!(check_licenses(&sbom, &[], &["MIT".into(), "Apache-2.0".into()]).is_empty());
     }
 
@@ -932,10 +952,7 @@ mod tests {
         };
 
         let vs = collect_violations(&diff, &[FailOn::Deps]);
-        assert!(!vs.is_empty());
-        assert!(vs
-            .iter()
-            .any(|v| matches!(v, Violation::DepsRemoved { .. })));
+        assert_eq!(messages(&vs), ["removed dependency edge h:59d997b30cdca25336a487b3973a2d6b9503ac777a83420cc13d9b54f2f9f236 -> h:55f5e8687671ea6e1bebf4baf530a392067e9289d736d1d8a500ae6b8a742e6e (--fail-on deps)"]);
     }
 
     #[test]
@@ -951,13 +968,13 @@ mod tests {
         };
 
         let vs = collect_violations(&diff, &[FailOn::AddedComponents, FailOn::MissingHashes]);
-        assert!(!vs.is_empty());
-        assert!(vs
-            .iter()
-            .any(|v| matches!(v, Violation::AddedComponent { .. })));
-        assert!(vs
-            .iter()
-            .any(|v| matches!(v, Violation::MissingHashesAdded { .. })));
+        assert_eq!(
+            messages(&vs),
+            [
+                "added component new@1 (--fail-on added-components)",
+                "added component new@1 has no hashes (--fail-on missing-hashes)"
+            ]
+        );
     }
 
     #[test]
@@ -972,7 +989,7 @@ mod tests {
         assert!(check_licenses(&sbom, &[], &[]).is_empty());
 
         // with allow-list: unlicensed component cannot satisfy it → violation
-        assert!(!check_licenses(&sbom, &[], &["MIT".into()]).is_empty());
+        assert_eq!(messages(&check_licenses(&sbom, &[], &["MIT".into()])), ["component unlicensed-pkg@1.0 has no license information (--allow-license requires it)"]);
 
         // with deny-list only: unlicensed component is not a violation (nothing to deny)
         assert!(check_licenses(&sbom, &["GPL-3.0-only".into()], &[]).is_empty());
@@ -986,15 +1003,24 @@ mod tests {
         sbom.components.insert(c.id.clone(), c);
 
         // deny: different casing still matches
-        assert!(!check_licenses(&sbom, &["gpl-3.0-only".into()], &[]).is_empty());
-        assert!(!check_licenses(&sbom, &["Gpl-3.0-Only".into()], &[]).is_empty());
+        assert_eq!(
+            messages(&check_licenses(&sbom, &["gpl-3.0-only".into()], &[])),
+            ["license GPL-3.0-only is denied (component a@1)"]
+        );
+        assert_eq!(
+            messages(&check_licenses(&sbom, &["Gpl-3.0-Only".into()], &[])),
+            ["license GPL-3.0-only is denied (component a@1)"]
+        );
 
         // allow: different casing is still accepted
         assert!(check_licenses(&sbom, &[], &["gpl-3.0-only".into()]).is_empty());
         assert!(check_licenses(&sbom, &[], &["GPL-3.0-ONLY".into()]).is_empty());
 
         // allow: wrong license is still rejected regardless of case
-        assert!(!check_licenses(&sbom, &[], &["mit".into()]).is_empty());
+        assert_eq!(
+            messages(&check_licenses(&sbom, &[], &["mit".into()])),
+            ["license GPL-3.0-only is not allowed (component a@1)"]
+        );
     }
 
     #[test]
@@ -1013,7 +1039,10 @@ mod tests {
 
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
-        assert!(!collect_violations(&diff, &[FailOn::AddedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::AddedComponents])),
+            ["added component new-pkg@1.0 (--fail-on added-components)"]
+        );
     }
 
     #[test]
@@ -1032,7 +1061,10 @@ mod tests {
 
         diff.added
             .push(Component::new("new-pkg".into(), Some("1.0".into())));
-        assert!(!collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::MissingHashes])),
+            ["added component new-pkg@1.0 has no hashes (--fail-on missing-hashes)"]
+        );
 
         diff.added[0].hashes.insert("sha256".into(), "abc".into());
         assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
@@ -1063,7 +1095,10 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::MissingHashes])),
+            ["changed component pkg@1.1 dropped all hashes (--fail-on missing-hashes)"]
+        );
     }
 
     #[test]
@@ -1142,7 +1177,7 @@ mod tests {
             removed: BTreeMap::new(),
             kind_changed: BTreeMap::new(),
         });
-        assert!(!collect_violations(&diff, &[FailOn::Deps]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::Deps])), ["added dependency edge h:59d997b30cdca25336a487b3973a2d6b9503ac777a83420cc13d9b54f2f9f236 -> h:55f5e8687671ea6e1bebf4baf530a392067e9289d736d1d8a500ae6b8a742e6e (--fail-on deps)"]);
     }
 
     #[test]
@@ -1161,7 +1196,10 @@ mod tests {
 
         diff.removed
             .push(Component::new("old-pkg".into(), Some("1.0".into())));
-        assert!(!collect_violations(&diff, &[FailOn::RemovedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::RemovedComponents])),
+            ["removed component old-pkg@1.0 (--fail-on removed-components)"]
+        );
     }
 
     #[test]
@@ -1188,7 +1226,10 @@ mod tests {
             is_downgrade: false,
             is_hash_algorithm_downgrade: false,
         });
-        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::ChangedComponents])),
+            ["changed component pkg@2.0 (--fail-on changed-components)"]
+        );
     }
 
     #[test]
@@ -1229,7 +1270,10 @@ mod tests {
         )
         .is_empty());
         // but ChangedComponents *should* trigger on description changes
-        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::ChangedComponents])),
+            ["changed component pkg@1.0 (--fail-on changed-components)"]
+        );
     }
 
     #[test]
@@ -1257,7 +1301,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::LicenseChanged])), ["license changed on component pkg@1.0: MIT -> GPL-3.0-only (--fail-on license-changed)"]);
     }
 
     #[test]
@@ -1294,7 +1338,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::LicenseChanged])), ["added component new-pkg@1.0 introduces license(s): AGPL-3.0-only (--fail-on license-changed)"]);
     }
 
     #[test]
@@ -1335,7 +1379,10 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::LicenseChanged])),
+            ["license changed on component pkg@1.0: MIT -> <none> (--fail-on license-changed)"]
+        );
     }
 
     #[test]
@@ -1480,12 +1527,13 @@ mod tests {
         };
 
         let vs = collect_violations(&diff, &[FailOn::LicenseChanged, FailOn::CopyleftAdded]);
-        assert!(vs
-            .iter()
-            .any(|v| matches!(v, Violation::LicenseChanged { .. })));
-        assert!(vs
-            .iter()
-            .any(|v| matches!(v, Violation::CopyleftAdded { .. })));
+        assert_eq!(
+            messages(&vs),
+            [
+                "license changed on component pkg@1.0: MIT -> GPL-3.0-only (--fail-on license-changed)",
+                "copyleft license introduced on component pkg@1.0: GPL-3.0-only (--fail-on copyleft-added)",
+            ]
+        );
     }
 
     #[test]
@@ -1517,9 +1565,12 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
         // ChangedComponents still fires on any change
-        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::ChangedComponents])),
+            ["changed component pkg@1.0 (--fail-on changed-components)"]
+        );
         // CopyleftAdded fires
-        assert!(!collect_violations(&diff, &[FailOn::CopyleftAdded]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::CopyleftAdded])), ["copyleft license introduced on component pkg@1.0: GPL-3.0-only (--fail-on copyleft-added)"]);
     }
 
     #[test]
@@ -1535,7 +1586,10 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::MetadataChanged])),
+            ["document metadata timestamp changed (--fail-on metadata-changed)"]
+        );
     }
 
     #[test]
@@ -1551,7 +1605,10 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::MetadataChanged])),
+            ["document metadata tools changed (--fail-on metadata-changed)"]
+        );
     }
 
     #[test]
@@ -1574,7 +1631,14 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::Deps]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::MissingHashes]).is_empty());
-        assert!(!collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::MetadataChanged])),
+            [
+                "document metadata timestamp changed (--fail-on metadata-changed)",
+                "document metadata tools changed (--fail-on metadata-changed)",
+                "document metadata authors changed (--fail-on metadata-changed)"
+            ]
+        );
     }
 
     #[test]
@@ -1599,7 +1663,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::VersionDowngrade])), ["version downgrade on component pkg@1.5.0: 2.0.0 -> 1.5.0 (--fail-on version-downgrade)"]);
     }
 
     #[test]
@@ -1705,9 +1769,12 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::LicenseChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
         // ChangedComponents should still fire
-        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::ChangedComponents])),
+            ["changed component pkg@1.0.0 (--fail-on changed-components)"]
+        );
         // VersionDowngrade should fire
-        assert!(!collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::VersionDowngrade])), ["version downgrade on component pkg@1.0.0: 2.0.0 -> 1.0.0 (--fail-on version-downgrade)"]);
     }
 
     #[test]
@@ -1734,7 +1801,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::SupplierChanged])), ["supplier changed on component pkg@1.0.0: Acme Corp -> Evil Corp (--fail-on supplier-changed)"]);
     }
 
     #[test]
@@ -1782,7 +1849,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::SupplierChanged])), ["supplier changed on component pkg@1.0.0: <none> -> New Corp (--fail-on supplier-changed)"]);
     }
 
     #[test]
@@ -1805,7 +1872,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::SupplierChanged])), ["supplier changed on component pkg@1.0.0: Old Corp -> <none> (--fail-on supplier-changed)"]);
     }
 
     #[test]
@@ -1820,7 +1887,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::SupplierChanged])), ["added component new-pkg@1.0.0 has supplier: Some Corp (--fail-on supplier-changed)"]);
     }
 
     #[test]
@@ -1869,9 +1936,12 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::MetadataChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::VersionDowngrade]).is_empty());
         // ChangedComponents should still fire
-        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::ChangedComponents])),
+            ["changed component pkg@1.0.0 (--fail-on changed-components)"]
+        );
         // SupplierChanged should fire
-        assert!(!collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::SupplierChanged])), ["supplier changed on component pkg@1.0.0: Acme Corp -> Evil Corp (--fail-on supplier-changed)"]);
     }
 
     #[test]
@@ -2107,7 +2177,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade])), ["hash algorithm downgrade on component pkg@1.0.0: [sha-256] -> [md5] (--fail-on hash-algorithm-downgrade)"]);
     }
 
     #[test]
@@ -2207,7 +2277,7 @@ mod tests {
             ..Diff::default()
         };
 
-        assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade])), ["hash algorithm downgrade on component pkg@1.0.0: [md5, sha-256] -> [md5] (--fail-on hash-algorithm-downgrade)"]);
     }
 
     #[test]
@@ -2267,9 +2337,12 @@ mod tests {
         assert!(collect_violations(&diff, &[FailOn::SupplierChanged]).is_empty());
         assert!(collect_violations(&diff, &[FailOn::ChecksumChanged]).is_empty());
         // ChangedComponents should still fire
-        assert!(!collect_violations(&diff, &[FailOn::ChangedComponents]).is_empty());
+        assert_eq!(
+            messages(&collect_violations(&diff, &[FailOn::ChangedComponents])),
+            ["changed component pkg@1.0.0 (--fail-on changed-components)"]
+        );
         // HashAlgorithmDowngrade should fire
-        assert!(!collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade]).is_empty());
+        assert_eq!(messages(&collect_violations(&diff, &[FailOn::HashAlgorithmDowngrade])), ["hash algorithm downgrade on component pkg@1.0.0: [sha-256] -> [md5] (--fail-on hash-algorithm-downgrade)"]);
     }
 
     fn hash_change_diff(
@@ -2467,7 +2540,13 @@ mod tests {
             .or_default()
             .insert(id1.clone(), DependencyKind::Runtime);
 
-        assert!(!check_cyclic_dependencies(&sbom, &[FailOn::CyclicDependency]).is_empty());
+        assert_eq!(
+            messages(&check_cyclic_dependencies(
+                &sbom,
+                &[FailOn::CyclicDependency]
+            )),
+            ["dependency cycle detected: a@1 -> b@1 -> a@1 (--fail-on cyclic-dependency)"]
+        );
     }
 
     #[test]

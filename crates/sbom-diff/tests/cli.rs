@@ -697,7 +697,7 @@ fn spdx_xml_errors_name_the_detected_format() {
         .output()
         .unwrap();
 
-    assert_ne!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("SPDX XML"), "got {stderr}");
 
@@ -3045,7 +3045,7 @@ fn a_cyclonedx_1_7_document_is_still_refused() {
         .output()
         .unwrap();
 
-    assert_ne!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unsupported CycloneDX specVersion '1.7'") && stderr.contains("1.3–1.6"),
