@@ -197,7 +197,7 @@ impl Renderer for TextRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         write_full(self, diff, opts, writer)?;
         Ok(())
     }
@@ -261,7 +261,7 @@ impl SummaryRenderer for TextRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         write_summary(self, diff, opts, writer)?;
         Ok(())
     }

@@ -191,7 +191,9 @@ fn is_broken_pipe(err: &anyhow::Error) -> bool {
 
 // serde_json's and csv's errors keep their io error out of `source()`.
 fn io_error_kind(err: &(dyn std::error::Error + 'static)) -> Option<io::ErrorKind> {
-    if let Some(e) = err.downcast_ref::<io::Error>() {
+    if let Some(e) = err.downcast_ref::<sbom_diff::renderer::Error>() {
+        e.io_error_kind()
+    } else if let Some(e) = err.downcast_ref::<io::Error>() {
         Some(e.kind())
     } else if let Some(e) = err.downcast_ref::<serde_json::Error>() {
         e.io_error_kind()

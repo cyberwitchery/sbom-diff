@@ -1230,32 +1230,6 @@ pub fn is_copyleft_license(id: &str) -> bool {
         .is_some_and(|l| l.is_copyleft())
 }
 
-/// detects whether a copyleft license was newly introduced between two license sets.
-///
-/// returns `true` iff `new` contains a copyleft license (per
-/// [`is_copyleft_license`]) that is not present in `old`, ignoring case. A
-/// copyleft license carried over from `old` is not an introduction, and
-/// permissive-only changes never fire.
-///
-/// # Example
-///
-/// ```
-/// use sbom_model::copyleft_introduced;
-/// use std::collections::BTreeSet;
-///
-/// let old: BTreeSet<String> = ["MIT".into()].into();
-/// let new: BTreeSet<String> = ["GPL-3.0-only".into()].into();
-/// assert!(copyleft_introduced(&old, &new));
-///
-/// let permissive: BTreeSet<String> = ["Apache-2.0".into()].into();
-/// assert!(!copyleft_introduced(&old, &permissive));
-/// ```
-pub fn copyleft_introduced(old: &BTreeSet<String>, new: &BTreeSet<String>) -> bool {
-    let old: BTreeSet<String> = old.iter().map(|id| copyleft_spelling(id)).collect();
-    new.iter()
-        .any(|id| is_copyleft_license(id) && !old.contains(&copyleft_spelling(id)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1567,29 +1541,22 @@ mod tests {
             copyleft_obligations_added(Licensing::from_ids(&old), Licensing::from_ids(&new)),
             BTreeSet::from(["GPL-3.0-only".to_string()])
         );
-        assert!(copyleft_introduced(&old, &new));
-
         assert!(
             copyleft_obligations_added(Licensing::from_ids(&new), Licensing::from_ids(&new))
                 .is_empty()
         );
-        assert!(!copyleft_introduced(&new, &new));
-
         let respelled: BTreeSet<String> = ["gpl-3.0-only".into(), "MIT".into()].into();
         assert!(copyleft_obligations_added(
             Licensing::from_ids(&new),
             Licensing::from_ids(&respelled)
         )
         .is_empty());
-        assert!(!copyleft_introduced(&new, &respelled));
-
         let gnu_plus: BTreeSet<String> = ["GPL-2.0+".into()].into();
         let only: BTreeSet<String> = ["GPL-2.0-only".into()].into();
         assert_eq!(
             copyleft_obligations_added(Licensing::from_ids(&gnu_plus), Licensing::from_ids(&only)),
             BTreeSet::from(["GPL-2.0-only".to_string()])
         );
-        assert!(copyleft_introduced(&gnu_plus, &only));
     }
 
     #[test]
@@ -2398,10 +2365,13 @@ mod tests {
     }
 
     #[test]
-    fn test_copyleft_introduced_added_alongside_existing() {
-        // a second, newly added copyleft id fires even when old already had one
+    fn test_copyleft_obligations_added_alongside_existing() {
+        // a second, newly added copyleft id counts even when old already had one
         let old: BTreeSet<String> = ["GPL-3.0-only".into()].into();
         let new: BTreeSet<String> = ["GPL-3.0-only".into(), "AGPL-3.0-only".into()].into();
-        assert!(copyleft_introduced(&old, &new));
+        assert_eq!(
+            copyleft_obligations_added(Licensing::from_ids(&old), Licensing::from_ids(&new)),
+            BTreeSet::from(["AGPL-3.0-only".to_string()])
+        );
     }
 }

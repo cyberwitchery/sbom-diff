@@ -43,6 +43,7 @@ jobs:
         with:
           cache-key-prefix: kache-clippy
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
   test:
     name: test
@@ -58,7 +59,7 @@ jobs:
       - name: all features
         run: cargo test --workspace --all-features
       - name: no features
-        run: cargo test --workspace
+        run: cargo test --workspace --no-default-features
 
   doc:
     name: doc

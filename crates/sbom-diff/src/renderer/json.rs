@@ -37,7 +37,7 @@ impl Renderer for JsonRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         let warnings = if opts.has_warnings() {
             Some(JsonWarnings {
                 old: &opts.old_warnings,
@@ -75,7 +75,7 @@ impl SummaryRenderer for JsonRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         let mut summary = serde_json::json!({
             "old_total": diff.old_total,
             "new_total": diff.new_total,

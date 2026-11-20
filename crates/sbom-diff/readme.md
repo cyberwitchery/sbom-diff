@@ -115,10 +115,10 @@ fn gate(old: Sbom, new: Sbom) -> bool {
 built-in renderers for common output formats:
 
 ```rust
-use sbom_diff::{Diff, renderer::{Renderer, RenderOptions, TextRenderer, MarkdownRenderer, JsonRenderer}};
+use sbom_diff::{Diff, renderer::{Error, Renderer, RenderOptions, TextRenderer, MarkdownRenderer, JsonRenderer}};
 use std::io::stdout;
 
-fn render(diff: &Diff) -> anyhow::Result<()> {
+fn render(diff: &Diff) -> Result<(), Error> {
     let mut out = stdout().lock();
     let opts = RenderOptions::default();
 

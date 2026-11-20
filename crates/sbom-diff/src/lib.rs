@@ -94,16 +94,6 @@ impl Diff {
             && self.metadata_changed.is_none()
     }
 
-    /// returns a human-readable display name for a component ID.
-    ///
-    /// looks up the ID in `component_names`; falls back to the raw ID string.
-    pub fn display_name<'a>(&'a self, id: &'a ComponentId) -> &'a str {
-        self.component_names
-            .get(id)
-            .map(String::as_str)
-            .unwrap_or_else(|| id.as_str())
-    }
-
     /// groups added/removed/changed counts by package ecosystem.
     ///
     /// components without an ecosystem are grouped under `"unknown"`.
@@ -135,9 +125,6 @@ impl Diff {
     /// groups the full diff by ecosystem, returning per-ecosystem slices.
     ///
     /// components without an ecosystem are grouped under `"unknown"`.
-    /// this clones components out of the diff; use
-    /// [`into_group_by_ecosystem`](Self::into_group_by_ecosystem) to move
-    /// them instead when you own the diff.
     pub fn group_by_ecosystem(&self) -> GroupedDiff {
         group_components_by_ecosystem(
             self.added.iter().cloned(),
@@ -147,64 +134,6 @@ impl Diff {
             self.metadata_changed.clone(),
             &self.ecosystem_filter,
         )
-    }
-
-    /// consuming variant of [`group_by_ecosystem`](Self::group_by_ecosystem)
-    /// that moves components instead of cloning them.
-    pub fn into_group_by_ecosystem(self) -> GroupedDiff {
-        group_components_by_ecosystem(
-            self.added,
-            self.removed,
-            self.changed,
-            self.edge_diffs,
-            self.metadata_changed,
-            &self.ecosystem_filter,
-        )
-    }
-
-    /// filters the diff to only include components whose ecosystem matches
-    /// the given predicate. adjusts `old_total`, `new_total`, and `unchanged`
-    /// to reflect the filtered view.
-    ///
-    /// `filtered_old_total` and `filtered_new_total` are the pre-counted
-    /// number of components in each SBOM that pass the predicate. these must
-    /// be computed before [`Differ::diff`] consumes the SBOMs.
-    ///
-    /// `component_ecosystems` maps component IDs to their ecosystem, built
-    /// from both SBOMs before they are consumed. this is used to filter
-    /// edge diffs by the parent component's ecosystem.
-    #[deprecated(
-        note = "use `Differ::diff` with `DiffOptions::ecosystems`, which also keeps a change by its old ecosystem and an edge change by both ends"
-    )]
-    pub fn filter_by_ecosystem<F: Fn(Option<&str>) -> bool>(
-        &mut self,
-        matches: &F,
-        filtered_old_total: usize,
-        filtered_new_total: usize,
-        component_ecosystems: &BTreeMap<ComponentId, Option<String>>,
-    ) {
-        self.added.retain(|c| matches(c.ecosystem.as_deref()));
-        self.removed.retain(|c| matches(c.ecosystem.as_deref()));
-        self.changed.retain(|c| matches(c.new.ecosystem.as_deref()));
-
-        // filter edge diffs by parent ecosystem; keep edges whose parent is
-        // unknown (not in the map) as a conservative default.
-        self.retain_edges(|edge| {
-            component_ecosystems
-                .get(&edge.parent)
-                .map(|eco| matches(eco.as_deref()))
-                .unwrap_or(true)
-        });
-
-        self.old_total = filtered_old_total;
-        self.new_total = filtered_new_total;
-        // derive unchanged from the NEW side, consistent with added/changed
-        // (both retained by new-side ecosystem). deriving from the old side
-        // over-counts a matched pair whose ecosystem changes across the filter
-        // boundary, which can push unchanged above new_total.
-        self.unchanged = filtered_new_total
-            .saturating_sub(self.added.len())
-            .saturating_sub(self.changed.len());
     }
 
     /// keeps the edge diffs `keep` accepts, after it trims them, and the names they still use.
@@ -241,9 +170,7 @@ impl Diff {
     }
 }
 
-/// shared implementation for [`Diff::group_by_ecosystem`] and
-/// [`Diff::into_group_by_ecosystem`]. accepts owned iterators so both the
-/// cloning and consuming callers can share the same loop logic.
+/// the loop behind [`Diff::group_by_ecosystem`].
 fn group_components_by_ecosystem(
     added: impl IntoIterator<Item = Component>,
     removed: impl IntoIterator<Item = Component>,
@@ -411,7 +338,8 @@ impl FieldChange {
 /// fields that can be compared and filtered.
 ///
 /// use with [`DiffOptions::only`] to limit comparison to specific fields.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum Field {
     /// package version.
     Version,
@@ -2164,12 +2092,16 @@ mod tests {
         assert!(diff.edge_diffs[0].parent.as_str().starts_with("h:"));
 
         // component_names should resolve all hash IDs to readable names
-        assert_eq!(diff.display_name(&diff.edge_diffs[0].parent), "my-app@1.0");
-        for added in diff.edge_diffs[0].added.keys() {
-            assert!(!diff.display_name(added).starts_with("h:"));
-        }
-        for removed in diff.edge_diffs[0].removed.keys() {
-            assert!(!diff.display_name(removed).starts_with("h:"));
+        assert_eq!(
+            diff.component_names[&diff.edge_diffs[0].parent],
+            "my-app@1.0"
+        );
+        for id in diff.edge_diffs[0]
+            .added
+            .keys()
+            .chain(diff.edge_diffs[0].removed.keys())
+        {
+            assert!(diff.component_names.contains_key(id), "{id:?}");
         }
     }
 
@@ -2208,368 +2140,24 @@ mod tests {
 
         // component_names should be empty — all IDs are purl-based
         assert!(diff.component_names.is_empty());
-
-        // display_name should fall back to the purl-based ID string
-        assert!(diff
-            .display_name(&diff.edge_diffs[0].parent)
-            .starts_with("pkg:npm/parent@"));
     }
 
     #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_include() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // npm components
-        let mut npm1 = Component::new("express".into(), Some("4.18.0".into()));
-        npm1.ecosystem = Some("npm".into());
-        let mut npm2 = Component::new("lodash".into(), Some("4.17.21".into()));
-        npm2.ecosystem = Some("npm".into());
-
-        // cargo component
-        let mut cargo1 = Component::new("serde".into(), Some("1.0.0".into()));
-        cargo1.ecosystem = Some("cargo".into());
-
-        // pypi component
-        let mut pypi1 = Component::new("requests".into(), Some("2.28.0".into()));
-        pypi1.ecosystem = Some("pypi".into());
-
-        old.components.insert(npm2.id.clone(), npm2.clone());
-        old.components.insert(cargo1.id.clone(), cargo1.clone());
-
-        new.components.insert(npm1.id.clone(), npm1);
-        new.components.insert(npm2.id.clone(), npm2);
-        new.components.insert(pypi1.id.clone(), pypi1);
-
-        // old has npm2 + cargo1 (2 components)
-        // new has npm1 + npm2 + pypi1 (3 components)
-        // npm2 is unchanged, npm1 is added (npm), cargo1 is removed, pypi1 is added (pypi)
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-
-        // pre-filtered totals for npm: old has 1 npm (npm2), new has 2 npm (npm1, npm2)
-        diff.filter_by_ecosystem(
-            &|eco| eco == Some("npm"),
-            1, // old npm count
-            2, // new npm count
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(diff.added.len(), 1); // npm1
-        assert_eq!(diff.added[0].name, "express");
-        assert_eq!(diff.removed.len(), 0); // cargo1 was filtered out
-        assert_eq!(diff.changed.len(), 0);
-        assert_eq!(diff.old_total, 1);
-        assert_eq!(diff.new_total, 2);
-        assert_eq!(diff.unchanged, 1); // npm2
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_exclude() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let mut npm1 = Component::new("express".into(), Some("4.18.0".into()));
-        npm1.ecosystem = Some("npm".into());
-        let mut cargo1 = Component::new("serde".into(), Some("1.0.0".into()));
-        cargo1.ecosystem = Some("cargo".into());
-        let mut cargo2 = Component::new("tokio".into(), Some("1.0.0".into()));
-        cargo2.ecosystem = Some("cargo".into());
-
-        old.components.insert(cargo1.id.clone(), cargo1.clone());
-        new.components.insert(npm1.id.clone(), npm1);
-        new.components.insert(cargo2.id.clone(), cargo2);
-
-        // exclude npm: should only see cargo changes
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        diff.filter_by_ecosystem(
-            &|eco| eco != Some("npm"),
-            1, // old non-npm count
-            1, // new non-npm count
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(diff.added.len(), 1); // cargo2
-        assert_eq!(diff.added[0].name, "tokio");
-        assert_eq!(diff.removed.len(), 1); // cargo1
-        assert_eq!(diff.removed[0].name, "serde");
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_unknown() {
-        // components without ecosystem are treated as "unknown"
-        let old = Sbom::default();
-        let mut new = Sbom::default();
-
-        let no_eco = Component::new("mystery".into(), Some("1.0".into()));
-        let mut npm = Component::new("express".into(), Some("4.18.0".into()));
-        npm.ecosystem = Some("npm".into());
-
-        new.components.insert(no_eco.id.clone(), no_eco);
-        new.components.insert(npm.id.clone(), npm);
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-
-        // include "unknown" - should keep only the component without ecosystem
-        diff.filter_by_ecosystem(
-            &|eco| eco.is_none(),
-            0,
-            1, // one component without ecosystem in new
-            &BTreeMap::new(),
-        );
-
-        assert_eq!(diff.added.len(), 1);
-        assert_eq!(diff.added[0].name, "mystery");
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_changed_uses_new_ecosystem() {
-        // when old has no ecosystem but new gained one (e.g. purl added),
-        // they match by name and the change uses the new component's ecosystem.
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // old: no ecosystem (wildcard match)
-        let c_old = Component::new("pkg".into(), Some("1.0".into()));
-        // new: gains npm ecosystem + version bump
-        let mut c_new = Component::new("pkg".into(), Some("2.0".into()));
-        c_new.ecosystem = Some("npm".into());
-
-        old.components.insert(c_old.id.clone(), c_old);
-        new.components.insert(c_new.id.clone(), c_new);
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        assert_eq!(diff.changed.len(), 1);
-
-        // filter to npm: should keep the changed component (new ecosystem is npm)
-        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 0, 1, &BTreeMap::new());
-        assert_eq!(diff.changed.len(), 1);
-
-        // filter to cargo: should exclude (new ecosystem is npm, not cargo)
-        let old2 = {
-            let mut s = Sbom::default();
-            let c = Component::new("pkg".into(), Some("1.0".into()));
-            s.components.insert(c.id.clone(), c);
-            s
-        };
-        let new2 = {
-            let mut s = Sbom::default();
-            let mut c = Component::new("pkg".into(), Some("2.0".into()));
-            c.ecosystem = Some("npm".into());
-            s.components.insert(c.id.clone(), c);
-            s
-        };
-        let mut diff = Differ::diff(old2.clone(), new2.clone(), &DiffOptions::default());
-        diff.filter_by_ecosystem(&|eco| eco == Some("cargo"), 0, 0, &BTreeMap::new());
-        assert_eq!(diff.changed.len(), 0);
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_totals_adjusted() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // old: 2 npm, 1 cargo
-        let mut n1 = Component::new("a".into(), Some("1".into()));
-        n1.ecosystem = Some("npm".into());
-        let mut n2 = Component::new("b".into(), Some("1".into()));
-        n2.ecosystem = Some("npm".into());
-        let mut c1 = Component::new("c".into(), Some("1".into()));
-        c1.ecosystem = Some("cargo".into());
-
-        old.components.insert(n1.id.clone(), n1.clone());
-        old.components.insert(n2.id.clone(), n2.clone());
-        old.components.insert(c1.id.clone(), c1);
-
-        // new: same 2 npm (unchanged), no cargo
-        new.components.insert(n1.id.clone(), n1);
-        new.components.insert(n2.id.clone(), n2);
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        assert_eq!(diff.old_total, 3);
-        assert_eq!(diff.new_total, 2);
-
-        // filter to npm only
-        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 2, &BTreeMap::new());
-
-        assert_eq!(diff.old_total, 2);
-        assert_eq!(diff.new_total, 2);
-        assert_eq!(diff.unchanged, 2);
-        assert_eq!(diff.added.len(), 0);
-        assert_eq!(diff.removed.len(), 0);
-        assert_eq!(diff.changed.len(), 0);
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_matched_pair_changes_ecosystem() {
-        // a matched pair (same name+version → same hash id) whose ecosystem
-        // goes npm → None because its purl was dropped. two differently-schemed
-        // purls would get distinct ids and diff as add+remove, so a dropped (or
-        // added) purl — ecosystem Some↔None — is the reachable way a *matched*
-        // pair straddles the ecosystem filter.
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // migrator: matched pair whose purl is dropped, so ecosystem npm -> None.
-        let mut mig_old = Component::new("migrator".into(), Some("1.0".into()));
-        mig_old.ecosystem = Some("npm".into());
-        let mut mig_new = Component::new("migrator".into(), Some("1.0".into()));
-        mig_new.ecosystem = None; // purl dropped on the new side
-        assert_eq!(mig_old.id, mig_new.id, "same name+version share a hash id");
-
-        // left-pad: genuinely unchanged npm pair.
-        let mut lp = Component::new("left-pad".into(), Some("2.0".into()));
-        lp.ecosystem = Some("npm".into());
-
-        old.components.insert(mig_old.id.clone(), mig_old);
-        old.components.insert(lp.id.clone(), lp.clone());
-        new.components.insert(mig_new.id.clone(), mig_new);
-        new.components.insert(lp.id.clone(), lp);
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        assert_eq!(diff.changed.len(), 1); // migrator (ecosystem npm -> None)
-        assert_eq!(diff.unchanged, 1); // left-pad
-
-        // filter to npm: old side has 2 npm (migrator-old, left-pad),
-        // new side has 1 npm (left-pad only; migrator-new has no ecosystem).
-        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 1, &BTreeMap::new());
-
-        assert_eq!(diff.changed.len(), 0); // migrator dropped (new has no ecosystem)
-        assert_eq!(diff.added.len(), 0);
-        assert_eq!(diff.removed.len(), 0);
-        assert_eq!(diff.unchanged, 1); // only left-pad remains on the npm side
-        assert_eq!(diff.new_total, 1);
-        // the core invariant: unchanged must never exceed new_total.
-        assert!(
-            diff.unchanged <= diff.new_total,
-            "unchanged ({}) exceeds new_total ({})",
-            diff.unchanged,
-            diff.new_total
-        );
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_no_ecosystem_change_unaffected() {
-        // control: with no pair crossing the ecosystem boundary, the new-side
-        // derivation of `unchanged` agrees with the old-side one.
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // migrator: version bump but stays npm (changed pair, npm both sides).
-        let mut mig_old = Component::new("migrator".into(), Some("1.0".into()));
-        mig_old.ecosystem = Some("npm".into());
-        let mut mig_new = Component::new("migrator".into(), Some("1.1".into()));
-        mig_new.ecosystem = Some("npm".into());
-
-        // left-pad: genuinely unchanged npm pair.
-        let mut lp = Component::new("left-pad".into(), Some("2.0".into()));
-        lp.ecosystem = Some("npm".into());
-
-        old.components.insert(mig_old.id.clone(), mig_old);
-        old.components.insert(lp.id.clone(), lp.clone());
-        new.components.insert(mig_new.id.clone(), mig_new);
-        new.components.insert(lp.id.clone(), lp);
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        assert_eq!(diff.changed.len(), 1);
-
-        // both old and new npm totals are 2 (nothing crosses the boundary).
-        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 2, 2, &BTreeMap::new());
-
-        assert_eq!(diff.changed.len(), 1);
-        assert_eq!(diff.unchanged, 1); // left-pad; identical to old-side derivation
-        assert_eq!(diff.new_total, 2);
-        assert!(diff.unchanged <= diff.new_total);
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_filters_edge_diffs() {
-        let mut old = Sbom::default();
-        let mut new = Sbom::default();
-
-        // npm parent with an edge change
-        let mut npm_parent = Component::new("npm-app".into(), Some("1.0".into()));
-        npm_parent.ecosystem = Some("npm".into());
-        let npm_child_old = Component::new("npm-dep-old".into(), Some("1.0".into()));
-        let npm_child_new = Component::new("npm-dep-new".into(), Some("1.0".into()));
-
-        // cargo parent with an edge change
-        let mut cargo_parent = Component::new("cargo-app".into(), Some("1.0".into()));
-        cargo_parent.ecosystem = Some("cargo".into());
-        let cargo_child = Component::new("cargo-dep".into(), Some("1.0".into()));
-
-        // old: both parents, npm-dep-old as child of npm-app
-        old.components
-            .insert(npm_parent.id.clone(), npm_parent.clone());
-        old.components
-            .insert(npm_child_old.id.clone(), npm_child_old.clone());
-        old.components
-            .insert(cargo_parent.id.clone(), cargo_parent.clone());
-
-        // new: both parents, npm-dep-new replaces npm-dep-old, cargo gets new dep
-        new.components
-            .insert(npm_parent.id.clone(), npm_parent.clone());
-        new.components
-            .insert(npm_child_new.id.clone(), npm_child_new.clone());
-        new.components
-            .insert(cargo_parent.id.clone(), cargo_parent.clone());
-        new.components
-            .insert(cargo_child.id.clone(), cargo_child.clone());
-
-        old.dependencies.insert(
-            npm_parent.id.clone(),
-            BTreeMap::from([(npm_child_old.id.clone(), DependencyKind::Runtime)]),
-        );
-        new.dependencies.insert(
-            npm_parent.id.clone(),
-            BTreeMap::from([(npm_child_new.id.clone(), DependencyKind::Runtime)]),
-        );
-        new.dependencies.insert(
-            cargo_parent.id.clone(),
-            BTreeMap::from([(cargo_child.id.clone(), DependencyKind::Runtime)]),
-        );
-
-        // build ecosystem map
-        let mut eco_map: BTreeMap<ComponentId, Option<String>> = BTreeMap::new();
-        for (id, comp) in old.components.iter().chain(new.components.iter()) {
-            eco_map.insert(id.clone(), comp.ecosystem.clone());
-        }
-
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        // before filtering: should have edge diffs for both ecosystems
-        assert!(diff.edge_diffs.len() >= 2);
-
-        // filter to npm only
-        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 1, 1, &eco_map);
-
-        // should only have the npm parent's edge diff
-        assert_eq!(diff.edge_diffs.len(), 1);
-        assert_eq!(diff.edge_diffs[0].parent, npm_parent.id);
-    }
-
-    #[test]
-    #[allow(deprecated)] // pins the old rules until #184 removes it
-    fn test_filter_by_ecosystem_prunes_component_names() {
+    fn test_ecosystem_filter_prunes_component_names() {
         let mut old = Sbom::default();
         let mut new = Sbom::default();
 
         // npm parent (hash-based IDs → entries in component_names)
         let mut npm_parent = Component::new("npm-app".into(), Some("1.0".into()));
         npm_parent.ecosystem = Some("npm".into());
-        let npm_child = Component::new("npm-dep".into(), Some("1.0".into()));
+        let mut npm_child = Component::new("npm-dep".into(), Some("1.0".into()));
+        npm_child.ecosystem = Some("npm".into());
 
         // cargo parent
         let mut cargo_parent = Component::new("cargo-app".into(), Some("1.0".into()));
         cargo_parent.ecosystem = Some("cargo".into());
-        let cargo_child = Component::new("cargo-dep".into(), Some("1.0".into()));
+        let mut cargo_child = Component::new("cargo-dep".into(), Some("1.0".into()));
+        cargo_child.ecosystem = Some("cargo".into());
 
         old.components
             .insert(npm_parent.id.clone(), npm_parent.clone());
@@ -2594,19 +2182,20 @@ mod tests {
             BTreeMap::from([(cargo_child.id.clone(), DependencyKind::Runtime)]),
         );
 
-        let mut eco_map: BTreeMap<ComponentId, Option<String>> = BTreeMap::new();
-        for (id, comp) in old.components.iter().chain(new.components.iter()) {
-            eco_map.insert(id.clone(), comp.ecosystem.clone());
-        }
+        let unfiltered = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
+        let diff = Differ::diff(
+            old,
+            new,
+            &DiffOptions {
+                ecosystems: EcosystemFilter::new(["npm"], []),
+                ..Default::default()
+            },
+        );
 
-        let mut diff = Differ::diff(old.clone(), new.clone(), &DiffOptions::default());
-        let names_before = diff.component_names.len();
-        assert!(names_before > 0, "should have component names for hash IDs");
-
-        diff.filter_by_ecosystem(&|eco| eco == Some("npm"), 1, 1, &eco_map);
-
-        // component_names should not contain IDs only from the cargo edge diff
-        assert!(diff.component_names.len() <= names_before);
+        // the cargo edge's names are gone, the npm edge's are not
+        assert_eq!(unfiltered.component_names.len(), 4);
+        let names: BTreeSet<&str> = diff.component_names.values().map(String::as_str).collect();
+        assert_eq!(names, BTreeSet::from(["npm-app@1.0", "npm-dep@1.0"]));
         for id in diff.component_names.keys() {
             // every remaining name should be referenced by a remaining edge diff
             let referenced = diff.edge_diffs.iter().any(|e| {
@@ -2828,11 +2417,7 @@ mod tests {
             );
             let groups: Vec<_> = diff.ecosystem_breakdown().into_keys().collect();
             assert_eq!(groups, [group], "{filter:?}");
-            let groups: Vec<_> = diff
-                .into_group_by_ecosystem()
-                .by_ecosystem
-                .into_keys()
-                .collect();
+            let groups: Vec<_> = diff.group_by_ecosystem().by_ecosystem.into_keys().collect();
             assert_eq!(groups, [group], "{filter:?}");
         }
     }

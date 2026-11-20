@@ -8,7 +8,8 @@ use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 /// conditions that trigger a non-zero exit code.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, clap::ValueEnum, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum FailOn {
     /// fail if any added component lacks checksums or a changed component dropped all its checksums.
     MissingHashes,

@@ -63,7 +63,7 @@ impl Renderer for CsvRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         let mut wtr = csv_writer(&mut *writer);
 
         wtr.write_record([
@@ -177,7 +177,7 @@ impl SummaryRenderer for CsvRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         let meta_changed = if diff.metadata_changed.is_some() {
             "1"
         } else {

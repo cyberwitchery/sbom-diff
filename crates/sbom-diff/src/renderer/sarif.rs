@@ -467,7 +467,7 @@ impl Renderer for SarifRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         let log = SarifLog {
             schema: SARIF_SCHEMA,
             version: SARIF_VERSION,
@@ -494,7 +494,7 @@ impl SummaryRenderer for SarifRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), super::Error> {
         self.render(diff, opts, writer)
     }
 }
