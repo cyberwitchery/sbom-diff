@@ -6,7 +6,7 @@
 - supports component metadata, licenses, and hashes.
 
 ## spdx
-- reads json and xml into its own types; tag-value is parsed by `spdx-rs`.
+- reads json, xml and tag-value into its own types; tag-value with its own parser.
 - maps `spdxid` to internal component ids.
 - supports packages, concluded licenses, and the 14 dependency relationship types listed in `format-notes.md` (`DEPENDS_ON`, `CONTAINS`, `DESCRIBES`, `HAS_PREREQUISITE` and ten inverse types such as `DEPENDENCY_OF` and `DEV_DEPENDENCY_OF`).
 - skips a relationship with a file, a snippet, `NONE`/`NOASSERTION` or an element of a declared external document without a warning; one naming nothing in the document is skipped with a warning.

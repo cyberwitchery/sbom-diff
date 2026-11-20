@@ -5,7 +5,14 @@
 - removed from the library: `copyleft_introduced` (use `copyleft_obligations_added`), `compare_versions`, `compare_versions_for_ecosystem` and `is_version_downgrade` (use `Version` or `is_version_downgrade_for_ecosystem`), `Diff::display_name`, `Diff::into_group_by_ecosystem` and the deprecated `Diff::filter_by_ecosystem` (use `DiffOptions::ecosystems`)
 - clap and anyhow are now behind a default `cli` feature, so a library user can drop them with `default-features = false`. the renderers return `renderer::Error` instead of `anyhow::Error`
 - components of one package whose versions cannot be ordered, such as two nightly builds on each side, now pair old with new in id order; they paired in reverse id order
-- `sbom-model` adds `normalize_timestamp`, which the cyclonedx and spdx readers use for `Metadata::timestamp` in place of chrono; chrono is unmaintained (RUSTSEC-2026-0543) and now only reaches sbom-diff through spdx-rs. timestamps read as before
+- SPDX tag-value is now read by sbom-diff's own parser, into the same types as JSON and XML, and spdx-rs and chrono are no longer dependencies. a document reads as before, except:
+  - the warnings `applied flush-sentinel workaround` and `stripped phantom creator(s)`, which most tag-value documents printed even under `-q`, are gone
+  - warnings about relationships that name no element come in document order; they came in a different order from run to run
+  - a document with no `Created` is an error, as in JSON; it was read with the current time as its timestamp
+  - a `Creator`, `Created`, `SPDXID`, package name, version or supplier given as a `<text>` block is read from the block and trimmed, so an `SPDXID` written that way matches its relationships; a `Creator` was read as the raw line, `<text>` included
+  - a package with no `SPDXID` has an empty source id instead of `NOASSERTION`
+  - a line with an unknown tag is named as `not an SPDX 2.3 tag`, and the dropped-lines warning no longer says the lines would have truncated the document
+- `sbom-model` adds `normalize_timestamp`, which the cyclonedx and spdx readers use for `Metadata::timestamp` in place of chrono, which is unmaintained (RUSTSEC-2026-0543). timestamps read as before
 
 ## [0.11.0] - 2026-11-13
 

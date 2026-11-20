@@ -1,17 +1,18 @@
 #![doc = include_str!("../readme.md")]
 
 use document::Document;
+use document::{CHECKSUM_ALGORITHMS, RELATIONSHIP_TYPES};
 use sbom_model::{
     canonical_algorithm_name, parse_license_expression, Component, ComponentId, DependencyKind,
     Sbom,
 };
 use spdx_expression::SpdxExpression;
-use spdx_rs::parsers::spdx_from_tag_value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use thiserror::Error;
 
 mod document;
+mod tag_value;
 mod xml;
 
 /// errors that can occur when parsing SPDX documents.
@@ -141,7 +142,7 @@ fn scanned_lines(input: &str) -> impl Iterator<Item = (&str, bool)> {
             } else {
                 // blocks open only at a value's head: after the colon, or on a continuation line.
                 let head = rest.trim_start_matches(SEPARATORS);
-                // spdx-rs reads a `#` to the end of its line as a comment.
+                // a `#` comment runs to the end of its line.
                 if head.starts_with('#') {
                     break;
                 }
@@ -151,7 +152,7 @@ fn scanned_lines(input: &str) -> impl Iterator<Item = (&str, bool)> {
                     })
                 });
                 let Some(after) = opened else { break };
-                // and only where a `</text>` follows, which is where spdx-rs's take_until succeeds.
+                // and only where a `</text>` follows; an unterminated one is plain text.
                 if !after.contains("</text>") && !closes_below {
                     break;
                 }
@@ -171,7 +172,7 @@ fn tag_lines(input: &str) -> impl Iterator<Item = &str> {
         .map(|(line, _)| line.trim())
 }
 
-/// tags spdx-rs 0.5's tag-value parser recognizes.
+/// the SPDX 2.3 tags; a line with any other tag is skipped and named.
 const READABLE_TAGS: &[&str] = &[
     "AnnotationComment",
     "AnnotationDate",
@@ -246,31 +247,10 @@ const READABLE_TAGS: &[&str] = &[
     "ValidUntilDate",
 ];
 
-/// checksum algorithms spdx-rs 0.5 recognizes.
-const CHECKSUM_ALGORITHMS: &[&str] = &[
-    "SHA1",
-    "SHA224",
-    "SHA256",
-    "SHA384",
-    "SHA512",
-    "MD2",
-    "MD4",
-    "MD5",
-    "MD6",
-    "SHA3-256",
-    "SHA3-384",
-    "SHA3-512",
-    "BLAKE2b-256",
-    "BLAKE2b-384",
-    "BLAKE2b-512",
-    "BLAKE3",
-    "ADLER32",
-];
-
-/// `ExternalRef` categories spdx-rs 0.5 recognizes.
+/// the SPDX 2.3 `ExternalRef` categories.
 const EXTERNAL_REF_CATEGORIES: &[&str] = &["SECURITY", "PACKAGE-MANAGER", "PERSISTENT-ID", "OTHER"];
 
-/// `FileType` values spdx-rs 0.5 recognizes.
+/// the SPDX 2.3 `FileType` values.
 const FILE_TYPES: &[&str] = &[
     "SOURCE",
     "BINARY",
@@ -285,10 +265,10 @@ const FILE_TYPES: &[&str] = &[
     "OTHER",
 ];
 
-/// `AnnotationType` values spdx-rs 0.5 recognizes.
+/// the SPDX 2.3 `AnnotationType` values.
 const ANNOTATION_TYPES: &[&str] = &["REVIEW", "OTHER"];
 
-/// tags whose value spdx-rs 0.5 parses as an SPDX license expression and unwraps.
+/// tags whose value must parse as an SPDX license expression.
 const LICENSE_EXPRESSION_TAGS: &[&str] = &[
     "LicenseConcluded",
     "LicenseInfoInFile",
@@ -297,56 +277,7 @@ const LICENSE_EXPRESSION_TAGS: &[&str] = &[
     "SnippetLicenseConcluded",
 ];
 
-/// `Relationship` types spdx-rs 0.5 recognizes.
-const RELATIONSHIP_TYPES: &[&str] = &[
-    "DESCRIBES",
-    "DESCRIBED_BY",
-    "CONTAINS",
-    "CONTAINED_BY",
-    "DEPENDS_ON",
-    "DEPENDENCY_OF",
-    "DEPENDENCY_MANIFEST_OF",
-    "BUILD_DEPENDENCY_OF",
-    "DEV_DEPENDENCY_OF",
-    "OPTIONAL_DEPENDENCY_OF",
-    "PROVIDED_DEPENDENCY_OF",
-    "TEST_DEPENDENCY_OF",
-    "RUNTIME_DEPENDENCY_OF",
-    "EXAMPLE_OF",
-    "GENERATES",
-    "GENERATED_FROM",
-    "ANCESTOR_OF",
-    "DESCENDANT_OF",
-    "VARIANT_OF",
-    "DISTRIBUTION_ARTIFACT",
-    "PATCH_FOR",
-    "PATCH_APPLIED",
-    "COPY_OF",
-    "FILE_ADDED",
-    "FILE_DELETED",
-    "FILE_MODIFIED",
-    "EXPANDED_FROM_ARCHIVE",
-    "DYNAMIC_LINK",
-    "STATIC_LINK",
-    "DATA_FILE_OF",
-    "TEST_CASE_OF",
-    "BUILD_TOOL_OF",
-    "DEV_TOOL_OF",
-    "TEST_OF",
-    "TEST_TOOL_OF",
-    "DOCUMENTATION_OF",
-    "OPTIONAL_COMPONENT_OF",
-    "METAFILE_OF",
-    "PACKAGE_OF",
-    "AMENDS",
-    "PREREQUISITE_FOR",
-    "HAS_PREREQUISITE",
-    "SPECIFICATION_FOR",
-    "REQUIREMENT_DESCRIPTION_FOR",
-    "OTHER",
-];
-
-/// the whitespace spdx-rs 0.5 skips around a tag, its colon and a value's fields.
+/// the whitespace skipped around a tag, its colon and a value's fields.
 const SEPARATORS: [char; 4] = [' ', '\t', '\r', '\n'];
 
 /// shortens a line for a diagnostic.
@@ -358,7 +289,7 @@ fn elide(text: &str) -> String {
     }
 }
 
-/// the tag of a line and the value after its colon, split as spdx-rs 0.5 splits them.
+/// the tag of a line and the value after its colon.
 fn split_tag(line: &str) -> Option<(&str, &str)> {
     let line = line.trim_start_matches(SEPARATORS);
     let at = line
@@ -370,31 +301,40 @@ fn split_tag(line: &str) -> Option<(&str, &str)> {
         .map(|value| (tag, value))
 }
 
-/// reports why spdx-rs 0.5 cannot read a line that begins outside a `<text>`
-/// block, or `None` if it can, and errors on a license expression it cannot
-/// parse. `beside` and `below` are the `<text>` blocks spdx-rs would read as
-/// this line's value.
-fn unreadable_line(
-    line: &str,
-    beside: Option<&str>,
-    below: Option<&str>,
-) -> Result<Option<String>, String> {
+/// a line that begins outside a `<text>` block.
+enum Line<'a> {
+    /// blank, a `#` comment, or a `<text>` block that is the value of the tag above it.
+    Blank,
+    /// not a `tag: value` pair.
+    NotATag,
+    /// a tag and its value: the text after the colon, or the `<text>` block
+    /// beside it, or the one below it when the text after the colon is empty.
+    Tagged { tag: &'a str, value: &'a str },
+}
+
+/// reads a line that begins outside a `<text>` block. `beside` and `below` are
+/// the `<text>` blocks that can be its value.
+fn classify<'a>(line: &'a str, beside: Option<&'a str>, below: Option<&'a str>) -> Line<'a> {
     let line = line.trim_start_matches(SEPARATORS);
     if line.trim_end().is_empty() || line.starts_with('#') || line.starts_with("<text>") {
-        return Ok(None);
+        return Line::Blank;
     }
-
     let Some((tag, value)) = split_tag(line).filter(|(tag, _)| !tag.is_empty()) else {
-        return Ok(Some(format!("'{}' is not a tag-value pair", elide(line))));
+        return Line::NotATag;
     };
-    if !READABLE_TAGS.contains(&tag) {
-        return Ok(Some(format!("tag '{tag}' is not one spdx-rs 0.5 can read")));
-    }
-
     let value = value.trim_start_matches(SEPARATORS);
     let value = beside
         .or(below.filter(|_| value.is_empty()))
         .unwrap_or(value);
+    Line::Tagged { tag, value }
+}
+
+/// reports why a tag and its value are skipped, or `None` if they are read, and
+/// errors on a license expression that does not parse.
+fn unreadable_tag(tag: &str, value: &str) -> Result<Option<String>, String> {
+    if !READABLE_TAGS.contains(&tag) {
+        return Ok(Some(format!("tag '{tag}' is not an SPDX 2.3 tag")));
+    }
     if LICENSE_EXPRESSION_TAGS.contains(&tag) {
         if value.trim().is_empty() {
             return Ok(Some(format!(
@@ -416,9 +356,7 @@ fn unreadable_line(
         .map(|reason| format!("tag '{tag}': {reason}")))
 }
 
-/// reports why spdx-rs 0.5 panics on or misreads a known tag's value, or
-/// `None`. Values it rejects with an error instead are left to the truncation
-/// check.
+/// reports why a known tag's value cannot be read, or `None`.
 fn unreadable_value(tag: &str, value: &str) -> Option<String> {
     match tag {
         "PackageChecksum" | "FileChecksum" => unreadable_checksum(value),
@@ -456,14 +394,14 @@ fn unreadable_value(tag: &str, value: &str) -> Option<String> {
     }
 }
 
-/// whether spdx-rs 0.5 ends a `DocumentRef-` id before the end of its field.
+/// whether a `DocumentRef-` id holds a character other than an ASCII letter or digit, `.`, `-` or `+`.
 fn splits_document_ref(field: &str) -> bool {
     field.strip_prefix("DocumentRef-").is_some_and(|id| {
         id.contains(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '.' | '-' | '+'))
     })
 }
 
-/// reports why spdx-rs 0.5 cannot read a checksum value, or `None` if it can.
+/// reports why a checksum value cannot be read, or `None` if it can.
 fn unreadable_checksum(value: &str) -> Option<String> {
     let Some((algorithm, digest)) = value.split_once(':') else {
         return Some(format!("checksum '{}' names no algorithm", elide(value)));
@@ -476,7 +414,7 @@ fn unreadable_checksum(value: &str) -> Option<String> {
         })
 }
 
-/// reports whitespace spdx-rs 0.5 does not skip at the head of a value or field.
+/// reports whitespace other than [`SEPARATORS`] at the head of a value or field.
 fn stray_whitespace(text: &str) -> Option<String> {
     let first = text.trim_start_matches(SEPARATORS).chars().next()?;
     first
@@ -484,8 +422,8 @@ fn stray_whitespace(text: &str) -> Option<String> {
         .then(|| format!("U+{:04X} is not a space or a tab", u32::from(first)))
 }
 
-/// splits a value into `N` whitespace-separated fields as spdx-rs 0.5 does, the
-/// last running to the end of the value.
+/// splits a value into `N` whitespace-separated fields, the last running to the
+/// end of the value.
 fn fields<const N: usize>(value: &str) -> Result<[&str; N], String> {
     let mut fields = [""; N];
     let mut rest = value;
@@ -506,8 +444,8 @@ fn fields<const N: usize>(value: &str) -> Result<[&str; N], String> {
 
 /// the `<text>` blocks a tag's value runs into: per line, the text of the
 /// block opening on it, and the line whose block an empty value continues
-/// into below it. `None` where there is no such block; a block spdx-rs never
-/// closes is not one, matching [`scanned_lines`].
+/// into below it. `None` where there is no such block; a block that is never
+/// closed is not one, matching [`scanned_lines`].
 fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
     let lines: Vec<&str> = input.lines().collect();
     let mut beside = vec![None; lines.len()];
@@ -563,18 +501,28 @@ fn text_blocks(input: &str) -> (Vec<Option<String>>, Vec<Option<usize>>) {
     (beside, below)
 }
 
-/// drops the lines spdx-rs 0.5 would panic on or stop at and strips trailing
-/// whitespace outside `<text>` blocks, returning the remaining document and
-/// one diagnostic per dropped line, or an error for a line that must not be
-/// dropped.
-fn filter_unreadable_lines(input: &str) -> Result<(String, Vec<String>), Error> {
-    let mut kept = String::with_capacity(input.len());
+/// one tag of a tag-value document, with its value resolved from `<text>` blocks.
+struct Entry {
+    /// 1-based.
+    line: usize,
+    tag: String,
+    value: String,
+}
+
+/// reads the tags of a document, ignoring trailing whitespace outside `<text>`
+/// blocks. a line that cannot be read is skipped, with its `<text>` block, and
+/// named in the returned diagnostics; a license expression that does not parse
+/// is an error.
+fn read_lines(input: &str) -> Result<(Vec<Entry>, Vec<String>), Error> {
+    let mut entries = Vec::new();
     let mut dropped = Vec::new();
-    let mut in_dropped_block = false;
     let mut value_below_dropped = false;
     let (blocks, below) = text_blocks(input);
     let mut lines = scanned_lines(input).enumerate().peekable();
     while let Some((number, (line, tagged))) = lines.next() {
+        if !tagged {
+            continue;
+        }
         let ends_outside_text = lines
             .peek()
             .is_none_or(|&(_, (_, next_tagged))| next_tagged);
@@ -583,85 +531,44 @@ fn filter_unreadable_lines(input: &str) -> Result<(String, Vec<String>), Error> 
         } else {
             line
         };
-        if tagged && value_below_dropped {
+        if value_below_dropped {
+            // the `<text>` block below a skipped tag is skipped with it.
             value_below_dropped = matches!(line.trim(), "" | "#");
-        } else if tagged && line.trim() == "#" {
-            // spdx-rs would read the next non-blank line as this empty comment's text.
-            in_dropped_block = true;
-        } else if tagged {
-            let beside = blocks.get(number).and_then(Option::as_deref);
-            let below = below.get(number + 1).copied().flatten();
-            let reason = unreadable_line(line, beside, below.and_then(|at| blocks[at].as_deref()))
-                .map_err(|reason| Error::TagValue(format!("line {}: {reason}", number + 1)))?;
-            in_dropped_block = match reason {
-                Some(reason) => {
-                    dropped.push(format!("line {}: {reason}", number + 1));
-                    value_below_dropped = below.is_some()
-                        && line
-                            .split_once(':')
-                            .is_some_and(|(_, v)| v.trim().is_empty());
-                    true
-                }
-                None => false,
-            };
-        }
-        if !in_dropped_block {
-            kept.push_str(line);
-            kept.push('\n');
-        }
-    }
-    Ok((kept, dropped))
-}
-
-/// a value that occurs nowhere in `input`.
-fn unused_name(input: &str) -> String {
-    let longest_run = input.split(|c: char| c != '_').map(str::len).max();
-    format!(
-        "__spdx_rs_nameless_package{}",
-        "_".repeat(longest_run.unwrap_or(0) + 1)
-    )
-}
-
-/// fills `placeholder` into each empty tag value, which spdx-rs 0.5 would read
-/// the next line as, and into the name of each package section with no
-/// `PackageName:`, which a second `SPDXID:` in a document, package or file
-/// section marks.
-fn fill_empty_values(input: &str, placeholder: &str) -> String {
-    let named = format!("PackageName: {placeholder}");
-    let lines: Vec<(&str, bool)> = scanned_lines(input).collect();
-    let mut out = String::with_capacity(input.len());
-    let mut has_id = false;
-    for (i, &(line, tagged)) in lines.iter().enumerate() {
-        let Some((tag, value)) = split_tag(line).filter(|_| tagged) else {
-            out.push_str(line);
-            out.push('\n');
             continue;
-        };
-        match tag {
-            "PackageName" | "FileName" => has_id = false,
-            "SPDXID" => {
-                if has_id {
-                    out.push_str(&named);
-                    out.push('\n');
-                }
-                has_id = true;
+        }
+        let beside = blocks.get(number).and_then(Option::as_deref);
+        let below = below.get(number + 1).copied().flatten();
+        let (tag, value) = match classify(line, beside, below.and_then(|at| blocks[at].as_deref()))
+        {
+            Line::Blank => continue,
+            Line::NotATag => {
+                dropped.push(format!(
+                    "line {}: '{}' is not a tag-value pair",
+                    number + 1,
+                    elide(line)
+                ));
+                continue;
             }
-            _ => {}
-        }
-        let text_below = || {
-            lines[i + 1..]
-                .iter()
-                .find(|(below, _)| !below.trim().is_empty())
-                .is_some_and(|(below, _)| below.trim_start().starts_with("<text>"))
+            Line::Tagged { tag, value } => (tag, value),
         };
-        if value.trim().is_empty() && !text_below() {
-            out.push_str(&format!("{tag}: {placeholder}"));
-        } else {
-            out.push_str(line);
+        let reason = unreadable_tag(tag, value)
+            .map_err(|reason| Error::TagValue(format!("line {}: {reason}", number + 1)))?;
+        match reason {
+            Some(reason) => {
+                dropped.push(format!("line {}: {reason}", number + 1));
+                value_below_dropped = below.is_some()
+                    && line
+                        .split_once(':')
+                        .is_some_and(|(_, v)| v.trim().is_empty());
+            }
+            None => entries.push(Entry {
+                line: number + 1,
+                tag: tag.to_string(),
+                value: value.to_string(),
+            }),
         }
-        out.push('\n');
     }
-    out
+    Ok((entries, dropped))
 }
 
 /// joins diagnostics, keeping a warning bounded on a badly broken document.
@@ -743,11 +650,9 @@ impl SpdxReader {
 
     /// parses an SPDX tag-value document from a reader.
     ///
-    /// lines the underlying parser cannot read — an unknown tag, a line that
-    /// is not a tag-value pair — are dropped and named in [`Sbom::warnings`].
-    /// a document the parser still cut short is reported as an error rather
-    /// than returned as a partial SBOM, and so is a license expression the
-    /// SPDX expression parser rejects.
+    /// lines that cannot be read, such as an unknown tag or a line that is not
+    /// a tag-value pair, are dropped and named in [`Sbom::warnings`]. a license
+    /// expression the SPDX expression parser rejects is an error.
     ///
     /// # Example
     ///
@@ -770,153 +675,14 @@ impl SpdxReader {
 
         Self::check_spdx_version_tag_value(input)?;
 
-        // spdx-rs 0.5 panics on an unknown tag and discards everything below a line it cannot read.
-        let (input, unreadable) = filter_unreadable_lines(input)?;
-        // spdx-rs 0.5 misreads an empty value and a package section with no PackageName.
-        let placeholder = unused_name(&input);
-        let input = fill_empty_values(&input, &placeholder);
-        let input = input.as_str();
+        let (entries, unreadable) = read_lines(input)?;
+        let mut sbom = Self::spdx_to_sbom(tag_value::document(entries)?);
 
-        // spdx-rs 0.5 has two further tag-value parsing quirks we work around:
-        //
-        // 1. CreationInfo default contamination: the parser starts with
-        //    CreationInfo::default() which includes phantom creators
-        //    (e.g. "Tool: LicenseFind-1.0") that get mixed in with real
-        //    ones. We re-parse Creator lines from the raw input.
-        //
-        // 2. Last ExternalRef dropped: the parser uses an "in progress"
-        //    pattern for ExternalRef that only flushes when the next
-        //    PackageName is seen. The very last package's last ExternalRef
-        //    is never flushed. We append a sentinel package to trigger
-        //    the flush, then strip it from the result.
-        let patched = format!(
-            "{}\n\nPackageName: __spdx_rs_flush_sentinel__\nSPDXID: SPDXRef-FLUSH-SENTINEL\nPackageDownloadLocation: NOASSERTION\nFilesAnalyzed: false\n",
-            input.trim_end()
-        );
-
-        // detect whether the flush-sentinel was needed: does the last
-        // package in the raw input have ExternalRef lines?  If so, spdx-rs
-        // 0.5 would have silently dropped the last one without the sentinel.
-        let mut last_pkg_has_ext_ref = false;
-        for line in tag_lines(input) {
-            if line.starts_with("PackageName:") {
-                last_pkg_has_ext_ref = false;
-            } else if line.starts_with("ExternalRef:") {
-                last_pkg_has_ext_ref = true;
-            }
-        }
-
-        let mut spdx_doc =
-            spdx_from_tag_value(&patched).map_err(|e| Error::TagValue(e.to_string()))?;
-
-        // the sentinel is the document's last package, so its absence means the
-        // parser stopped somewhere above it.
-        let reached_end = spdx_doc
-            .package_information
-            .iter()
-            .any(|p| p.package_name == "__spdx_rs_flush_sentinel__");
-        spdx_doc
-            .package_information
-            .retain(|p| p.package_name != "__spdx_rs_flush_sentinel__");
-        let clear = |value: &mut String| {
-            if *value == placeholder {
-                value.clear();
-            }
-        };
-        let creation_info = &mut spdx_doc.document_creation_information.creation_info;
-        creation_info.creators.iter_mut().for_each(clear);
-        for package in &mut spdx_doc.package_information {
-            clear(&mut package.package_name);
-            clear(&mut package.package_spdx_identifier);
-            [
-                &mut package.package_version,
-                &mut package.package_supplier,
-                &mut package.package_summary_description,
-                &mut package.package_detailed_description,
-            ]
-            .into_iter()
-            .flatten()
-            .for_each(clear);
-        }
-        for file in &mut spdx_doc.file_information {
-            clear(&mut file.file_spdx_identifier);
-        }
-        for relationship in &mut spdx_doc.relationships {
-            clear(&mut relationship.spdx_element_id);
-            clear(&mut relationship.related_spdx_element);
-        }
-
-        let raw_packages: Vec<&str> = tag_lines(input)
-            .filter_map(|line| match split_tag(line)? {
-                ("PackageName", name) if name.trim() == placeholder => Some(""),
-                ("PackageName", name) => Some(name.trim()),
-                _ => None,
-            })
-            .collect();
-        let read = spdx_doc.package_information.len();
-        if read < raw_packages.len() {
-            return Err(Error::TagValue(format!(
-                "the parser stopped early and read only {read} of the document's {} packages: \
-                 '{}' and everything below it was lost. a tag above it carries a value the \
-                 parser cannot read",
-                raw_packages.len(),
-                raw_packages[read],
-            )));
-        }
-        if !reached_end {
-            return Err(Error::TagValue(format!(
-                "the parser stopped early: all {read} packages were read, but the document \
-                 below the last one was not. a tag there carries a value the parser cannot read"
-            )));
-        }
-
-        // quirk 1: creator contamination.
-        let parsed_creators = spdx_doc
-            .document_creation_information
-            .creation_info
-            .creators
-            .clone();
-        let actual_creators: Vec<String> = tag_lines(input)
-            .filter_map(|line| line.strip_prefix("Creator:").map(str::trim))
-            .map(|creator| if creator == placeholder { "" } else { creator }.to_string())
-            .collect();
-        spdx_doc
-            .document_creation_information
-            .creation_info
-            .creators = actual_creators.clone();
-
-        let mut sbom = Self::spdx_to_sbom(spdx_doc.into());
-
-        // emit diagnostics for workarounds that fired.
         if !unreadable.is_empty() {
             sbom.warnings.push(format!(
-                "SPDX: dropped {} unreadable line(s) that would otherwise have truncated the \
-                 document: {}",
+                "SPDX: dropped {} unreadable line(s): {}",
                 unreadable.len(),
                 joined(&unreadable)
-            ));
-        }
-
-        if last_pkg_has_ext_ref {
-            sbom.warnings.push(
-                "SPDX: applied flush-sentinel workaround — spdx-rs 0.5 silently \
-                 drops the last ExternalRef of the last package without it"
-                    .into(),
-            );
-        }
-
-        let phantom: Vec<_> = parsed_creators
-            .iter()
-            .filter(|c| !actual_creators.contains(c))
-            .collect();
-        if !phantom.is_empty() {
-            sbom.warnings.push(format!(
-                "SPDX: stripped phantom creator(s) injected by spdx-rs 0.5 default: {}",
-                phantom
-                    .iter()
-                    .map(|s| format!("'{s}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
             ));
         }
 
@@ -1025,7 +791,6 @@ impl SpdxReader {
             .chain(document.snippets)
             .map(|element| element.spdx_id)
             .collect();
-        // spdx-rs keeps the `DocumentRef-` prefix from JSON but strips it from tag-value.
         let external_documents: BTreeSet<String> = document
             .external_document_refs
             .iter()
@@ -1125,9 +890,8 @@ impl SpdxReader {
     /// pre-check the `SPDXVersion` tag in a tag-value document.
     ///
     /// scans for the first `SPDXVersion:` tag and rejects non-2.x versions.
-    /// also rejects input that has no `SPDXVersion:` at all, since the
-    /// spdx-rs tag-value parser is permissive enough to "parse" arbitrary
-    /// text files without error.
+    /// also rejects input that has no `SPDXVersion:` at all, so an arbitrary
+    /// text file is not read as an empty document.
     fn check_spdx_version_tag_value(input: &str) -> Result<(), Error> {
         for line in tag_lines(input) {
             if let Some(value) = line.strip_prefix("SPDXVersion:") {
@@ -2597,7 +2361,7 @@ PackageCopyrightText: NOASSERTION
     }
 
     #[test]
-    fn test_tag_value_flush_sentinel_warns_when_last_pkg_has_external_ref() {
+    fn test_tag_value_last_external_ref_of_the_last_package_is_read() {
         let tv = "\
 SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
@@ -2617,42 +2381,10 @@ ExternalRef: PACKAGE-MANAGER purl pkg:cargo/serde@1.0.200
 ";
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
 
-        assert!(
-            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
-            "should warn about flush-sentinel workaround when last package has ExternalRef: {:?}",
-            sbom.warnings
-        );
-        // the ExternalRef should still be parsed correctly
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
         assert_eq!(
             sbom.components[0].purl,
             Some("pkg:cargo/serde@1.0.200".to_string())
-        );
-    }
-
-    #[test]
-    fn test_tag_value_no_flush_sentinel_warning_without_external_ref() {
-        let tv = "\
-SPDXVersion: SPDX-2.3
-DataLicense: CC0-1.0
-SPDXID: SPDXRef-DOCUMENT
-DocumentName: test
-DocumentNamespace: http://spdx.org/spdxdocs/test
-Creator: Tool: manual
-Created: 2023-01-01T00:00:00Z
-
-PackageName: pkg-a
-SPDXID: SPDXRef-pkg-a
-PackageVersion: 1.0.0
-PackageDownloadLocation: NOASSERTION
-PackageLicenseConcluded: NOASSERTION
-PackageCopyrightText: NOASSERTION
-";
-        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
-
-        assert!(
-            !sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
-            "should NOT warn about flush-sentinel when last package has no ExternalRef: {:?}",
-            sbom.warnings
         );
     }
 
@@ -2699,31 +2431,7 @@ Creator: Tool: not-a-real-tool
     }
 
     #[test]
-    fn test_tag_value_text_block_does_not_mask_phantom_creator() {
-        let quoted = format!(
-            "{TV_HEADER}PackageDescription: <text>quotes a document header:
-Creator: Tool: LicenseFind-1.0
-</text>
-"
-        );
-        let control = SpdxReader::read_tag_value(TV_HEADER.as_bytes()).unwrap();
-        let sbom = SpdxReader::read_tag_value(quoted.as_bytes()).unwrap();
-
-        // the quoted creator line must not hide the injected one it spells
-        assert!(
-            control
-                .warnings
-                .iter()
-                .any(|w| w.contains("stripped phantom creator")
-                    && w.contains("'Tool: LicenseFind-1.0'")),
-            "{:?}",
-            control.warnings
-        );
-        assert_eq!(sbom.warnings, control.warnings);
-    }
-
-    #[test]
-    fn test_tag_value_external_ref_inside_text_block_does_not_warn() {
+    fn test_tag_value_external_ref_inside_text_block_is_text() {
         let tv = format!(
             "{TV_HEADER}PackageComment: <text>documented like so:
 ExternalRef: PACKAGE-MANAGER purl pkg:cargo/nope@0.0.0
@@ -2733,15 +2441,11 @@ ExternalRef: PACKAGE-MANAGER purl pkg:cargo/nope@0.0.0
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
 
         assert!(sbom.components[0].purl.is_none());
-        assert!(
-            !sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
-            "quoted ExternalRef should not trip the flush-sentinel warning: {:?}",
-            sbom.warnings
-        );
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
     }
 
     #[test]
-    fn test_tag_value_package_name_inside_text_block_still_warns() {
+    fn test_tag_value_package_name_inside_text_block_is_text() {
         let tv = format!(
             "{TV_HEADER}ExternalRef: PACKAGE-MANAGER purl pkg:cargo/pkg-a@1.0.0
 PackageComment: <text>see also:
@@ -2755,11 +2459,8 @@ PackageName: some-other-thing
             sbom.components[0].purl,
             Some("pkg:cargo/pkg-a@1.0.0".to_string())
         );
-        assert!(
-            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
-            "quoted PackageName should not mask the flush-sentinel warning: {:?}",
-            sbom.warnings
-        );
+        assert_eq!(sbom.components.len(), 1);
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
     }
 
     #[test]
@@ -2783,16 +2484,11 @@ ExternalRef: PACKAGE-MANAGER purl pkg:cargo/pkg-a@1.0.0
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
         assert_eq!(sbom.components.len(), 1);
         assert_eq!(sbom.metadata.tools, vec!["syft-1.2.3".to_string()]);
-        assert!(
-            !sbom.warnings.iter().any(|w| w.contains("syft-1.2.3")),
-            "a real creator must not be reported as a phantom: {:?}",
-            sbom.warnings
+        assert_eq!(
+            sbom.components[0].purl.as_deref(),
+            Some("pkg:cargo/pkg-a@1.0.0")
         );
-        assert!(
-            sbom.warnings.iter().any(|w| w.contains("flush-sentinel")),
-            "the flush-sentinel diagnostic must survive an unterminated block: {:?}",
-            sbom.warnings
-        );
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
     }
 
     #[test]
@@ -3104,29 +2800,62 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_tag_value_residual_truncation_is_an_error_not_a_partial_sbom() {
-        for (middle, count, lost) in [
-            (
-                "SnippetByteRange: not-a-range",
-                "read only 1 of the document's 2 packages",
-                "'omega'",
-            ),
+    fn test_tag_value_unresolved_relationship_warnings_follow_the_document() {
+        let tv = tag_value_around(
+            "Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-zz\n\
+             Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-aa\n\
+             Relationship: SPDXRef-alpha DEPENDS_ON SPDXRef-mm",
+        );
+        let first = SpdxReader::read_tag_value(tv.as_bytes()).unwrap().warnings;
+        let missing: Vec<&str> = first
+            .iter()
+            .filter_map(|w| w.split("relatedSpdxElement '").nth(1))
+            .filter_map(|w| w.split('\'').next())
+            .collect();
+        assert_eq!(missing, ["SPDXRef-zz", "SPDXRef-aa", "SPDXRef-mm"]);
+        for _ in 0..12 {
+            let again = SpdxReader::read_tag_value(tv.as_bytes()).unwrap().warnings;
+            assert_eq!(again, first);
+        }
+    }
+
+    #[test]
+    fn test_tag_value_created_must_be_a_timestamp() {
+        let tv = tag_value_around("");
+        let err = SpdxReader::read_tag_value(
+            tv.replacen("Created: 2024-01-01T00:00:00Z", "Created: yesterday", 1)
+                .as_bytes(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("line 7: tag 'Created': 'yesterday' is not an RFC 3339 timestamp"),
+            "{err}"
+        );
+        let err = SpdxReader::read_tag_value(
+            tv.replacen("Created: 2024-01-01T00:00:00Z\n", "", 1)
+                .as_bytes(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no Created tag found"), "{err}");
+    }
+
+    #[test]
+    fn test_tag_value_unparsed_tag_values_do_not_cut_the_document_short() {
+        for (middle, names) in [
+            ("SnippetByteRange: not-a-range", &["alpha", "omega"][..]),
             (
                 "SnippetByteRange: not-a-range\n\nSPDXID: SPDXRef-beta",
-                "read only 1 of the document's 3 packages",
-                "'' and",
+                &["", "alpha", "omega"],
             ),
             (
                 "PackageName : beta\nSPDXID: SPDXRef-beta\nSnippetByteRange: not-a-range",
-                "read only 2 of the document's 3 packages",
-                "'omega'",
+                &["alpha", "beta", "omega"],
             ),
         ] {
-            let tv = tag_value_around(middle);
-            let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
-            let message = err.to_string();
-            assert!(message.contains(count), "{message}");
-            assert!(message.contains(lost), "{message}");
+            let sbom = SpdxReader::read_tag_value(tag_value_around(middle).as_bytes()).unwrap();
+            assert_eq!(component_names(&sbom), names, "{middle}");
+            assert!(sbom.warnings.is_empty(), "{middle}: {:?}", sbom.warnings);
         }
     }
 
@@ -3172,8 +2901,8 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_tag_value_package_named_like_the_nameless_placeholder_keeps_its_name() {
-        let name = "__spdx_rs_nameless_package__";
+    fn test_tag_value_package_named_like_a_placeholder_keeps_its_name() {
+        let name = "__nameless_package__";
         let tv = tag_value_around("\nSPDXID: SPDXRef-beta\n").replacen("alpha", name, 1);
         let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
         assert_eq!(component_names(&sbom), ["", name, "omega"], "{tv}");
@@ -3233,29 +2962,21 @@ PackageDownloadLocation: NOASSERTION
             Some("2024-01-01T00:00:00Z")
         );
         assert_eq!(sbom.metadata.authors, [""]);
-        assert!(
-            !sbom.warnings.iter().any(|w| w.contains("__spdx_rs")),
-            "{:?}",
-            sbom.warnings
-        );
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
     }
 
     #[test]
-    fn test_tag_value_truncation_below_the_last_package_is_an_error() {
+    fn test_tag_value_unparsed_tag_value_below_the_last_package_is_ignored() {
         let tv = format!(
             "{}SnippetByteRange: not-a-range\n",
             tag_value_around("PackageComment: fine")
         );
-        let err = SpdxReader::read_tag_value(tv.as_bytes()).unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message
-                .contains("all 2 packages were read, but the document below the last one was not"),
-            "{message}"
-        );
+        let sbom = SpdxReader::read_tag_value(tv.as_bytes()).unwrap();
+        assert_eq!(component_names(&sbom), ["alpha", "omega"]);
+        assert!(sbom.warnings.is_empty(), "{:?}", sbom.warnings);
     }
 
-    /// a value each mirrored tag's own parser accepts.
+    /// a value each tag accepts.
     fn sample_tag_value(tag: &str) -> &'static str {
         match tag {
             "SPDXVersion" => "SPDX-2.3",
@@ -3286,7 +3007,7 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_every_mirrored_tag_is_one_spdx_rs_can_read() {
+    fn test_every_spdx_tag_is_read() {
         for tag in READABLE_TAGS {
             // a second PackageName would start a package rather than annotate one.
             if *tag == "PackageName" {
@@ -3308,9 +3029,9 @@ PackageDownloadLocation: NOASSERTION
         }
     }
 
-    /// the `SpdxExpression::parse(value).unwrap()` sites in spdx-rs 0.5
-    /// `parsers/mod.rs`, named here rather than read from the mirror.
-    const EXPRESSION_UNWRAP_SITES: &[&str] = &[
+    /// the tags whose value must be a license expression, named here rather
+    /// than read from `LICENSE_EXPRESSION_TAGS`.
+    const EXPRESSION_TAGS: &[&str] = &[
         "LicenseConcluded",
         "LicenseInfoInFile",
         "PackageLicenseConcluded",
@@ -3318,7 +3039,7 @@ PackageDownloadLocation: NOASSERTION
         "SnippetLicenseConcluded",
     ];
 
-    /// the section a license tag must sit in for spdx-rs to reach its unwrap.
+    /// the section a license tag belongs to.
     fn section_opening(tag: &str) -> &'static str {
         match tag {
             "LicenseConcluded" | "LicenseInfoInFile" => {
@@ -3333,7 +3054,7 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_empty_license_expression_is_dropped_not_panicked() {
-        for tag in EXPRESSION_UNWRAP_SITES {
+        for tag in EXPRESSION_TAGS {
             for value in ["", " ", "   \t  "] {
                 let tv = tag_value_around(&format!("{}{tag}:{value}", section_opening(tag)));
                 let sbom = SpdxReader::read_tag_value(tv.as_bytes())
@@ -3350,7 +3071,7 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_license_expression_that_parses_is_kept() {
-        for tag in EXPRESSION_UNWRAP_SITES {
+        for tag in EXPRESSION_TAGS {
             for value in ["MIT", "MIT OR Apache-2.0", "NOASSERTION", "NONE"] {
                 let tv = tag_value_around(&format!("{}{tag}: {value}", section_opening(tag)));
                 let sbom = SpdxReader::read_tag_value(tv.as_bytes())
@@ -3367,7 +3088,7 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_license_expression_below_its_tag_is_not_the_empty_one() {
-        for tag in EXPRESSION_UNWRAP_SITES {
+        for tag in EXPRESSION_TAGS {
             for gap in ["", "\n", "\n\n"] {
                 let tv = tag_value_around(&format!(
                     "{}{tag}:{gap}\n<text>MIT</text>",
@@ -3387,7 +3108,7 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_empty_license_expression_in_a_text_block_is_dropped_not_panicked() {
-        for tag in EXPRESSION_UNWRAP_SITES {
+        for tag in EXPRESSION_TAGS {
             for spelling in [
                 format!("{tag}: <text></text>"),
                 format!("{tag}: <text>   </text>"),
@@ -3411,7 +3132,7 @@ PackageDownloadLocation: NOASSERTION
 
     #[test]
     fn test_tag_value_license_expression_in_a_text_block_is_kept() {
-        for tag in EXPRESSION_UNWRAP_SITES {
+        for tag in EXPRESSION_TAGS {
             for spelling in [
                 format!("{tag}: <text>MIT</text>"),
                 format!("{tag}:\n<text>MIT</text>"),
@@ -3624,7 +3345,7 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_tag_value_whitespace_spdx_rs_does_not_skip_is_skipped_or_an_error() {
+    fn test_tag_value_whitespace_other_than_a_space_or_tab_is_skipped_or_an_error() {
         for ws in ['\u{a0}', '\u{b}', '\u{c}', '\u{85}', '\u{2003}', '\u{3000}'] {
             for (line, skipped) in [
                 (
@@ -3686,8 +3407,8 @@ PackageDownloadLocation: NOASSERTION
     }
 
     #[test]
-    fn test_mirrored_license_expression_tags_are_readable_tags() {
-        assert_eq!(LICENSE_EXPRESSION_TAGS, EXPRESSION_UNWRAP_SITES);
+    fn test_license_expression_tags_are_spdx_tags() {
+        assert_eq!(LICENSE_EXPRESSION_TAGS, EXPRESSION_TAGS);
         for tag in LICENSE_EXPRESSION_TAGS {
             assert!(READABLE_TAGS.contains(tag), "{tag}");
         }
@@ -4850,7 +4571,7 @@ SnippetByteRange: 1:10
     }
 
     #[test]
-    fn test_json_spdx_rs_refused_over_a_field_the_reader_does_not_map_is_read() {
+    fn test_json_with_a_bad_value_in_a_field_the_reader_does_not_map_is_read() {
         type Edit = fn(&mut serde_json::Map<String, serde_json::Value>);
         let rows: &[(&str, Edit)] = &[
             ("no documentNamespace", |d| {
@@ -4933,11 +4654,9 @@ SnippetByteRange: 1:10
     }
 
     #[test]
-    fn test_checksum_algorithms_keep_the_names_spdx_rs_gave_them() {
+    fn test_checksum_algorithms_read_the_same_in_json_and_tag_value() {
         for algorithm in document::CHECKSUM_ALGORITHMS {
-            let spdx_rs: spdx_rs::models::Algorithm =
-                serde_json::from_value(serde_json::json!(algorithm)).unwrap();
-            let expected = canonical_algorithm_name(&format!("{spdx_rs:?}"));
+            let expected = canonical_algorithm_name(algorithm);
 
             let json = one_package_document(serde_json::json!({
                 "packages": [{
