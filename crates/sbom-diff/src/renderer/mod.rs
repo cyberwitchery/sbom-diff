@@ -153,6 +153,31 @@ impl<'a> Labels<'a> {
     }
 }
 
+/// an error writing a report.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Csv(#[from] csv::Error),
+}
+
+impl Error {
+    /// the kind of the writer's io error behind this one, if there is one.
+    pub fn io_error_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            Error::Io(e) => Some(e.kind()),
+            Error::Json(e) => e.io_error_kind(),
+            Error::Csv(e) => match e.kind() {
+                csv::ErrorKind::Io(e) => Some(e.kind()),
+                _ => None,
+            },
+        }
+    }
+}
+
 /// trait for rendering a [`Diff`] to an output stream.
 pub trait Renderer {
     /// writes the formatted diff to the provided writer.
@@ -161,7 +186,7 @@ pub trait Renderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), Error>;
 }
 
 /// trait for rendering a summary (counts only, no component details) to an output stream.
@@ -174,7 +199,7 @@ pub trait SummaryRenderer {
         diff: &Diff,
         opts: &RenderOptions,
         writer: &mut W,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), Error>;
 }
 
 pub(super) trait FieldChangeFormatter {

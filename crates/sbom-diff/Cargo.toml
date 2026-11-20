@@ -9,14 +9,25 @@ documentation = "https://docs.rs/sbom-diff"
 description = "diff engine and cli for sbom comparison"
 readme = "readme.md"
 
+[features]
+default = ["cli"]
+# the sbom-diff binary and the clap value parsing of `Field` and `FailOn`.
+# library users can turn it off with `default-features = false`.
+cli = ["dep:clap", "dep:anyhow"]
+
+[[bin]]
+name = "sbom-diff"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
 sbom-model = { path = "../sbom-model", version = "0.11.0" }
 sbom-model-cyclonedx = { path = "../sbom-model-cyclonedx", version = "0.11.0" }
 sbom-model-spdx = { path = "../sbom-model-spdx", version = "0.11.0" }
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = { workspace = true }
+anyhow = { workspace = true, optional = true }
 thiserror = { workspace = true }
 packageurl = { workspace = true }
 csv = "1.3"

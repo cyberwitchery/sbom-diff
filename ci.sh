@@ -6,12 +6,13 @@ cargo fmt --check
 
 echo "==> clippy"
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
 echo "==> test (all features)"
 cargo test --workspace --all-features
 
 echo "==> test (no features)"
-cargo test --workspace
+cargo test --workspace --no-default-features
 
 echo "==> doc"
 cargo doc --workspace --all-features --no-deps

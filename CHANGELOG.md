@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- removed from the library: `copyleft_introduced` (use `copyleft_obligations_added`), `compare_versions`, `compare_versions_for_ecosystem` and `is_version_downgrade` (use `Version` or `is_version_downgrade_for_ecosystem`), `Diff::display_name`, `Diff::into_group_by_ecosystem` and the deprecated `Diff::filter_by_ecosystem` (use `DiffOptions::ecosystems`)
+- clap and anyhow are now behind a default `cli` feature, so a library user can drop them with `default-features = false`. the renderers return `renderer::Error` instead of `anyhow::Error`
 - `sbom-model` adds `normalize_timestamp`, which the cyclonedx and spdx readers use for `Metadata::timestamp` in place of chrono; chrono is unmaintained (RUSTSEC-2026-0543) and now only reaches sbom-diff through spdx-rs. timestamps read as before
 
 ## [0.11.0] - 2026-11-13

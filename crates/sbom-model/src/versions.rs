@@ -1550,29 +1550,12 @@ fn apk_tail_cmp(a: Option<&ApkPart>, b: Option<&ApkPart>) -> Ordering {
     token(b).cmp(&token(a))
 }
 
-/// convenience function: returns `true` if `new_ver` is a downgrade from `old_ver`.
-///
-/// parses both strings with [`Version::parse_lenient`] and delegates to
-/// [`Version::is_downgrade`].
-pub fn is_version_downgrade(old_ver: &str, new_ver: &str) -> bool {
-    Version::parse_lenient(old_ver).is_downgrade(&Version::parse_lenient(new_ver))
-}
-
-/// convenience function: orders two version strings, returning `None` when the
-/// ordering is unknown.
-///
-/// parses both strings with [`Version::parse_lenient`] and delegates to
-/// [`Version::partial_cmp_lenient`].
-pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
-    Version::parse_lenient(a).partial_cmp_lenient(&Version::parse_lenient(b))
-}
-
 /// convenience function: returns `true` if `new_ver` is a downgrade from
 /// `old_ver` under `ecosystem`'s version rules.
 ///
 /// parses both strings with [`Version::parse_for_ecosystem`] and delegates to
-/// [`Version::is_downgrade`]. a `None` ecosystem is exactly
-/// [`is_version_downgrade`].
+/// [`Version::is_downgrade`]. a `None` ecosystem reads both with
+/// [`Version::parse_lenient`].
 ///
 /// # Examples
 ///
@@ -1600,48 +1583,26 @@ pub fn is_version_downgrade_for_ecosystem(
         .is_downgrade(&Version::parse_for_ecosystem(ecosystem, new_ver))
 }
 
-/// convenience function: orders two version strings under `ecosystem`'s version
-/// rules, returning `None` when the ordering is unknown.
-///
-/// parses both strings with [`Version::parse_for_ecosystem`] and delegates to
-/// [`Version::partial_cmp_lenient`]. a `None` ecosystem is exactly
-/// [`compare_versions`].
-///
-/// # Examples
-///
-/// ```
-/// use std::cmp::Ordering;
-/// use sbom_model::versions::compare_versions_for_ecosystem;
-///
-/// assert_eq!(
-///     compare_versions_for_ecosystem(Some("deb"), "1.0~rc1", "1.0"),
-///     Some(Ordering::Less)
-/// );
-///
-/// // a `^` post-release snapshot, which the Debian alphabet has no reading for
-/// assert_eq!(
-///     compare_versions_for_ecosystem(Some("rpm"), "1.0^20200101git", "1.0"),
-///     Some(Ordering::Greater)
-/// );
-///
-/// // apk pads nothing: a missing part is absent, not zero
-/// assert_eq!(
-///     compare_versions_for_ecosystem(Some("apk"), "1.0", "1.0.0"),
-///     Some(Ordering::Less)
-/// );
-/// ```
-pub fn compare_versions_for_ecosystem(
-    ecosystem: Option<&str>,
-    a: &str,
-    b: &str,
-) -> Option<Ordering> {
-    Version::parse_for_ecosystem(ecosystem, a)
-        .partial_cmp_lenient(&Version::parse_for_ecosystem(ecosystem, b))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_version_downgrade(old: &str, new: &str) -> bool {
+        is_version_downgrade_for_ecosystem(None, old, new)
+    }
+
+    fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+        compare_versions_for_ecosystem(None, a, b)
+    }
+
+    fn compare_versions_for_ecosystem(
+        ecosystem: Option<&str>,
+        a: &str,
+        b: &str,
+    ) -> Option<Ordering> {
+        Version::parse_for_ecosystem(ecosystem, a)
+            .partial_cmp_lenient(&Version::parse_for_ecosystem(ecosystem, b))
+    }
 
     fn maven_cmp(a: &str, b: &str) -> Ordering {
         super::maven_cmp(a, b).unwrap_or_else(|| panic!("{a} vs {b} exceeds the depth cap"))
