@@ -50,17 +50,15 @@ both adapters produce:
 
 ## spdx -> model
 
-- parser: `sbom-model-spdx`; json and xml are read with `serde_json` into the reader's own types, tag-value with `spdx-rs`
+- parser: `sbom-model-spdx`; json and xml are read with `serde_json` into the reader's own types, tag-value into the same types with the reader's own parser
 - input formats: json, xml, and tag-value (2.x; 2.3 field names)
-- tag-value handling: the underlying parser stops at the first line it cannot read and throws away everything below it, so those lines are removed before parsing and listed in the parser warnings:
-  - a line that is not a `Tag: value` pair, or whose tag is not one the parser recognizes
-  - a value the parser crashes on: an unrecognized `ExternalRef` category, checksum algorithm, `Relationship` type, `FileType`, or `AnnotationType`
+- tag-value handling: a line the reader cannot read is skipped and listed in the parser warnings, and the rest of the document is read:
+  - a line that is not a `Tag: value` pair, or whose tag is not an SPDX 2.3 tag
+  - an unrecognized `ExternalRef` category, checksum algorithm, `Relationship` type, `FileType`, or `AnnotationType`, or a `DocumentRef-` id holding a character other than an ASCII letter or digit, `.`, `-` or `+`
   - an empty or whitespace-only license expression on `PackageLicenseConcluded`, `PackageLicenseDeclared`, `LicenseConcluded`, `LicenseInfoInFile` or `SnippetLicenseConcluded`, whether written on the tag's own line or delivered as a `<text>` block beside or below it
   - a `<text>` block belongs to its tag's value, so its interior is never read as a tag line, and dropping a tag drops its whole block
-  - a document the parser still cuts short is reported as an error naming the first package lost, never returned as a partial SBOM
-- tag-value inputs that still abort the process rather than produce a diagnostic. all are `spdx-rs` panics on input this reader cannot recognize line by line, and all are the same on `main`:
-  - a *non-empty* license expression the SPDX expression parser rejects (`MIT AND`, `(MIT`) on one of the five tags above. only an empty value is caught; a non-empty one needs an expression-level parse this reader does not do
-  - a `<text>` block used as the value of one of the enum-valued tags above (`FileType: <text>NOTATYPE</text>`). a `<text>` value can run past its own line, so its content is not judged, and an unrecognized one reaches the parser's crash
+- tag-value errors: a non-empty license expression the SPDX expression parser rejects on one of those five tags, a `Created` that is not an RFC 3339 timestamp, and a document with no `Created`
+- tag-value structure: a `PackageName` opens a package and a `FileName` a file, and an `SPDXID` names the document, package or file it follows; a second `SPDXID` in one of them opens a package with no name. package tags apply to the last package opened, and a tag given twice keeps its last value
 - json handling: only the properties the reader maps are read, so the value of any other property is not checked. a property the SPDX 2.3 schema does not define on the document (other than `$schema`) or on a package, a property given twice on either, a missing `spdxVersion`, `SPDXID`, `creationInfo` or package `name` or `SPDXID`, a relationship type or package checksum algorithm the SPDX 2.3 schema does not list, a package license expression the SPDX expression parser rejects, and a `created` that is not a date and time are errors
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
   - root element: `<Document>` or `<SpdxDocument>`

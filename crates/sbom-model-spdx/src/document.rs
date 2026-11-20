@@ -78,7 +78,7 @@ pub(crate) const CHECKSUM_ALGORITHMS: &[&str] = &[
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Document {
     #[serde(rename = "spdxVersion")]
-    _spdx_version: String,
+    pub _spdx_version: String,
     #[serde(rename = "SPDXID")]
     pub spdx_id: String,
     #[serde(default)]
@@ -93,13 +93,13 @@ pub(crate) struct Document {
     #[serde(default)]
     pub relationships: Vec<Relationship>,
     #[serde(flatten)]
-    _unread: UnreadDocumentProperties,
+    pub _unread: UnreadDocumentProperties,
 }
 
 /// the document properties the reader does not read, declared so that an unknown one is still an error.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct UnreadDocumentProperties {
+pub(crate) struct UnreadDocumentProperties {
     #[serde(rename = "$schema")]
     _schema: Option<IgnoredAny>,
     _annotations: Option<IgnoredAny>,
@@ -153,13 +153,13 @@ pub(crate) struct Package {
     #[serde(default)]
     pub external_refs: Vec<ExternalRef>,
     #[serde(flatten)]
-    _unread: UnreadPackageProperties,
+    pub _unread: UnreadPackageProperties,
 }
 
 /// the package properties the reader does not read, declared so that an unknown one is still an error.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct UnreadPackageProperties {
+pub(crate) struct UnreadPackageProperties {
     _annotations: Option<IgnoredAny>,
     _attribution_texts: Option<IgnoredAny>,
     _built_date: Option<IgnoredAny>,
@@ -228,93 +228,5 @@ fn one_of<'de, D: Deserializer<'de>>(
         Ok(value)
     } else {
         Err(D::Error::unknown_variant(&value, values))
-    }
-}
-
-/// the name spdx-rs serializes a value under, e.g. `SHA3-256` or `DEPENDS_ON`.
-fn spdx_rs_name<T: serde::Serialize + std::fmt::Debug>(value: &T) -> String {
-    match serde_json::to_value(value) {
-        Ok(serde_json::Value::String(name)) => name,
-        _ => format!("{value:?}"),
-    }
-}
-
-/// temporary: tag-value is still parsed by spdx-rs until the reader has its own parser (#181).
-impl From<spdx_rs::models::SPDX> for Document {
-    fn from(spdx: spdx_rs::models::SPDX) -> Self {
-        let info = spdx.document_creation_information;
-        Document {
-            _spdx_version: info.spdx_version,
-            spdx_id: info.spdx_identifier,
-            external_document_refs: info
-                .external_document_references
-                .into_iter()
-                .map(|reference| ExternalDocumentRef {
-                    external_document_id: reference.id_string,
-                })
-                .collect(),
-            creation_info: CreationInfo {
-                creators: info.creation_info.creators,
-                created: {
-                    let created = info.creation_info.created.to_rfc3339();
-                    sbom_model::normalize_timestamp(&created).unwrap_or(created)
-                },
-            },
-            packages: spdx
-                .package_information
-                .into_iter()
-                .map(|package| Package {
-                    name: package.package_name,
-                    spdx_id: package.package_spdx_identifier,
-                    version_info: package.package_version,
-                    supplier: package.package_supplier,
-                    checksums: package
-                        .package_checksum
-                        .into_iter()
-                        .map(|checksum| Checksum {
-                            algorithm: spdx_rs_name(&checksum.algorithm),
-                            checksum_value: checksum.value,
-                        })
-                        .collect(),
-                    license_concluded: package.concluded_license,
-                    license_declared: package.declared_license,
-                    summary: package.package_summary_description,
-                    description: package.package_detailed_description,
-                    external_refs: package
-                        .external_reference
-                        .into_iter()
-                        .map(|reference| ExternalRef {
-                            reference_type: reference.reference_type,
-                            reference_locator: reference.reference_locator,
-                        })
-                        .collect(),
-                    _unread: Default::default(),
-                })
-                .collect(),
-            files: spdx
-                .file_information
-                .into_iter()
-                .map(|file| Element {
-                    spdx_id: file.file_spdx_identifier,
-                })
-                .collect(),
-            snippets: spdx
-                .snippet_information
-                .into_iter()
-                .map(|snippet| Element {
-                    spdx_id: snippet.snippet_spdx_identifier,
-                })
-                .collect(),
-            relationships: spdx
-                .relationships
-                .into_iter()
-                .map(|relationship| Relationship {
-                    spdx_element_id: relationship.spdx_element_id,
-                    related_spdx_element: relationship.related_spdx_element,
-                    relationship_type: spdx_rs_name(&relationship.relationship_type),
-                })
-                .collect(),
-            _unread: Default::default(),
-        }
     }
 }

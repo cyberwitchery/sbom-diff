@@ -1,9 +1,5 @@
 [advisories]
-ignore = [
-    # chrono is unmaintained; pulled in by spdx-rs, which has no release
-    # without it.
-    "RUSTSEC-2026-0543",
-]
+ignore = []
 
 [licenses]
 allow = [
