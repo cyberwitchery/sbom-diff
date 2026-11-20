@@ -261,6 +261,17 @@ fn auto_detect_and_parse(content: &[u8]) -> anyhow::Result<Sbom> {
 mod tests {
     use super::*;
 
+    /// a fresh directory for one test, so concurrent test runs never share files.
+    fn scratch_dir(test: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("sbom-diff-test-{test}-{}", std::process::id()));
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn test_load_sbom_explicit_format_matches_auto() {
         for (path, format) in [
@@ -301,8 +312,7 @@ mod tests {
     #[test]
     fn test_load_sbom_spdx_xml_version_3_reports_unsupported_version() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("sbom-diff-test-spdx3-xml");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("spdx3-xml");
         let path = dir.join("v3.spdx.xml");
         std::fs::File::create(&path)
             .unwrap()
@@ -429,8 +439,7 @@ mod tests {
     #[test]
     fn test_load_sbom_empty_file() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("sbom-diff-test-empty");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("empty");
         let path = dir.join("empty.json");
         std::fs::File::create(&path)
             .unwrap()
@@ -448,8 +457,7 @@ mod tests {
     #[test]
     fn test_load_sbom_binary_file() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("sbom-diff-test-binary");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("binary");
         let path = dir.join("binary.bin");
         std::fs::File::create(&path)
             .unwrap()
@@ -467,8 +475,7 @@ mod tests {
     #[test]
     fn test_load_sbom_auto_error_identifies_detected_format() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("sbom-diff-test-detected");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("detected");
         // has the bomFormat marker but is otherwise invalid JSON
         let path = dir.join("bad-cdx.json");
         std::fs::File::create(&path)
@@ -559,8 +566,7 @@ mod tests {
         let mut bytes = vec![0xef, 0xbb, 0xbf]; // UTF-8 BOM
         bytes.extend_from_slice(&std::fs::read(fixture).unwrap());
 
-        let dir = std::env::temp_dir().join("sbom-diff-test-bom");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir(&format!("bom-{temp_name}"));
         let path = dir.join(temp_name);
         std::fs::File::create(&path)
             .unwrap()
@@ -604,8 +610,7 @@ mod tests {
     #[test]
     fn test_load_sbom_bom_only_file_is_empty() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("sbom-diff-test-bom-only");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("bom-only");
         let path = dir.join("bom-only.json");
         std::fs::File::create(&path)
             .unwrap()

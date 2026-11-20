@@ -69,20 +69,7 @@ impl FieldChangeFormatter for MarkdownRenderer {
 
 impl FullFormatter for MarkdownRenderer {
     fn full_warnings<W: Write>(&self, w: &mut W, opts: &RenderOptions) -> std::io::Result<()> {
-        writeln!(
-            w,
-            "<details><summary><b>Warnings ({})</b></summary>",
-            opts.warning_count()
-        )?;
-        writeln!(w)?;
-        for warning in &opts.old_warnings {
-            writeln!(w, "- **old:** {}", escape_markdown(warning))?;
-        }
-        for warning in &opts.new_warnings {
-            writeln!(w, "- **new:** {}", escape_markdown(warning))?;
-        }
-        writeln!(w, "</details>")?;
-        writeln!(w)
+        self.write_warnings(w, opts)
     }
 
     fn full_count_header<W: Write>(&self, w: &mut W, diff: &Diff) -> std::io::Result<()> {
@@ -95,20 +82,7 @@ impl FullFormatter for MarkdownRenderer {
         w: &mut W,
         breakdown: &BTreeMap<String, EcosystemCounts>,
     ) -> std::io::Result<()> {
-        writeln!(w, "#### By Ecosystem")?;
-        writeln!(w)?;
-        writeln!(w, "| Ecosystem | Added | Removed | Changed |")?;
-        writeln!(w, "| --- | --- | --- | --- |")?;
-        for (eco, counts) in breakdown {
-            writeln!(
-                w,
-                "| {} | {} | {} | {} |",
-                escape_table_cell(eco),
-                counts.added,
-                counts.removed,
-                counts.changed
-            )?;
-        }
+        ecosystem_table(w, breakdown)?;
         writeln!(w)
     }
 
@@ -274,21 +248,7 @@ impl SummaryFormatter for MarkdownRenderer {
         breakdown: &BTreeMap<String, EcosystemCounts>,
     ) -> std::io::Result<()> {
         writeln!(w)?;
-        writeln!(w, "#### By Ecosystem")?;
-        writeln!(w)?;
-        writeln!(w, "| Ecosystem | Added | Removed | Changed |")?;
-        writeln!(w, "| --- | --- | --- | --- |")?;
-        for (eco, counts) in breakdown {
-            writeln!(
-                w,
-                "| {} | {} | {} | {} |",
-                escape_table_cell(eco),
-                counts.added,
-                counts.removed,
-                counts.changed
-            )?;
-        }
-        Ok(())
+        ecosystem_table(w, breakdown)
     }
 }
 
@@ -308,6 +268,27 @@ impl SummaryRenderer for MarkdownRenderer {
 const INLINE_MARKDOWN: &[char] = &['\\', '`', '*', '_', '[', ']', '<', '&', '~'];
 
 /// replaces each line ending with a space, as CommonMark does inside a code span.
+fn ecosystem_table<W: Write>(
+    w: &mut W,
+    breakdown: &BTreeMap<String, EcosystemCounts>,
+) -> std::io::Result<()> {
+    writeln!(w, "#### By Ecosystem")?;
+    writeln!(w)?;
+    writeln!(w, "| Ecosystem | Added | Removed | Changed |")?;
+    writeln!(w, "| --- | --- | --- | --- |")?;
+    for (eco, counts) in breakdown {
+        writeln!(
+            w,
+            "| {} | {} | {} | {} |",
+            escape_table_cell(eco),
+            counts.added,
+            counts.removed,
+            counts.changed
+        )?;
+    }
+    Ok(())
+}
+
 fn one_line(text: &str) -> Cow<'_, str> {
     if text.contains(['\r', '\n']) {
         Cow::Owned(text.replace("\r\n", " ").replace(['\r', '\n'], " "))
