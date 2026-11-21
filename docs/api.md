@@ -14,9 +14,9 @@ the `sbom-model` crate provides a high-level query api.
 
 ## usage
 ```rust
-use sbom_model::Sbom;
+use sbom_model_spdx::SpdxReader;
 
-let sbom = load_sbom();
+let sbom = SpdxReader::read_json(std::fs::File::open("sbom.spdx.json")?)?;
 let roots = sbom.roots();
 let licenses = sbom.licenses();
 ```

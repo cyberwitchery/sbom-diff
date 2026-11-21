@@ -3,7 +3,7 @@
 ## installation
 install via cargo:
 ```bash
-cargo install --path crates/sbom-diff
+cargo install sbom-diff
 ```
 
 ## first diff

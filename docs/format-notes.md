@@ -29,7 +29,7 @@ both adapters produce:
   - source: `component.licenses`
   - target: `Component.licenses`
   - `license.id` / `license.name` entries are copied
-  - expression entries are expanded via SPDX expression parsing into individual license ids
+  - an expression entry is kept whole as `Component.license_expression`, which the license gates evaluate, and expanded into its individual license ids in `Component.licenses`
 - hashes:
   - source: `component.hashes`
   - target: `Component.hashes`
@@ -56,8 +56,10 @@ both adapters produce:
   - a line that is not a `Tag: value` pair, or whose tag is not an SPDX 2.3 tag
   - an unrecognized `ExternalRef` category, checksum algorithm, `Relationship` type, `FileType`, or `AnnotationType`, or a `DocumentRef-` id holding a character other than an ASCII letter or digit, `.`, `-` or `+`
   - an empty or whitespace-only license expression on `PackageLicenseConcluded`, `PackageLicenseDeclared`, `LicenseConcluded`, `LicenseInfoInFile` or `SnippetLicenseConcluded`, whether written on the tag's own line or delivered as a `<text>` block beside or below it
+  - whitespace other than a space or a tab at the head of a structured value (`Relationship`, `ExternalRef`, `ExternalDocumentRef`, a checksum) or between its fields
   - a `<text>` block belongs to its tag's value, so its interior is never read as a tag line, and dropping a tag drops its whole block
-- tag-value errors: a non-empty license expression the SPDX expression parser rejects on one of those five tags, a `Created` that is not an RFC 3339 timestamp, and a document with no `Created`
+- a `#` line is a comment that ends with its line
+- tag-value errors: a non-empty license expression the SPDX expression parser rejects on one of those five tags, or one that starts with whitespace other than a space or a tab, a `Created` that is not an RFC 3339 timestamp, and a document with no `Created`
 - tag-value structure: a `PackageName` opens a package and a `FileName` a file, and an `SPDXID` names the document, package or file it follows; a second `SPDXID` in one of them opens a package with no name. package tags apply to the last package opened, and a tag given twice keeps its last value
 - json handling: only the properties the reader maps are read, so the value of any other property is not checked. a property the SPDX 2.3 schema does not define on the document (other than `$schema`) or on a package, a property given twice on either, a missing `spdxVersion`, `SPDXID`, `creationInfo` or package `name` or `SPDXID`, a relationship type or package checksum algorithm the SPDX 2.3 schema does not list, a package license expression the SPDX expression parser rejects, and a `created` that is not a date and time are errors
 - xml handling: the xml serialization mirrors the json schema element-for-element, so the document is converted to json and mapped by the json code path
@@ -69,9 +71,8 @@ both adapters produce:
   - target: `Component.purl`
   - ecosystem: derived from purl type
 - licences:
-  - source: `package.licenseConcluded`
-  - target: `Component.licenses`
-  - SPDX expressions are expanded into individual license ids
+  - source: `package.licenseConcluded`, or `package.licenseDeclared` when the concluded license is absent, `NOASSERTION` or `NONE`
+  - target: the whole expression in `Component.license_expression`, which the license gates evaluate, and its individual license ids in `Component.licenses`
   - `NOASSERTION` and `NONE` are ignored
 - hashes:
   - source: `package.checksums`

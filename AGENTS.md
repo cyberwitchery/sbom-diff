@@ -47,15 +47,17 @@ files: <comma-separated paths>
 
 # rust
 
-this is a rust project. write idiomatic rust: prefer ownership over references where it simplifies code, use `?` for error propagation, and leverage the type system to make invalid states unrepresentable.
+this is a rust workspace: `sbom-model` (the format-agnostic model), `sbom-model-cyclonedx` and `sbom-model-spdx` (the readers) and `sbom-diff` (the diff engine, the renderers, the gates in `policy`, and the cli behind the default `cli` feature). write idiomatic rust: prefer ownership over references where it simplifies code, use `?` for error propagation, and leverage the type system to make invalid states unrepresentable.
+
+- fixtures live in `tests/fixtures`. the golden files there (`golden-*.txt`, `golden-*.md`) pin rendered output; regenerate them only for an intended output change.
+- `docs/usage.md` lists every flag and `--fail-on` condition, and `docs/format-notes.md` how each format maps into the model; update them with the behaviour.
+- user-facing changes get a line under `## Unreleased` in `CHANGELOG.md`.
 
 ## commands
 
-run these in order after making changes:
+run the ci gates after making changes:
 ```
-cargo fmt
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+./ci.sh
 ```
 
 ## constraints
@@ -94,7 +96,7 @@ when adding or modifying code:
 
 after changes, run and report results:
 ```
-cargo fmt && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+./ci.sh
 ```
 if any command fails, fix the issue before reporting completion.
 
