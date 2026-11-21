@@ -137,10 +137,11 @@ fn render(diff: &Diff) -> Result<(), Error> {
 
 ## how matching works
 
-components are matched in two passes:
+components are matched in three passes:
 
 1. **by id**: components with the same `ComponentId` (usually purl) are paired
-2. **by identity**: unmatched components are reconciled by name, ecosystem and purl namespace; a component without a purl matches on name alone
+2. **by purl**: unmatched components whose purls parse are paired on the purl's type, namespace and name, in canonical form, so a version bump pairs whatever the `name` field says
+3. **by identity**: what is left is reconciled by name, ecosystem and purl namespace; a component without a purl matches on name alone
 
 this allows detecting version bumps even when the purl changes (e.g., `pkg:npm/foo@1.0` vs `pkg:npm/foo@2.0`).
 

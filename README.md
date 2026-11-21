@@ -56,19 +56,28 @@ sbom-diff old.json new.json --quiet --fail-on added-components
 ```text
 Diff Summary
 ============
-Added:   1
-Removed: 0
-Changed: 1
+Old total:        2 components
+New total:        2 components
+Unchanged:        0
+Added:            1
+Removed:          1
+Changed:          1
+Edge changes:     0
+Metadata changed: no
 
 [+] Added
 ---------
-pkg:npm/left-pad@1.3.0
+pkg:npm/pkg-c@3.0.0
+
+[-] Removed
+-----------
+pkg:npm/pkg-b@2.0.0
 
 [~] Changed
 -----------
-pkg:cargo/serde@1.0.191
-  Version: 1.0.190 -> 1.0.191
-  License: {"mit"} -> {"apache-2.0", "mit"}
+pkg:npm/pkg-a@1.1.0
+  Version: 1.0.0 -> 1.1.0
+  Purl: pkg:npm/pkg-a@1.0.0 -> pkg:npm/pkg-a@1.1.0
 ```
 
 ## installation
@@ -86,7 +95,7 @@ cargo install sbom-diff
 
 ## features
 
-- supports cyclonedx 1.3-1.6 (json and xml) and spdx 2.3 (json, xml, and tag-value); 1.6 documents are read under 1.5 rules and say so in a warning
+- supports cyclonedx 1.3-1.6 (json and xml) and spdx 2.x (json, xml, and tag-value); 1.6 documents are read under 1.5 rules and say so in a warning
 - deterministic normalization for reproducible diffs
 - matches components by purl or identity (name/ecosystem/purl namespace)
 - zero network access - fully offline
@@ -174,6 +183,7 @@ both on stderr.
 
 ## docs
 
+- [usage](docs/usage.md): every flag, the `--fail-on` conditions and the exit codes
 - [format mapping notes](docs/format-notes.md): cyclonedx/spdx field mapping into the core model
 
 ## crate structure
@@ -192,7 +202,7 @@ sbom-diff/
 |-------|------|-------------|
 | [`sbom-model`](crates/sbom-model) | [docs.rs](https://docs.rs/sbom-model) | core `Sbom`, `Component`, `ComponentId` types and query api |
 | [`sbom-model-cyclonedx`](crates/sbom-model-cyclonedx) | [docs.rs](https://docs.rs/sbom-model-cyclonedx) | parse cyclonedx 1.3-1.6 json and xml into `Sbom` |
-| [`sbom-model-spdx`](crates/sbom-model-spdx) | [docs.rs](https://docs.rs/sbom-model-spdx) | parse spdx 2.3 json, xml, and tag-value into `Sbom` |
+| [`sbom-model-spdx`](crates/sbom-model-spdx) | [docs.rs](https://docs.rs/sbom-model-spdx) | parse spdx 2.x json, xml, and tag-value into `Sbom` |
 | [`sbom-diff`](crates/sbom-diff) | [docs.rs](https://docs.rs/sbom-diff) | `Differ` engine, renderers, and cli binary |
 
 use the library crates directly if you want to build custom tooling:

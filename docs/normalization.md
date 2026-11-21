@@ -7,9 +7,11 @@ to ensure stable diffs, the model applies:
    - falls back to deterministic hash of name, version, and supplier.
 
 2. **field cleanup**:
-   - strips timestamps and tool metadata.
    - lowercases hash algorithms and values.
    - sorts license lists.
+   - strips the timestamp, tools and authors. the differ compares them first,
+     so a metadata change is still reported, and `--fail-on metadata-changed`
+     gates on it.
 
 3. **reconciliation**:
    - if `purl` matches but internal `id` differs, components are treated as same entity.
